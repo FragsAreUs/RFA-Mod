@@ -1,0 +1,121 @@
+<UserControl x:Class="RfaEditor.FilePreview"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:RfaEditor">
+    <Grid x:Name="Parts">
+        <!-- The preview (the tab) -->
+        <Grid x:Name="ViewPart" Margin="8">
+            <!-- When there is nothing to preview: what to do -->
+            <StackPanel x:Name="EmptyHint" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="{x:Static local:Icons.Preview}" Style="{StaticResource Icon}" FontSize="44"
+                           Foreground="{StaticResource StrongBorderBrush}" Margin="0,0,0,14" />
+                <TextBlock x:Name="EmptyHintText" Foreground="{StaticResource DimTextBrush}" TextAlignment="Center"
+                           TextWrapping="Wrap" MaxWidth="380" />
+            </StackPanel>
+
+            <TextBox x:Name="PreviewText" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                     TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+
+            <!-- Textures: .cpeg_pc/.gpeg_pc/.cvbm_pc/.gvbm_pc -->
+            <DockPanel x:Name="TexturePanel" Visibility="Collapsed">
+                <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <ComboBox x:Name="TextureList" Width="300" Margin="0,0,8,0" SelectionChanged="OnTextureChosen"
+                              ToolTip="The textures in this file" />
+                    <Button Content="Export PNG..." Click="OnExportPng" ToolTip="Save the texture as a PNG image" />
+                    <Button Content="Export DDS..." Click="OnExportDds"
+                            ToolTip="Save the texture exactly as stored (format and mip levels) as a DDS file" />
+                    <Button x:Name="ReplaceTextureButton" Content="Replace..." Click="OnReplaceTexture" Style="{StaticResource PrimaryButton}" Margin="0,0,6,0"
+                            ToolTip="Use your own image (PNG, DDS, JPG, BMP, TIFF) of the same size instead; saved to overrides" />
+                    <Button x:Name="RestoreTextureButton" Content="Restore original" Click="OnRestoreTexture"
+                            ToolTip="Go back to the game's own textures for this file or container" />
+                    <CheckBox x:Name="ShowAlphaBox" Content="Show transparency" IsChecked="True" VerticalAlignment="Center"
+                              Checked="OnShowAlphaChanged" Unchecked="OnShowAlphaChanged"
+                              ToolTip="Show the alpha channel as transparency (some textures use it for other things, such as shininess)" />
+                </WrapPanel>
+                <TextBlock x:Name="TextureInfo" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,6" />
+                <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" HorizontalAlignment="Left" VerticalAlignment="Top">
+                    <Border.Background>
+                        <DrawingBrush TileMode="Tile" Viewport="0,0,16,16" ViewportUnits="Absolute">
+                            <DrawingBrush.Drawing>
+                                <DrawingGroup>
+                                    <GeometryDrawing Brush="#5A5A5A" Geometry="M0,0 H2 V2 H0 Z" />
+                                    <GeometryDrawing Brush="#7A7A7A" Geometry="M0,0 H1 V1 H0 Z M1,1 H2 V2 H1 Z" />
+                                </DrawingGroup>
+                            </DrawingBrush.Drawing>
+                        </DrawingBrush>
+                    </Border.Background>
+                    <Image x:Name="TextureImage" Stretch="Uniform" StretchDirection="DownOnly" />
+                </Border>
+            </DockPanel>
+
+            <!-- Models: .csmesh_pc/.ccmesh_pc/.cchk_pc/.ccar_pc and their g-files; skeletons (.rig_pc) and animations (.anim_pc) -->
+            <DockPanel x:Name="ModelPanel" Visibility="Collapsed">
+                <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <Button Content="Export OBJ..." Click="OnExportObj" Style="{StaticResource PrimaryButton}" Margin="0,0,6,0"
+                            ToolTip="Save the model as OBJ + MTL with its colour textures as PNG, for Blender and other 3D programs" />
+                    <Button Content="Reset view" Click="OnResetView" />
+                    <CheckBox x:Name="ShowTexturesBox" Content="Textures" IsChecked="True" VerticalAlignment="Center" Margin="4,0,12,0"
+                              Checked="OnModelOptionChanged" Unchecked="OnModelOptionChanged" />
+                    <ComboBox x:Name="ObjectList" Width="260" Margin="0,0,10,0" SelectionChanged="OnObjectChosen"
+                              ToolTip="This file holds several objects; zones pick one by its uid" />
+                    <CheckBox x:Name="ShowPiecesBox" Content="Broken pieces" VerticalAlignment="Center"
+                              Checked="OnModelOptionChanged" Unchecked="OnModelOptionChanged"
+                              ToolTip="Show the debris this object breaks into, instead of the object whole" />
+                    <CheckBox x:Name="ShowSkeletonBox" Content="Skeleton" VerticalAlignment="Center" Visibility="Collapsed" Margin="0,0,12,0"
+                              Checked="OnModelOptionChanged" Unchecked="OnModelOptionChanged"
+                              ToolTip="Show the character's skeleton (its rig, from character.xtbl) inside it, see-through" />
+                    <ComboBox x:Name="AnimationList" Width="300" Margin="0,0,10,0" Visibility="Collapsed" IsTextSearchEnabled="True"
+                              SelectionChanged="OnAnimationChosen"
+                              ToolTip="Play one of this character's animations: the ones its animation sets (in character.xtbl) name. Type to jump to a name." />
+                    <ComboBox x:Name="CastList" Width="340" Margin="0,0,10,0" Visibility="Collapsed" SelectionChanged="OnCastChosen"
+                              ToolTip="Who plays it: the characters whose animation sets name this animation, then any skeleton with its number of bones" />
+                </WrapPanel>
+                <TextBlock x:Name="ModelInfo" DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,6" />
+                <!-- Playing an animation -->
+                <DockPanel x:Name="PlayBar" DockPanel.Dock="Top" Margin="0,0,0,6" Visibility="Collapsed">
+                    <Button x:Name="PlayButton" DockPanel.Dock="Left" Width="70" Click="OnPlayPause" Margin="0,0,8,0" ToolTip="Play or pause (it loops)" />
+                    <ComboBox x:Name="SpeedList" DockPanel.Dock="Left" Width="70" Margin="0,0,8,0" SelectedIndex="2" ToolTip="Playing speed">
+                        <ComboBoxItem Content="¼×" Tag="0.25" />
+                        <ComboBoxItem Content="½×" Tag="0.5" />
+                        <ComboBoxItem Content="1×" Tag="1" />
+                        <ComboBoxItem Content="2×" Tag="2" />
+                    </ComboBox>
+                    <CheckBox x:Name="MoveAlongBox" DockPanel.Dock="Left" Content="Move along" VerticalAlignment="Center" Margin="0,0,10,0"
+                              Checked="OnPlayOptionChanged" Unchecked="OnPlayOptionChanged"
+                              ToolTip="Let the character move as the animation moves it (walking forward, jumping down); off, it stays on the spot" />
+                    <TextBlock x:Name="FrameText" DockPanel.Dock="Right" Width="170" VerticalAlignment="Center" Margin="10,0,0,0"
+                               Foreground="{StaticResource DimTextBrush}" />
+                    <Slider x:Name="FrameSlider" VerticalAlignment="Center" Minimum="0" ValueChanged="OnFrameSlid"
+                            ToolTip="Drag to any moment of the animation" />
+                </DockPanel>
+                <Border x:Name="ModelViewArea" Background="{StaticResource ViewportBrush}" ClipToBounds="True" Cursor="SizeAll">
+                    <Viewport3D x:Name="ModelViewport" />
+                </Border>
+            </DockPanel>
+        </Grid>
+
+        <!-- The inspector (shown on the right): what the selected file is, and what can be done with it -->
+        <StackPanel x:Name="InspectorPart" Margin="10,10,10,12">
+            <DockPanel>
+                <Border x:Name="KindBadge" Width="34" Height="34" CornerRadius="6" Margin="0,0,10,0" VerticalAlignment="Top">
+                    <TextBlock x:Name="KindIcon" Style="{StaticResource Icon}" FontSize="16" />
+                </Border>
+                <TextBlock x:Name="TitleText" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock x:Name="DetailsText" TextWrapping="Wrap" Margin="0,10,0,12" Foreground="{StaticResource DimTextBrush}" />
+            <WrapPanel>
+                <Button x:Name="OpenTableButton" Content="Open in table editor" Click="OnOpenTable" Style="{StaticResource PrimaryButton}" Margin="0,0,6,6"
+                        ToolTip="Edit this table's entries field by field (double-clicking it does the same)" />
+                <Button x:Name="OpenLevelButton" Content="Open in level editor" Click="OnOpenLevel" Style="{StaticResource PrimaryButton}" Margin="0,0,6,6"
+                        ToolTip="See this zone's objects in 3D and edit them (double-clicking it does the same)" />
+                <Button x:Name="ExtractButton" Content="Extract..." Click="OnExtract" Margin="0,0,6,6"
+                        ToolTip="Save a copy of this file anywhere" />
+                <Button x:Name="ExtractAllButton" Content="Extract all..." Click="OnExtractAll" Margin="0,0,6,6"
+                        ToolTip="Save a copy of every file in it into a folder" />
+                <Button x:Name="CopyToOverridesButton" Content="Copy to overrides" Click="OnCopyToOverrides" Margin="0,0,6,6"
+                        ToolTip="Put a copy in overrides\, where the game will use it instead of its own. Edit that copy." />
+                <Button x:Name="ShowOverrideButton" Content="Show override in Explorer" Click="OnShowOverride" Margin="0,0,6,6" />
+            </WrapPanel>
+        </StackPanel>
+    </Grid>
+</UserControl>

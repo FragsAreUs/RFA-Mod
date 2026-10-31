@@ -1,0 +1,79 @@
+<UserControl x:Class="RfaEditor.TableEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:RfaEditor">
+    <Grid x:Name="Parts">
+        <!-- The view (the tab): the selected entry's fields -->
+        <DockPanel x:Name="ViewPart">
+            <!-- Toolbar: where the table comes from, and saving -->
+            <Border DockPanel.Dock="Top" Background="{StaticResource PanelHeaderBrush}" BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="0,0,0,1" Padding="10,4,6,4">
+                <DockPanel>
+                    <Button x:Name="SaveButton" DockPanel.Dock="Right" Click="OnSave" IsEnabled="False" Style="{StaticResource PrimaryButton}" Margin="0"
+                            ToolTip="Write the table to overrides\, where the game uses it instead of its own (Ctrl+S)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{x:Static local:Icons.Save}" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                            <TextBlock Text="Save" />
+                        </StackPanel>
+                    </Button>
+                    <TextBlock Text="{x:Static local:Icons.Info}" Style="{StaticResource Icon}" FontSize="11" Margin="0,0,7,0"
+                               Foreground="{StaticResource DimTextBrush}" />
+                    <TextBlock x:Name="SourceText" VerticalAlignment="Center" TextWrapping="Wrap" FontSize="11.5" Margin="0,0,10,0"
+                               Foreground="{StaticResource DimTextBrush}" />
+                </DockPanel>
+            </Border>
+            <Grid Margin="10,8,10,8">
+                <DockPanel x:Name="EntryView" Visibility="Collapsed">
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <TextBlock x:Name="EntryTitle" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock x:Name="EntryInfo" TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource DimTextBrush}" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <TreeView x:Name="FieldTree" />
+                </DockPanel>
+                <!-- Before an entry is picked: what to do -->
+                <StackPanel x:Name="EmptyHint" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="{x:Static local:Icons.Table}" Style="{StaticResource Icon}" FontSize="44"
+                               Foreground="{StaticResource StrongBorderBrush}" Margin="0,0,0,14" />
+                    <TextBlock x:Name="EmptyHintText" Text="Pick an entry in the outliner to edit its fields." Foreground="{StaticResource DimTextBrush}"
+                               TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460" />
+                </StackPanel>
+            </Grid>
+        </DockPanel>
+
+        <!-- The outliner: the entries, in the folders Volition's editor sorted them into -->
+        <DockPanel x:Name="OutlinerPart">
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="6,6,6,0">
+                <Button x:Name="NewEntryButton" Style="{StaticResource ToolButton}" Click="OnNewEntry"
+                        ToolTip="Add an entry: an empty one (every field the game's default) or, where the table has them, one from Volition's templates">
+                    <TextBlock Text="{x:Static local:Icons.Add}" Style="{StaticResource Icon}" />
+                </Button>
+                <Button x:Name="CopyEntryButton" Style="{StaticResource ToolButton}" Click="OnCopyEntry" IsEnabled="False"
+                        ToolTip="Copy the picked entry, every field the same, under a new name (Ctrl+D)">
+                    <TextBlock Text="{x:Static local:Icons.Duplicate}" Style="{StaticResource Icon}" />
+                </Button>
+                <Button x:Name="DeleteEntryButton" Style="{StaticResource ToolButton}" Click="OnDeleteEntry" IsEnabled="False"
+                        ToolTip="Delete the picked entry (Del); first says which tables name it">
+                    <TextBlock Text="{x:Static local:Icons.Delete}" Style="{StaticResource Icon}" />
+                </Button>
+            </StackPanel>
+            <Grid DockPanel.Dock="Top" Margin="8,8,8,6">
+                <TextBox x:Name="FilterBox" Padding="26,4,4,4" TextChanged="OnFilterChanged" ToolTip="Show only entries whose name contains this" />
+                <TextBlock Text="{x:Static local:Icons.Search}" Style="{StaticResource Icon}" FontSize="12" HorizontalAlignment="Left"
+                           Margin="9,0,0,0" Foreground="{StaticResource DimTextBrush}" IsHitTestVisible="False" />
+                <TextBlock x:Name="FilterHint" Text="Find entries by name" Style="{StaticResource HintText}" Margin="31,0,0,0" />
+            </Grid>
+            <TreeView x:Name="EntryTree" SelectedItemChanged="OnEntrySelected" KeyDown="OnEntryTreeKey" />
+        </DockPanel>
+
+        <!-- The inspector: about the table -->
+        <StackPanel x:Name="InspectorPart" Margin="10,10,10,12">
+            <DockPanel>
+                <Border Width="34" Height="34" CornerRadius="6" Margin="0,0,10,0" VerticalAlignment="Top" Background="#2D6CC28A">
+                    <TextBlock Text="{x:Static local:Icons.Table}" Style="{StaticResource Icon}" FontSize="16" Foreground="#6CC28A" />
+                </Border>
+                <TextBlock x:Name="TableTitle" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" />
+            </DockPanel>
+            <TextBlock x:Name="TableInfo" TextWrapping="Wrap" Margin="0,10,0,0" Foreground="{StaticResource DimTextBrush}" />
+        </StackPanel>
+    </Grid>
+</UserControl>

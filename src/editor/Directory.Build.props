@@ -1,0 +1,13 @@
+<Project>
+
+  <!-- Settings for both editor projects (RfaFormats and RfaEditor), read by every build.
+
+       Builds name no folder of the PC they were built on, so they can be shared: every path the
+       compiler writes into them (to the source files and the debugging .pdb) starts with "/_/"
+       instead of this project's folder. tools\package.ps1 checks for that. -->
+  <PropertyGroup>
+    <RfaProjectFolder>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</RfaProjectFolder>
+    <PathMap>$(RfaProjectFolder)=/_/</PathMap>
+  </PropertyGroup>
+
+</Project>

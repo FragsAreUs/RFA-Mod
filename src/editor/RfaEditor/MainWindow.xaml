@@ -1,0 +1,170 @@
+<Window x:Class="RfaEditor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:RfaEditor"
+        Title="RFA Editor" Width="1600" Height="950" MinWidth="1000" MinHeight="600"
+        Background="{StaticResource WindowBrush}" Foreground="{StaticResource TextBrush}"
+        SourceInitialized="OnSourceInitialized" Activated="OnActivated" Closing="OnClosing">
+    <DockPanel>
+        <!-- Top bar: the editor's name, where the game and your changes are -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelHeaderBrush}" BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1" Padding="10,5">
+            <DockPanel>
+                <TextBlock Text="{x:Static local:Icons.Model}" Style="{StaticResource Icon}" FontSize="16"
+                           Foreground="{StaticResource AccentBrush}" Margin="0,0,8,0" />
+                <TextBlock Text="RFA Editor" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" Margin="0,0,20,0" />
+                <Button DockPanel.Dock="Right" Click="OnOpenOverridesFolder" Margin="0"
+                        ToolTip="Where your changes are saved (the game's own files are never changed)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{x:Static local:Icons.OpenFolder}" Style="{StaticResource Icon}" FontSize="12" Margin="0,0,6,0" />
+                        <TextBlock Text="Overrides folder" />
+                    </StackPanel>
+                </Button>
+                <TextBlock x:Name="GameFolderText" Foreground="{StaticResource DimTextBrush}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+            </DockPanel>
+        </Border>
+
+        <StatusBar DockPanel.Dock="Bottom" Padding="6,0">
+            <TextBlock x:Name="StatusText" />
+        </StatusBar>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" MinHeight="200" />
+                <RowDefinition Height="3" />
+                <RowDefinition Height="120" MinHeight="40" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="300" MinWidth="180" />
+                    <ColumnDefinition Width="3" />
+                    <ColumnDefinition Width="*" MinWidth="300" />
+                    <ColumnDefinition Width="3" />
+                    <ColumnDefinition Width="380" MinWidth="220" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Explorer: every archive in the game, and search -->
+                <DockPanel Grid.Column="0" Background="{StaticResource PanelBrush}">
+                    <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{x:Static local:Icons.Folder}" Style="{StaticResource PanelIcon}" />
+                            <TextBlock Text="EXPLORER" Style="{StaticResource PanelTitle}" />
+                        </StackPanel>
+                    </Border>
+                    <Grid DockPanel.Dock="Top" Margin="8,8,8,6">
+                        <TextBox x:Name="SearchBox" Padding="26,4,4,4" TextChanged="OnSearchChanged"
+                                 ToolTip="Find files by name in every archive and container" />
+                        <TextBlock Text="{x:Static local:Icons.Search}" Style="{StaticResource Icon}" FontSize="12"
+                                   HorizontalAlignment="Left" Margin="9,0,0,0" Foreground="{StaticResource DimTextBrush}" IsHitTestVisible="False" />
+                        <TextBlock x:Name="SearchHint" Text="Search every file" Style="{StaticResource HintText}" Margin="31,0,0,0" />
+                    </Grid>
+                    <Grid>
+                        <TreeView x:Name="Tree" SelectedItemChanged="OnTreeSelectionChanged"
+                                  TreeViewItem.Expanded="OnTreeItemExpanded" MouseDoubleClick="OnFileDoubleClick">
+                            <TreeView.ItemTemplate>
+                                <!-- A row: the icon of its kind of file, its name, a note, and a mark if you changed it -->
+                                <HierarchicalDataTemplate DataType="{x:Type local:TreeNode}" ItemsSource="{Binding Children}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Kind.Icon}" Foreground="{Binding Kind.Colour}" Style="{StaticResource Icon}"
+                                                   FontSize="13" Width="16" Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Note}" Foreground="{StaticResource DimTextBrush}" Margin="8,0,0,0"
+                                                   VerticalAlignment="Center" FontSize="11" />
+                                        <Border x:Name="ChangedMark" Background="{StaticResource ChangedBrush}" CornerRadius="7" Padding="6,0"
+                                                Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"
+                                                ToolTip="You changed this file: the game uses your copy in overrides\">
+                                            <TextBlock Text="changed" FontSize="10" FontWeight="SemiBold" Foreground="#1B1C1F" />
+                                        </Border>
+                                    </StackPanel>
+                                    <HierarchicalDataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding Changed}" Value="True">
+                                            <Setter TargetName="ChangedMark" Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </HierarchicalDataTemplate.Triggers>
+                                </HierarchicalDataTemplate>
+                            </TreeView.ItemTemplate>
+                        </TreeView>
+                        <ListBox x:Name="SearchResults" Visibility="Collapsed" SelectionChanged="OnSearchSelectionChanged"
+                                 MouseDoubleClick="OnFileDoubleClick" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <!-- A found file: its icon and name, and under it where it is -->
+                                <DataTemplate DataType="{x:Type local:IndexedFile}">
+                                    <DockPanel Margin="0,2">
+                                        <TextBlock Text="{Binding Kind.Icon}" Foreground="{Binding Kind.Colour}" Style="{StaticResource Icon}"
+                                                   FontSize="13" Width="16" Margin="0,0,8,0" VerticalAlignment="Top" />
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Where}" Foreground="{StaticResource DimTextBrush}" FontSize="11"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </DockPanel>
+
+                <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" />
+
+                <!-- Documents: the preview, open tables and levels -->
+                <TabControl x:Name="Documents" Grid.Column="2" SelectionChanged="OnDocumentChosen" />
+
+                <GridSplitter Grid.Column="3" HorizontalAlignment="Stretch" />
+
+                <!-- Outliner over inspector, for the chosen document -->
+                <Grid Grid.Column="4" Background="{StaticResource PanelBrush}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" MinHeight="80" />
+                        <RowDefinition Height="3" />
+                        <RowDefinition Height="1.3*" MinHeight="80" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0">
+                        <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{x:Static local:Icons.List}" Style="{StaticResource PanelIcon}" />
+                                <TextBlock Text="OUTLINER" Style="{StaticResource PanelTitle}" />
+                            </StackPanel>
+                        </Border>
+                        <ContentControl x:Name="OutlinerHost" />
+                    </DockPanel>
+                    <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" />
+                    <DockPanel Grid.Row="2">
+                        <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{x:Static local:Icons.Info}" Style="{StaticResource PanelIcon}" />
+                                <TextBlock Text="INSPECTOR" Style="{StaticResource PanelTitle}" />
+                            </StackPanel>
+                        </Border>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <ContentControl x:Name="InspectorHost" />
+                        </ScrollViewer>
+                    </DockPanel>
+                </Grid>
+            </Grid>
+
+            <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" />
+
+            <!-- Log -->
+            <DockPanel Grid.Row="2" Background="{StaticResource PanelBrush}">
+                <Border DockPanel.Dock="Top" Style="{StaticResource PanelHeader}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{x:Static local:Icons.Log}" Style="{StaticResource PanelIcon}" />
+                        <TextBlock Text="LOG" Style="{StaticResource PanelTitle}" />
+                    </StackPanel>
+                </Border>
+                <ListBox x:Name="LogList" FontFamily="Consolas" FontSize="12">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate DataType="{x:Type local:LogLine}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding Time}" Foreground="{StaticResource DimTextBrush}" Margin="0,0,10,0" />
+                                <TextBlock Text="{Binding Text}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -1,0 +1,22 @@
+# Built and run-time files: made by build.cmd, dotnet and tools\package.ps1, or written while the
+# game and the editor run (bin\link, bin\logs, bin\overrides, video_settings.cfg). The templates
+# for bin\ live in config\.
+/bin/
+/build/
+/dist/
+obj/
+src/**/bin/
+tools/**/bin/
+__pycache__/
+*.pyc
+
+# The game's own files are never published. reference\ keeps copies of the game's programs for
+# research; only the notes and file lists made from them are tracked.
+/reference/**/*.exe
+/reference/**/changelist.txt
+
+# Editor and system clutter.
+.vs/
+*.user
+Thumbs.db
+desktop.ini
