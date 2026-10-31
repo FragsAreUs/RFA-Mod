@@ -30,13 +30,11 @@ src\editor\RfaFormats\   C# library that reads the game's file formats (archives
 src\editor\RfaEditor\    the editor (C#, WPF desktop app); built into bin\editor\
 config\rfa_mods.ini      the settings template (copied to bin\ on the first build)
 config\console.ini       console settings template (copied to bin\ when missing)
-docs\game-notes.md       every known game address and file format, and what it does
 docs\editor-roadmap.md   what the editor still lacks, by Volition's own tools (CLOE, ...)
 docs\renderer-plan.md    the plan for drawing levels with Direct3D 11, to look like the game
 tools\game-integrity.ps1 proves the game folder is untouched
 tools\package.ps1        makes a clean copy to share (dist\), without your own settings
-tools\research\          scripts used to find addresses (see its README)
-reference\build-*\       copies of both Steam builds' exes, each with its install snapshot
+reference\build-*\       each Steam build's file list, for tools\game-integrity.ps1
 bin\                     the built mod (what you install); build\ holds compiler leftovers
 dist\                    made by tools\package.ps1: the mod and editor as others get them
 ```
@@ -357,8 +355,7 @@ of a level (buildings and props, lights, spawn points, navigation points, trigge
   characters and walkers in poses other than their rest pose, the ground's normal maps, effects such as fire and smoke (of the sky, only its picture), editing
   the level geometry, terrain or foliage, adding objects whose models aren't in the zone,
   deleting objects other objects' links name, editing links between objects, and changing a
-  zone's layers or the zones around it from the zone's tab. `docs\game-notes.md` lists every kind of file the game
-  has and what the editor reads so far.
+  zone's layers or the zones around it from the zone's tab.
 
 The code is in `src\editor\`: `RfaFormats` reads and writes the formats (no UI, reusable by other
 tools) and `RfaEditor` is the editor: `MainWindow` the layout and explorer, `Documents\` the tabs

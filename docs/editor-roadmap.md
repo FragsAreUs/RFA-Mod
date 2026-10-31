@@ -6,8 +6,7 @@ were built in **CLOE** ("Chunk LayOut Editor"), never released: zones made of de
 are still in the game: the debug display of slew mode (`slew_mode`, Q to pick) shows each object's
 "CLOE pos" (its position from the middle of its zone), and the console has `warp_to_cloe`. The
 other tools covered models, animation, effects, sound, menus and AI. This list is what the editor
-in `src\editor` still lacks, grouped by those tools, with what each needs. `docs\game-notes.md`
-has the file formats; its table "The game's files at a glance" says which kinds the editor reads.
+in `src\editor` still lacks, grouped by those tools, with what each needs.
 
 ## Done so far
 

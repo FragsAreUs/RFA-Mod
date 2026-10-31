@@ -10,8 +10,12 @@ tools/**/bin/
 __pycache__/
 *.pyc
 
-# Notes that stay on this PC only.
+# Notes and research that stay on this PC only: the game's addresses and file formats, the
+# scripts that found them, and what each kept game build is.
 /private/
+/docs/game-notes.md
+/tools/research/
+/reference/**/README.txt
 
 # The game's own files are never published. reference\ keeps copies of the game's programs for
 # research; only the notes and file lists made from them are tracked.

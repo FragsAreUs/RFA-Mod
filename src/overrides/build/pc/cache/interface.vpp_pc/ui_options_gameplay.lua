@@ -4,8 +4,8 @@
 -- Adds a Field of View slider (45-170), saved to rfa_mods.ini through rfa_get_setting and
 -- rfa_set_setting, which the loader adds. Every line we added or changed is marked [RFA];
 -- everything else is the game's original script. Only the [RFA] lines are this project's (GNU GPL
--- version 3 or later, see LICENSE); the rest belongs to the game's owners. To compare with the original:
---   python tools\research\vpp.py extract "<game>\build\pc\cache\interface.vpp_pc" ui_options_gameplay.lua extracted
+-- version 3 or later, see LICENSE); the rest belongs to the game's owners.
+-- To compare with the original, extract it with the editor.
 
 local FINE_AIM_SNAP_INDEX		= 1
 local HELP_MESSAGE_INDEX		= 2

@@ -7,8 +7,8 @@ using Vortice.DXGI;
 namespace RfaEditor.Render;
 
 /// <summary>
-/// Shadows for the lamps that cast them, as the game draws them (its ir_light_spot shader; see
-/// docs\game-notes.md, "Lighting"). 561 of the game's 38,240 lamps cast shadows (casts_shadows),
+/// Shadows for the lamps that cast them, as the game draws them (its ir_light_spot
+/// shader). 561 of the game's 38,240 lamps cast shadows (casts_shadows),
 /// 543 of them spotlights; the 18 omni lamps that do are left without here. Each gets a shadow
 /// map: a depth picture of the scene drawn from the lamp along its cone (or straight along it, for
 /// shadow_projection "orthographic"). A pixel the lamp lights is in shadow where the map has

@@ -42,11 +42,7 @@ overrides**, then edit the copy it puts in `bin\overrides\`.
 
 Overrides start as a copy of the game's file. In the overrides kept in this project, our changes
 are marked with `[RFA]` comments, and everything else is the game's original. To compare with the
-original, extract it with the editor, or:
-
-```
-python tools\research\vpp.py extract "<game>\build\pc\cache\interface.vpp_pc" ui_options_gameplay.lua extracted
-```
+original, extract it with the editor.
 
 `src\overrides` holds the overrides that are part of this project; `build.cmd` copies it to
 `bin\overrides`, replacing files of the same name there. Your own overrides can live in

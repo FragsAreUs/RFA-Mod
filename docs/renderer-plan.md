@@ -44,7 +44,7 @@ sky; characters animated on the card (skinning in the shader) for the preview.
   `Vortice.Direct3D9`, `Vortice.D3DCompiler`). Widely used and maintained. Needs a download from
   NuGet (with your permission); it then ships in `bin\editor` with the editor.
 - *Our own declarations*: the Direct3D interfaces we use, written out in C# by hand (the way
-  `tools\research\shaders` declares the shader compiler). No download, but about 1,500 lines of
+  a small research tool declares the shader compiler). No download, but about 1,500 lines of
   interface declarations to write and keep right, before drawing anything.
 
 **Decision 2: how the picture gets into the window.** Recommended: WPF's `D3DImage`. Direct3D 11
@@ -57,7 +57,7 @@ renderer too.
 **Shaders** (no decision needed): our own, written in HLSL (readable source in the repository),
 compiled when the editor starts by Windows' own `d3dcompiler_47.dll` (part of Windows 10 and 11,
 present on this PC). The game's compiled shaders expect its engine's inputs, so they can't be
-reused, but they can be read with `tools\research\shaders` to copy what they do (as was done for
+reused, but they can be disassembled with that same compiler to copy what they do (as was done for
 the ground's blended layers).
 
 ## How it fits in
@@ -135,7 +135,7 @@ squares with holes (both views); the game probably darkens with them rather than
 ## Step 3 as built
 
 The level toolbar's sun icon ("game light") lights the Direct3D view as the game does (the game's
-own shaders read for it; see `docs\game-notes.md`, "Lighting"):
+own shaders read for it):
 
 - `Level\ZoneLighting.cs` reads the lamps and environment boxes of the zone and the zones around
   (boxes reach over zone edges), and says which box's settings hold at the camera.
@@ -173,8 +173,8 @@ environment names a sky effect, its picture is read from the effect file's textu
 (`SkyPixel` in `Scene.hlsl`). Checked off-screen on world_08_03: the first mission's day sky
 behind the Terraformer, the fire lamp's light changing from frame to frame, no white squares.
 
-Then shadows (2026-10-30), as the game's `ir_light_spot` draws them (see `docs\game-notes.md`,
-"Shadows"): `Render\LampShadows.cs` keeps a 1024 × 1024 depth map for each of up to 16 lamps that
+Then shadows (2026-10-30), as the game's `ir_light_spot` draws them:
+`Render\LampShadows.cs` keeps a 1024 × 1024 depth map for each of up to 16 lamps that
 cast shadows and whose shadows can show from the camera (nearest first), drawn before the frame
 (`SceneRenderer.DrawShadows`) only when the scene changes or the camera comes near other such
 lamps (lamps that stay near keep their maps; only those of lamps newly near are drawn: 2–4 maps
@@ -206,7 +206,7 @@ zones around, mission layers, following the game), from the WPF scene. What is l
    skin's glow covered them (flat blue tentacles and pods, red creatures). Now see-through
    follows the material's flags (`ModelMaterial.Flags`: blended in the see-through pass, cut out
    in the solid pass by `Options.y`, everything else solid), and alien skin is drawn as its
-   shader does (`Skin` in `Scene.hlsl`; see docs\game-notes.md, "Alien skin"), its glow from the
+   shader does (`Skin` in `Scene.hlsl`), its glow from the
    glow map's average colour since the editor doesn't read the second texture coordinates.
    Checked off-screen: mp_inf01's tentacles whole and textured, a creeper with its legs and a
    few red spots of glow, the world_00_02 pods dark and textured, grunts their own olive with red

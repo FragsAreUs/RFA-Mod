@@ -12,7 +12,7 @@ namespace RfaEditor.Render;
 /// material goes), for the Direct3D view's game light to use. Texture names only: the textures are
 /// read when the Direct3D view first needs them.
 ///
-/// From the game's shaders (ir_default_s, ir_defaultglow_s; see docs\game-notes.md, "Lighting"):
+/// From the game's shaders (ir_default_s, ir_defaultglow_s):
 /// the normal map's sideways bend is (2·alpha − 1)(2·red − 1) and its up-down bend 2·green − 1,
 /// bent towards flat by Normal_Height; shine is as sharp as Specular_Power × 5.12, coloured by the
 /// specular map × Specular_Color; glow is the glow map × Glow_Color × Self_Illumination, fading

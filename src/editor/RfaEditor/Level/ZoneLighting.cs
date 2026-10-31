@@ -5,8 +5,7 @@ namespace RfaEditor;
 
 /// <summary>
 /// A zone's lighting as the game's renderer uses it, for the Direct3D view's game lighting. Read
-/// from the zone's objects; how each part lights is taken from the game's own shaders (see
-/// docs\game-notes.md, "Lighting"):
+/// from the zone's objects; how each part lights is taken from the game's own shaders:
 ///
 /// Lamps (obj_light; 38,240 in the game). type_enum is "omni" (29,322), "spot" (5,124), "tube"
 /// (3,507: a line of light, tube_length long) or "ambient" (287: light from one side over an
