@@ -402,7 +402,17 @@ licence, with the settings templates from `config\` (so `GameDir=` is empty). Yo
 packs is checked for anything naming your PC (your user folder or name, this project's folder,
 your game folder), and nothing is packaged if one does. `-Build` runs `build.cmd` first;
 `-NoEditor` leaves the editor out; `-Version v0.1.0-beta` makes a release: the zip is named
-`RFA-Mod-v0.1.0-beta.zip` and its `version.txt` says which commit it was built from. Others unzip it into a folder of their own (and set
+`RFA-Mod-v0.1.0-beta.zip` and its `version.txt` says which commit it was built from.
+
+**Releases** on GitHub are built by GitHub itself (`.github\workflows\release.yml`): pushing a tag
+that starts with `v` builds that commit on a clean Windows machine with `build.cmd`, packs it with
+`tools\package.ps1 -Version <tag>` and publishes the zip as a release, a pre-release when the tag
+has a `-` in it (`v0.1.0-beta`). Its text comes from `docs\releases\<tag>.md`. To release:
+
+```
+git tag -a v0.2.0-beta -m "RFA-Mod v0.2.0-beta"
+git push origin v0.2.0-beta
+``` Others unzip it into a folder of their own (and set
 `GameDir=`, or let the editor ask) or into their game folder. The editor needs the
 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself
 needs nothing else.
