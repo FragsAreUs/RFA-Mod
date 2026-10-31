@@ -87,8 +87,9 @@ To play unmodded again, clear the launch options or start the game normally.
 ## Mods
 
 **borderless**: when the game is set to Windowed, its window loses its frame and covers the whole
-monitor. Alt-tab doesn't minimize or pause the game; the cursor is freed and keyboard/controller
-input is ignored while you're in another app. The game normally blocks the Windows key
+monitor. Alt-tab pauses the game, as it always does, but no longer minimizes it or switches its
+display mode; the cursor is freed and keyboard/controller input is ignored while you're in
+another app. The game normally blocks the Windows key
 system-wide (even in other apps); in borderless it works again (`AllowWindowsKey`). Pick your
 monitor's native resolution in the game's video options, since other resolutions are stretched.
 See `[Borderless]` in the ini.

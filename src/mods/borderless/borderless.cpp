@@ -10,8 +10,9 @@
 //
 // With IgnoreFocusLoss=1 the game is never told it was alt-tabbed away from: focus messages are
 // hidden from it, its own low-level keyboard hook doesn't see Alt+Tab and friends, and this mod
-// frees the cursor (no clipping, no recentring) and mutes input instead. With PauseOnAltTab=1 it
-// also asks the game to open its pause menu, as if you had pressed the pause key.
+// frees the cursor (no clipping, no recentring) and mutes input instead. It also asks the game to
+// open its pause menu, as if you had pressed the pause key: switching away always pauses the game,
+// as it does when the game sees the switch itself.
 //
 // With [Borderless] Enabled=0 every hook stays installed but only logs.
 #define RFA_MOD_NAME "borderless"
@@ -26,7 +27,6 @@ bool g_enabled = true;
 int g_monitorIndex = 0;
 bool g_ignoreFocusLoss = true;
 bool g_allowWindowsKey = true;
-bool g_pauseOnAltTab = true;
 
 // The game's "open the pause menu" request in the publicbeta exe (its own setter is 0x582760). The
 // HUD opens the menu on its next update, the same way as the pause key, unless a cutscene or
@@ -141,7 +141,7 @@ const wchar_t* ClassName(LPCWSTR cls) {
 // menu already open) is withdrawn when you come back so the menu doesn't pop up later.
 void RequestPauseMenu(bool away) {
     if (!g_pauseMenuRequest) return;
-    if (away && g_pauseOnAltTab) {
+    if (away) {
         *g_pauseMenuRequest = 1;
         g_pauseRequested = true;
         rfa::Log("Asked the game to open its pause menu");
@@ -381,11 +381,10 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     g_monitorIndex = rfa::IniInt(L"Borderless", L"Monitor", 0);
     g_ignoreFocusLoss = rfa::IniInt(L"Borderless", L"IgnoreFocusLoss", 1) != 0;
     g_allowWindowsKey = rfa::IniInt(L"Borderless", L"AllowWindowsKey", 1) != 0;
-    g_pauseOnAltTab = rfa::IniInt(L"Borderless", L"PauseOnAltTab", 1) != 0;
     if (rfa::game::IsSupportedBuild())
         g_pauseMenuRequest = reinterpret_cast<BYTE*>(0x135B3F1);
     else
-        rfa::Log("Not the publicbeta build; Pause on Alt-Tab is off");
+        rfa::Log("Not the publicbeta build; switching away won't open the pause menu");
     if (!g_enabled) rfa::Log("Enabled=0: logging only, the game runs unmodified");
     if (g_enabled && rfa::IniInt(L"Borderless", L"DpiAware", 1)) MakeDpiAware();
 
