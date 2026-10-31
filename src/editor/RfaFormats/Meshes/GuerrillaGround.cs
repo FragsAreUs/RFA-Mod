@@ -6,26 +6,35 @@ namespace RfaFormats.Meshes;
 /// Red Faction: Guerrilla's ground in place of an Armageddon zone's: its terrain sub-zones (what is
 /// drawn) and the height field in its terrain file (what is walked on). Guerrilla's zones are 511 m
 /// squares sampled every 1 m, Armageddon's 255 m squares sampled every 255/511 m, so one of
-/// Guerrilla's steps becomes two of Armageddon's (the land 0.2% smaller) and a 256 m square of
+/// Guerrilla's steps becomes two of Armageddon's (the land 0.2% smaller) and a 255.5 m square of
 /// Guerrilla's world fills an Armageddon zone.
 ///
-/// The ground is sampled from Guerrilla's sub-zones onto its 1 m grid (the top surface: their
-/// skirts hang below the edges), and made again as a regular grid of those samples: each of the
+/// The ground is sampled from Guerrilla's sub-zones every 1 m (the top surface: their skirts hang
+/// below the edges), the last sample on the square's far edge, half a metre after the one before
+/// (an Armageddon zone is an odd number of steps across), so that zones made from neighbouring
+/// squares share their edge samples. It is made again as a grid of those samples: each of the
 /// zone's nine sub-zones takes its third of the square both ways (neighbours share their edge
 /// samples, so there are no cracks), cut into 5 × 5 patches, each patch a strip row by row. The
-/// height field takes the same samples, halfway ones in between.
+/// height field takes the same samples, the drawn ground's height in between.
 /// </summary>
 public static class GuerrillaGround
 {
-    /// <summary>Samples across the square: 257 at 1 m (0 to 256 m), the last of them past the zone's 511th step.</summary>
+    /// <summary>Samples across the square: 257, every 1 m from 0 to 255 m, then the far edge at 255.5 m (the zone's 511th step).</summary>
     public const int Samples = 257;
+
+    /// <summary>Where sample <paramref name="n"/> is, in Guerrilla's metres from the square's corner.</summary>
+    public static float SampleAt(int n) => Math.Min(n, Samples - 1.5f);
+
+    /// <summary>Which of the zone's grid steps sample <paramref name="n"/> is on (two to Guerrilla's metre; the last is step 511).</summary>
+    static int StepOf(int n) => Math.Min(2 * n, 2 * Samples - 3);
 
     const int PatchesAcross = 5;
 
     /// <summary>
-    /// Guerrilla's ground over a 256 m square from <paramref name="corner"/> (x, z in its world),
-    /// from its sub-zones there: the top surface's height every 1 m, <c>[z * Samples + x]</c>.
-    /// Points no sub-zone covers take the nearest covered one's height. Null if none is covered.
+    /// Guerrilla's ground over a 255.5 m square from <paramref name="corner"/> (x, z in its world),
+    /// from its sub-zones there: the top surface's height at each sample (see <see cref="SampleAt"/>),
+    /// <c>[z * Samples + x]</c>. Points no sub-zone covers take the nearest covered one's height.
+    /// Null if none is covered.
     /// </summary>
     public static float[]? Sample(IEnumerable<TerrainSubzone> subzones, Vector2 corner)
     {
@@ -42,7 +51,7 @@ public static class GuerrillaGround
                 for (int z = z1; z <= z2; z++)
                     for (int x = x1; x <= x2; x++)
                     {
-                        float px = corner.X + x, pz = corner.Y + z;
+                        float px = corner.X + SampleAt(x), pz = corner.Y + SampleAt(z);
                         float wa = ((b.X - px) * (c.Z - pz) - (c.X - px) * (b.Z - pz)) / area;
                         float wb = ((c.X - px) * (a.Z - pz) - (a.X - px) * (c.Z - pz)) / area;
                         float wc = 1 - wa - wb;
@@ -79,10 +88,11 @@ public static class GuerrillaGround
     /// </summary>
     public static float HeightAt(float[] heights, float x, float z)
     {
-        x = Math.Clamp(x, 0, Samples - 1);
-        z = Math.Clamp(z, 0, Samples - 1);
+        x = Math.Clamp(x, 0, SampleAt(Samples - 1));
+        z = Math.Clamp(z, 0, SampleAt(Samples - 1));
         int x0 = Math.Min((int)x, Samples - 2), z0 = Math.Min((int)z, Samples - 2);
-        float fx = x - x0, fz = z - z0;
+        // The last square is half a metre across.
+        float fx = (x - x0) / (SampleAt(x0 + 1) - x0), fz = (z - z0) / (SampleAt(z0 + 1) - z0);
         float h00 = heights[z0 * Samples + x0], h10 = heights[z0 * Samples + x0 + 1], h01 = heights[(z0 + 1) * Samples + x0], h11 = heights[(z0 + 1) * Samples + x0 + 1];
         return fx + fz <= 1
             ? h00 + fx * (h10 - h00) + fz * (h01 - h00)
@@ -110,12 +120,13 @@ public static class GuerrillaGround
             for (int z = z0; z <= z1; z++)
                 for (int x = x0; x <= x1; x++)
                 {
-                    // The slope from the neighbouring samples, 2 Armageddon steps apart.
-                    float left = heights[z * Samples + Math.Max(0, x - 1)], right = heights[z * Samples + Math.Min(Samples - 1, x + 1)];
-                    float down = heights[Math.Max(0, z - 1) * Samples + x], up = heights[Math.Min(Samples - 1, z + 1) * Samples + x];
-                    float spanX = (Math.Min(Samples - 1, x + 1) - Math.Max(0, x - 1)) * 2 * step, spanZ = (Math.Min(Samples - 1, z + 1) - Math.Max(0, z - 1)) * 2 * step;
+                    // The slope from the neighbouring samples.
+                    int xl = Math.Max(0, x - 1), xr = Math.Min(Samples - 1, x + 1), zd = Math.Max(0, z - 1), zu = Math.Min(Samples - 1, z + 1);
+                    float left = heights[z * Samples + xl], right = heights[z * Samples + xr];
+                    float down = heights[zd * Samples + x], up = heights[zu * Samples + x];
+                    float spanX = (StepOf(xr) - StepOf(xl)) * step, spanZ = (StepOf(zu) - StepOf(zd)) * step;
                     var normal = Vector3.Normalize(new Vector3(-(right - left) / spanX, 1, -(up - down) / spanZ));
-                    vertices.Add(new GroundVertex((x - x0) * 2, (z - z0) * 2, heights[z * Samples + x], normal));
+                    vertices.Add(new GroundVertex(StepOf(x) - StepOf(x0), StepOf(z) - StepOf(z0), heights[z * Samples + x], normal));
                 }
             // 5 × 5 patches, each a strip along x, a row of squares at a time (rows joined by repeated indices).
             var patches = new List<int[]>();
@@ -142,7 +153,7 @@ public static class GuerrillaGround
                     }
                     patches.Add([.. strip]);
                 }
-            var origin = new Vector2(zoneCorner.X + x0 * 2 * step, zoneCorner.Y + z0 * 2 * step);
+            var origin = new Vector2(zoneCorner.X + StepOf(x0) * step, zoneCorner.Y + StepOf(z0) * step);
             written.Add(TerrainSubzone.Write(templates[n].Header, templates[n].Data, origin, vertices, patches));
         }
         return written;
@@ -150,8 +161,8 @@ public static class GuerrillaGround
 
     /// <summary>
     /// The zone's terrain file with its height field made from the samples (one per Armageddon
-    /// step: Guerrilla's at the even ones, halfway between them at the odd ones), and the zone's
-    /// box in its header widened to hold them.
+    /// step: Guerrilla's at the even ones and the last, the drawn ground's height between them at
+    /// the odd ones), and the zone's box in its header widened to hold them.
     /// </summary>
     public static byte[] TerrainFile(byte[] terrainFile, float[] heights)
     {

@@ -261,6 +261,66 @@ public sealed class Packfile
     }
 
     /// <summary>
+    /// A new .str2_pc container holding these files, in this order, packed as
+    /// <paramref name="template"/> (another container) is: its header and flags, the files one after
+    /// another in the data block, and, when the template is compressed and condensed, one zlib stream
+    /// flushed after each file, each file's stored size being the stream bytes up to its flush (as
+    /// <see cref="Rebuild"/> writes them).
+    /// </summary>
+    public static byte[] CreateContainer(Packfile template, IReadOnlyList<(string Name, byte[] Data)> files)
+    {
+        if (template.FormatVersion != Version || (template.IsCompressed && !template.IsCondensed))
+            throw new NotSupportedException($"{template.Name} isn't packed as a container");
+        var names = new MemoryStream();
+        var directory = new MemoryStream();
+        var plain = new MemoryStream();
+        var offsets = new List<uint>();
+        foreach (var (name, bytes) in files)
+        {
+            offsets.Add((uint)plain.Length);
+            directory.Write(BitConverter.GetBytes((uint)names.Length));
+            directory.Write(BitConverter.GetBytes(0u));
+            directory.Write(BitConverter.GetBytes((uint)plain.Length));
+            directory.Write(BitConverter.GetBytes((uint)bytes.Length));
+            directory.Write(BitConverter.GetBytes(0xFFFFFFFFu));  // the stored size, below
+            directory.Write(BitConverter.GetBytes(0u));
+            names.Write(Encoding.Latin1.GetBytes(name));
+            names.WriteByte(0);
+            plain.Write(bytes);
+        }
+        byte[] data = plain.ToArray(), block = data;
+        byte[] dir = directory.ToArray();
+        if (template.IsCompressed)
+        {
+            var output = new MemoryStream();
+            var zlib = new ZLibStream(output, CompressionLevel.SmallestSize, leaveOpen: true);
+            long before = 0;
+            for (int i = 0; i < files.Count; i++)
+            {
+                zlib.Write(files[i].Data);
+                zlib.Flush();  // a sync flush: everything so far can be decompressed
+                BitConverter.TryWriteBytes(dir.AsSpan(i * 24 + 16), (uint)(output.Length - before));
+                before = output.Length;
+            }
+            block = output.ToArray();  // taken before closing, which would add an end marker the game's don't have
+            zlib.Dispose();
+        }
+        long namesStart = HeaderSize + Align(dir.Length, 0x800), dataStart = namesStart + Align(names.Length, 0x800);
+        var packfile = new byte[dataStart + block.Length];
+        template.header.CopyTo(packfile, 0);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x154), (uint)files.Count);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x158), (uint)packfile.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x15C), (uint)dir.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x160), (uint)names.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x164), (uint)data.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x168), template.IsCompressed ? (uint)block.Length : 0xFFFFFFFFu);
+        dir.CopyTo(packfile, HeaderSize);
+        names.ToArray().CopyTo(packfile, namesStart);
+        block.CopyTo(packfile, dataStart);
+        return packfile;
+    }
+
+    /// <summary>
     /// Decompresses exactly <paramref name="size"/> bytes. The game's streams have no end marker,
     /// so reading stops at the expected size instead of waiting for one.
     /// </summary>
