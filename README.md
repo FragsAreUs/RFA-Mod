@@ -439,3 +439,17 @@ This compares every file in the game folder with the SHA-256 snapshot of the pub
 `reference\build-1932726-publicbeta\game_baseline.csv`. `reference\build-1291145\game_baseline.csv`
 is the default branch, taken before the first modded launch. Files the beta writes itself are
 listed as `GAME`, not counted as changes.
+
+## License
+
+Copyright (C) 2026 FragsAreUs.
+
+This project's own code and notes are free software under the GNU General Public License,
+version 3 or (at your option) any later version ([LICENSE](LICENSE)). Anyone may use, change and
+share them, but whatever they pass on, changed or not, must stay under the same licence with its
+source code. The editor's Direct3D libraries are under the MIT License, which allows this; their
+notices are in [docs/third-party-notices.txt](docs/third-party-notices.txt).
+
+None of the game's files are included: the mods and the editor work on your own copy of Red
+Faction: Armageddon, which stays untouched. Red Faction: Armageddon belongs to its owners; this
+is an unofficial fan project, not made or endorsed by them.
