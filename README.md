@@ -256,6 +256,14 @@ of a level (buildings and props, lights, spawn points, navigation points, trigge
   or show a whole kind at once (say, everything but the buildings), and the grid. The axis widget
   in the corner shows which way X, Y and Z point. The toolbar's icons say what they do when
   hovered; **?** lists every mouse button and key.
+- **Links between objects**: the picked object's links are drawn as lines, yellow to the objects it
+  names and blue from those naming it, with an arrow pointing at the one named, and listed in the
+  inspector's **Links** section (click one to pick it and fly to it). They are what ties a level's
+  logic together: navpoints' paths, roads, a patrol's first navpoint, a logic handler's triggers
+  and the objects it acts on, the objects an animated rig moves, lights attached to buildings. The
+  **Links** chip draws every link of the zone and its mission layers at once, each in the colour of
+  the object naming the other. Lines keep the same width on the screen near and far. They can't be
+  edited yet.
 - **Direct3D view** (the monitor icon at the right of the toolbar): draws the level with Direct3D 11
   on the graphics card instead of WPF, the first step of `docs\renderer-plan.md`. It shows the same
   things from the same camera, lit the same way for now but worked out for every pixel, and only

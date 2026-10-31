@@ -52,7 +52,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
     readonly FlyCamera camera = new();
     readonly PerspectiveCamera sceneCamera = new(), gizmoCamera = new();
     readonly ModelVisual3D sceneContent = new(), selectionBox = new(), gizmoContent = new(), gridContent = new(), geometryContent = new(),
-                           terrainContent = new(), decalContent = new(), foliageContent = new(), relatedContent = new(), neighbourContent = new();
+                           terrainContent = new(), decalContent = new(), foliageContent = new(), relatedContent = new(), neighbourContent = new(),
+                           linkContent = new(), pickedLinkContent = new();
     readonly Gizmo gizmo = new();
     readonly GameLink gameLink;
     double? gameFov;     // the running game's vertical field of view, while following it
@@ -65,7 +66,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
     List<RelatedFile>? related;  // the zone's other files, drawn with it (found once the index is ready)
     readonly Dictionary<ZoneObject, RelatedFile> relatedOf = [];  // ...and which of them each of their objects is in
     Model3D? grid, geometry, terrain, decals, foliage, neighbours;
-    bool showGrid = true, showGeometry = true, showTerrain = true, showDecals = true, showFoliage = true, showNeighbours = true;
+    bool showGrid = true, showGeometry = true, showTerrain = true, showDecals = true, showFoliage = true, showNeighbours = true, showLinks;
+    List<ZoneLink>? links;       // between the zone's objects and its other files' (see Links)
     int neighbourZones;          // zones around this one drawn
     int geometryPieces;          // stitch pieces drawn
     int decalCount;              // decals drawn
@@ -124,6 +126,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
         SceneViewport.Children.Add(relatedContent);
         SceneViewport.Children.Add(foliageContent);  // after everything solid, as they are see-through
         SceneViewport.Children.Add(decalContent);
+        SceneViewport.Children.Add(linkContent);
+        SceneViewport.Children.Add(pickedLinkContent);
         SceneViewport.Children.Add(selectionBox);
         GizmoViewport.Children.Add(new ModelVisual3D { Content = new AmbientLight(Colors.White) });
         gizmoContent.Content = gizmo.Model;
@@ -145,6 +149,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     {
         context.Assets.IndexBecameReady -= OnIndexReady;
         modelParts.Clear();
+        links = null;  // the zone's other files are found now, and their links with them
         BuildScene(frame: false);
         BuildObjectTree(FilterBox.Text.Trim());  // with the zone's other files, found now
         ShowSource();  // the zone's other copies can be found now
@@ -237,7 +242,9 @@ public partial class LevelEditor : UserControl, IEditorDocument
     {
         if (selected == null) return;
         var size = selected.BoundsMax - selected.BoundsMin;
-        camera.LookAt(ToView(selected.Placement.Position), Math.Max(size.X, Math.Max(size.Y, size.Z)));
+        // The middle of its box: logic handlers and other objects without a position of their own
+        // ("oP") have only their box where they are; their position reads 0, 0, 0.
+        camera.LookAt(ToView(LinkEnd(selected)), Math.Max(size.X, Math.Max(size.Y, size.Z)));
         UpdateCamera();
     }
 
@@ -348,6 +355,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         KindBadge.Visibility = shown;
         TransformSection.Visibility = shown;
         PropertiesSection.Visibility = shown;
+        LinksSection.Visibility = Visibility.Collapsed;  // shown below if it has any
         transform = null;
         TransformHost.Content = null;
         RelatedFile? elsewhere = selected != null ? relatedOf.GetValueOrDefault(selected) : null;
@@ -379,6 +387,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         TransformHost.Content = transform.View;
         foreach (UIElement row in ZonePropertyRows.For(selected, names, OnPropertyChanged, () => CommitEdit()))
             PropertyPanel.Children.Add(row);
+        ShowLinkRows();
     }
 
     void ShowObjectTitle()
@@ -816,8 +825,10 @@ public partial class LevelEditor : UserControl, IEditorDocument
     /// <summary>After objects were added or deleted: the outliner and the chips' counts again.</summary>
     void ObjectsChanged()
     {
+        links = null;  // before the chips: they count the links
         BuildObjectTree(FilterBox.Text.Trim());
         BuildKindChips();
+        LinksChanged();
     }
 
     /// <summary>The Add list: one of each kind of object the file has (by class and name), to add a copy of.</summary>
@@ -946,6 +957,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         redo.Clear();
         MarkUnsaved();
         UpdateUndoButtons();
+        LinksChanged();  // a property naming another object may have changed, or the object moved
     }
 
     void Undo()
@@ -983,6 +995,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         else
         {
             scene?.Place(change.Object);
+            LinksChanged();
         }
         if (change.Object == selected)
         {
@@ -1107,6 +1120,9 @@ public partial class LevelEditor : UserControl, IEditorDocument
         camera.Apply(gizmoCamera);
         ShowGizmo();
         DrawAxisWidget();
+        // Link lines keep their width on the screen: made again for where the camera is now.
+        if (selected != null) ShowPickedLinks();
+        if (showLinks) ShowAllLinks();
     }
 
     /// <summary>
@@ -1337,6 +1353,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     {
         scene?.ShowOnly(kind => !hiddenKinds.Contains(kind));
         foreach (RelatedFile file in RelatedFiles()) file.Scene?.ShowOnly(kind => !hiddenKinds.Contains(kind));
+        ShowAllLinks();
     }
 
     /// <summary>Draws the zone's other files whose chips are on.</summary>
@@ -1346,6 +1363,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         foreach (RelatedFile file in RelatedFiles())
             if (file.Shown && file.Scene != null) shown.Children.Add(file.Scene.Root);
         relatedContent.Content = shown;
+        ShowAllLinks();
     }
 
     /// <summary>
@@ -1411,6 +1429,16 @@ public partial class LevelEditor : UserControl, IEditorDocument
                     showGeometry = shown;
                     geometryContent.Content = shown ? geometry : null;
                 }));
+        if (Links().Count > 0)
+            KindChips.Children.Add(Chip("Links", Theme.Brush("LinkBrush"), Links().Count,
+                "Lines between objects that name each other, each in the colour of the one naming the other, its arrow " +
+                "pointing at the one named: navpoints' paths, roads, patrols, logic handlers and their triggers, animated " +
+                "rigs, objects attached to others. The picked object's links are always shown, and listed in the inspector.",
+                showLinks, shown =>
+                {
+                    showLinks = shown;
+                    ShowAllLinks();
+                }));
         KindChips.Children.Add(Chip("Grid", null, null, "Lines on the ground every 10 metres", showGrid, shown =>
         {
             showGrid = shown;
@@ -1464,7 +1492,106 @@ public partial class LevelEditor : UserControl, IEditorDocument
     void ShowSelection()
     {
         selectionBox.Content = selected == null ? null : LevelScene.SelectionBox(selected);
+        ShowPickedLinks();
         ShowGizmo();
+    }
+
+    // ---- Links between objects -------------------------------------------------------------------
+
+    static readonly Color NamesColour = Color.FromRgb(255, 196, 64), NamedByColour = Color.FromRgb(96, 200, 255);
+
+    /// <summary>The links between the zone's objects and its other files' (see <see cref="ZoneLinks"/>), found when first wanted.</summary>
+    List<ZoneLink> Links() => links ??= ZoneLinks.Find([zone, .. RelatedFiles().Select(file => file.Zone)]);
+
+    /// <summary>After objects were added, removed or changed: the links are found again and drawn again.</summary>
+    void LinksChanged()
+    {
+        links = null;
+        ShowAllLinks();
+        ShowPickedLinks();
+    }
+
+    /// <summary>Where a link line ends at an object: the middle of its box, where its model or marker is.</summary>
+    static Vector3 LinkEnd(ZoneObject obj) => (obj.BoundsMin + obj.BoundsMax) / 2;
+
+    /// <summary>Whether an object is drawn now: its kind's chip and its file's are on.</summary>
+    bool Drawn(ZoneObject obj) =>
+        !hiddenKinds.Contains(KindOf(obj)) && (!relatedOf.TryGetValue(obj, out RelatedFile? file) || file.Shown);
+
+    /// <summary>The camera, in the game's space, and how many metres a pixel covers one metre in front of it: for link lines' widths.</summary>
+    (Vector3 Eye, double PerMetre) LineView() =>
+        (new Vector3((float)camera.Position.X, (float)camera.Position.Y, (float)-camera.Position.Z),
+         2 * Math.Tan(camera.FieldOfView * Math.PI / 360) / Math.Max(1, ViewArea.ActualWidth));
+
+    /// <summary>With the Links chip on: every link between objects drawn, in the colour of the object naming the other.</summary>
+    void ShowAllLinks()
+    {
+        if (!showLinks)
+        {
+            linkContent.Content = null;
+            return;
+        }
+        (Vector3 eye, double perMetre) = LineView();
+        linkContent.Content = LinkLines.Build(Links().Where(l => Drawn(l.From) && Drawn(l.To))
+            .Select(l => (LinkEnd(l.From), LinkEnd(l.To), KindOf(l.From).Colour)), eye, perMetre, pixels: 2);
+    }
+
+    /// <summary>The picked object's links, always: those it names in yellow, those naming it in blue.</summary>
+    void ShowPickedLinks()
+    {
+        if (selected == null)
+        {
+            pickedLinkContent.Content = null;
+            return;
+        }
+        ZoneObject picked = selected;
+        (Vector3 eye, double perMetre) = LineView();
+        pickedLinkContent.Content = LinkLines.Build(Links().Where(l => l.From == picked || l.To == picked)
+            .Select(l => (LinkEnd(l.From), LinkEnd(l.To), l.From == picked ? NamesColour : NamedByColour)), eye, perMetre, pixels: 3);
+    }
+
+    /// <summary>The inspector's links: what the picked object names, and what names it, each a button that picks it.</summary>
+    void ShowLinkRows()
+    {
+        LinkPanel.Children.Clear();
+        if (selected == null) return;
+        ZoneObject picked = selected;
+        List<ZoneLink> naming = Links().Where(l => l.From == picked).ToList(), namedBy = Links().Where(l => l.To == picked).ToList();
+        LinksSection.Visibility = naming.Count + namedBy.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        void Group(string title, Color colour, List<ZoneLink> group, bool outgoing)
+        {
+            if (group.Count == 0) return;
+            LinkPanel.Children.Add(new TextBlock
+            {
+                Text = $"{title} ({group.Count})", FontSize = 11, Margin = new Thickness(0, 6, 0, 2),
+                Foreground = new SolidColorBrush(colour),
+            });
+            const int shown = 40;
+            foreach (ZoneLink link in group.Take(shown))
+            {
+                ZoneObject other = outgoing ? link.To : link.From;
+                string how = link.Property is uint hash ? names.Property(hash).Replace('_', ' ') : outgoing ? "attached to" : "attached here";
+                var row = new Button { Style = Theme.Style("ListRow"), ToolTip = $"Pick {Described(other)}" };
+                var content = new DockPanel();
+                var label = new TextBlock { Text = how, Width = 120, TextTrimming = TextTrimming.CharacterEllipsis, Foreground = Theme.Brush("DimTextBrush") };
+                DockPanel.SetDock(label, Dock.Left);
+                content.Children.Add(label);
+                string what = Label(other).StartsWith('#') ? $"{names.Class(other.ClassHash)} {other.Handle:X8}" : Label(other);  // unnamed: its class
+                content.Children.Add(new TextBlock { Text = what, TextTrimming = TextTrimming.CharacterEllipsis });
+                row.Content = content;
+                row.Click += (_, _) =>
+                {
+                    PickInOutliner(other);
+                    if (selected != other) Select(other, focus: false);  // not in the outliner (a file not shown)
+                    FocusOnSelected();
+                };
+                LinkPanel.Children.Add(row);
+            }
+            if (group.Count > shown)
+                LinkPanel.Children.Add(new TextBlock { Text = $"and {group.Count - shown} more", FontSize = 11, Foreground = Theme.Brush("DimTextBrush") });
+        }
+        Group("Names", NamesColour, naming, outgoing: true);
+        Group("Named by", NamedByColour, namedBy, outgoing: false);
     }
 
     /// <summary>The handles on the picked object, sized to look the same however far away it is.</summary>

@@ -13,7 +13,8 @@ in `src\editor` still lacks, grouped by those tools, with what each needs.
 Archives and containers, tables (editing fields; adding, copying and deleting entries), textures (same-size replacing), every kind of
 model (viewing, exporting), zones and mission layers (moving, turning, adding copies, deleting
 with their attachments and destruction links, editing properties and longer text), level
-geometry, terrain, foliage and decals (viewing), the zones around, the link with the running game
+geometry, terrain, foliage and decals (viewing), links between objects (drawn as lines, listed in
+the inspector), the zones around, the link with the running game
 (show in game, follow the game's camera), CLOE positions in the inspector, skeletons, animations
 (playing them on the characters that use them, or on a skeleton; characters' meshes move with
 their bones).
@@ -24,7 +25,7 @@ their bones).
 |---|---|
 | Placing any chunk or building, not only copies of the zone's own | adding the model's files (and textures) to the zone's container and asset list |
 | Moving and adding level geometry (stitch pieces) | writing stitch lists (`.stchlst_pc`, read already) |
-| Links and logic between objects: triggers, logic handlers, patrols, navpoint paths, squads | editing the list properties (`obj_links`, `logic_handler_buffer`, ...) and showing them as lines |
+| Editing links and logic between objects: triggers, logic handlers, patrols, navpoint paths, squads (shown as lines and listed already) | writing the list properties (`obj_links`, `logic_handler_buffer`, ...): their layouts beyond the handles; what a logic handler's buffer says |
 | How buildings break: pieces, links and their strengths; tuning them | the destroyables in chunk files (read) and their links (read); their strengths' meaning |
 | Lights (placing, colours, flicker curves) | writing `.lightmult_pc`, `.lightpos_pc`, `.lightrot_pc` (read, and played in game light, already; the lighting itself is drawn). A zone's lamps (`obj_light`, 369 in world_08_03) are known: `type_enum` (spot, omni), `Color` (red, green, blue, brightness 1–3), `atten_start` and `atten_range` (metres), `hotspot_size` and `hotspot_falloff_size` (the spot's cone), facing along their forward direction |
 | The AI's navigation mesh | `.navdata_pc` (119 files) |

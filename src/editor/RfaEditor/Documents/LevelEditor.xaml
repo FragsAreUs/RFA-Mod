@@ -232,6 +232,11 @@
                            ToolTip="Hover over a property's name for its name in the game and its type" />
                 <StackPanel x:Name="PropertyPanel" />
             </StackPanel>
+            <StackPanel x:Name="LinksSection" Visibility="Collapsed">
+                <TextBlock Text="LINKS" Style="{StaticResource SectionTitle}"
+                           ToolTip="Objects this one names in its properties (or is attached to), and objects naming it. Click one to pick it" />
+                <StackPanel x:Name="LinkPanel" />
+            </StackPanel>
         </StackPanel>
     </Grid>
 </UserControl>

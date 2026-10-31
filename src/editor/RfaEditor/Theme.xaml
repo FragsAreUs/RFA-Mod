@@ -34,6 +34,7 @@
     <SolidColorBrush x:Key="FoliageBrush" Color="#8FA36B" />
     <SolidColorBrush x:Key="RelatedBrush" Color="#E07A9B" />
     <SolidColorBrush x:Key="NeighbourBrush" Color="#7C8AA6" />
+    <SolidColorBrush x:Key="LinkBrush" Color="#FFC440" />
 
     <!-- The 3D views: lighter at the top, like a sky -->
     <LinearGradientBrush x:Key="ViewportBrush" StartPoint="0,0" EndPoint="0,1">
@@ -187,6 +188,30 @@
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.3" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- A row of a list that does something when clicked (the inspector's links): flat, lit under the mouse -->
+    <Style x:Key="ListRow" TargetType="Button">
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Box" Background="Transparent" CornerRadius="3" Padding="4,2">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{StaticResource RowHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Box" Property="Background" Value="{StaticResource ControlHoverBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
