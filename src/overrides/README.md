@@ -35,6 +35,14 @@ of that name. The game mounts a level's archive this way too. Each is logged as 
 and `Using new file ...` when the game first asks for it. A file the game folder already has can't
 be replaced whole: put replacements in its archive's folder as above.
 
+**A new Ruin map** is listed with an entry in an override of `wrecking_crew_maps.xtbl` (in
+`table.vpp_pc`), with its `file_name` the name of its archive (`rfg01` for `rfg01.vpp_pc`). The
+game reads at most five maps from the table, and gives each place its own scoreboard, round times
+and score multiplier, so a new map takes the place of one of the game's maps: put it where that
+map's entry was. The loader makes the game start the map the entry names (the game itself starts
+the map built in for that place), and logs `Ruin map ... is ...` for it, and any map left out past
+the fifth.
+
 Files *inside* a `.str2_pc` container can't be overridden one by one: the game loads the whole
 container at once. The editor replaces textures in containers by rebuilding the container into
 overrides, and updates the container's entries in the asset lists (`.asm_pc`), which it overrides

@@ -447,7 +447,7 @@ bool g_logLookups = false;
 
 bool IsLevelFile(const char* name) {
     static const char* const kinds[] = {".rfgzone_pc", ".layer_pc", ".vpp_pc", ".str2_pc", ".asm_pc", ".cterrain_pc",
-                                        ".ctmesh_pc", ".stchlst_pc", ".navdata_pc", ".precache"};
+                                        ".ctmesh_pc", ".stchlst_pc", ".navdata_pc", ".precache", ".xtbl"};
     const size_t length = strlen(name);
     for (const char* kind : kinds) {
         const size_t size = strlen(kind);
@@ -456,11 +456,92 @@ bool IsLevelFile(const char* name) {
     return false;
 }
 
+// Ruin (the game calls it Wrecking Crew) keeps its maps in a list: a pointer per map, each map
+// starting with its file name and that name's checksum. The menu shows the list, and a match
+// starts the map at the chosen place in it.
+struct RuinMap {
+    const char* fileName;   // +0: ruin01: the level's archive is build\pc\cache\ruin01.vpp_pc
+    DWORD fileNameChecksum;  // +4: of the name, ignoring case
+};
+inline RuinMap** const g_ruinMaps = rfa::game::At<RuinMap**>(0x12F39E8);  // room for 35
+inline int& g_ruinMapCount = *rfa::game::At<int*>(0x12F3A74);
+inline const int& g_chosenRuinMap = *rfa::game::At<const int*>(0x10F857C);
+
+// The game reads the list from wrecking_crew_maps.xtbl, one wc_map_list entry per map, with
+// 0x50E690 (cdecl: the table, and the DLC it came from or -1). After reading an entry it throws its
+// file_name away and names the map after its place in the list instead, from five names built into
+// that function (ruin01, ruin08, ruin06, ruin07, ruin03), which is also why it stops at five maps.
+// The game's own table lists them in that order, so for it nothing changes; a table with a new map
+// would start the wrong level. Run after the game's reader, this puts each map's own file_name back.
+// The rest the game sets by place stays: the scoreboard, the round times and the score multiplier.
+constexpr DWORD kReadRuinMaps = 0x50E690;
+constexpr size_t kReadRuinMapsPrologue = 6;  // push ebp / mov ebp,esp / sub esp,78h
+using ReadRuinMapsFn = void(__cdecl*)(void* table, int dlc);
+ReadRuinMapsFn g_readRuinMaps;
+
+// The game's table helpers, as its reader uses them. An entry is an XML element.
+inline const auto FirstEntry = rfa::game::At<void*(__cdecl*)(void* table, const char* name)>(0xC8F730);
+inline const auto NextEntry = rfa::game::At<void*(__cdecl*)(void* table, void* after, const char* name)>(0xC8F780);
+inline const auto EntryText = rfa::game::At<const char*(__cdecl*)(void* entry, const char* field)>(0xC8C800);
+// Methods (the object in ECX), called as __fastcall with EDX unused. KeepString copies a name into
+// the string pool the reader keeps its names in, which lasts as long as the game; NameChecksum
+// works out a name's checksum into `out` the way the reader does.
+inline void* const kRuinStringPool = rfa::game::At<void*>(0x12F3C78);
+inline const auto KeepString =
+    rfa::game::At<const char*(__fastcall*)(void* pool, void* unused, const char* text, int, int)>(0xC97DB0);
+inline const auto NameChecksum =
+    rfa::game::At<DWORD*(__fastcall*)(DWORD* out, void* unused, const char* text, DWORD seed, int maxLength)>(0xC8BEB0);
+
+void __cdecl ReadRuinMapsHook(void* table, int dlc) {
+    const int first = g_ruinMapCount;
+    g_readRuinMaps(table, dlc);
+    if (!table) return;
+    int index = first;
+    std::string leftOut;
+    for (void* entry = FirstEntry(table, "wc_map_list"); entry; entry = NextEntry(table, entry, "wc_map_list"), ++index) {
+        const char* fileName = EntryText(entry, "file_name");
+        if (index >= g_ruinMapCount) {  // the reader stopped before this one
+            leftOut += (leftOut.empty() ? "" : ", ") + std::string(fileName ? fileName : "(no file_name)");
+            continue;
+        }
+        RuinMap* map = g_ruinMaps[index];
+        if (!fileName || !map || (map->fileName && _stricmp(fileName, map->fileName) == 0)) continue;
+        rfa::Log("Ruin map %d is %s, as its table says (the game would have started %s)", index, fileName,
+                 map->fileName ? map->fileName : "nothing");
+        map->fileName = KeepString(kRuinStringPool, nullptr, fileName, 0, 0);
+        NameChecksum(&map->fileNameChecksum, nullptr, fileName, 0, -1);
+    }
+    if (!leftOut.empty())
+        rfa::Log("The game reads at most 5 Ruin maps; left out of its list: %s", leftOut.c_str());
+}
+
+// With LogLookups=1, the Ruin map list is logged too when a Ruin match begins
+// (rf4_wrecking_crew_begin_match → 0x50F400): the map chosen and every map's file name.
+constexpr DWORD kBeginRuinMatch = 0x50F400;
+constexpr size_t kBeginRuinMatchPrologue = 9;  // push ebp / mov ebp,esp / sub esp,110h
+using BeginRuinMatchFn = void(__cdecl*)();
+BeginRuinMatchFn g_beginRuinMatch;
+
+void __cdecl BeginRuinMatchHook() {
+    std::string names;
+    for (int i = 0; i < g_ruinMapCount && i < 35; ++i) {
+        const char* name = g_ruinMaps[i] ? g_ruinMaps[i]->fileName : nullptr;
+        names += (i ? ", " : "") + std::to_string(i) + " " + (name ? name : "(none)");
+    }
+    rfa::Log("Ruin match beginning: map %d of %d; the game's list: %s", g_chosenRuinMap, g_ruinMapCount, names.c_str());
+    g_beginRuinMatch();
+}
+
 bool __cdecl FindFileHook(FileFindResult* result, const char* name, bool flag) {
     const bool found = g_findFile(result, name, flag);
     if (g_logLookups && name && IsLevelFile(name))
-        RFA_LOG_FIRST(4000, "Lookup %s: %s", name,
-                      !found ? "not found" : result->source == 1 ? "in an archive" : result->source == 0 ? "loose file" : "found");
+        RFA_LOG_FIRST(4000, "Lookup %s: %s, %lu bytes", name,
+                      !found                 ? "not found"
+                      : result->source == 1 ? "in an archive"
+                      : result->source == 2 ? "in a virtual folder"
+                      : result->source == 0 ? "loose file"
+                                             : "found",
+                      found ? result->size : 0ul);
     if (!found && name && !g_newFiles.empty()) return FindNewFile(result, name);
     if (!found || result->source != 1 || !name) return found;  // not found, or not inside an archive
 
@@ -553,11 +634,19 @@ void InstallOverrides() {
     }
     FindOverrides(rfa::RootDir() + L"\\overrides", L"");
     g_logLookups = rfa::IniInt(L"Loader", L"LogLookups", 0) != 0;
-    if (g_logLookups) rfa::Log("Logging lookups of level files ([Loader] LogLookups=1)");
+    if (g_logLookups) {
+        rfa::Log("Logging lookups of level files ([Loader] LogLookups=1)");
+        g_beginRuinMatch = reinterpret_cast<BeginRuinMatchFn>(
+            rfa::HookFunction(kBeginRuinMatch, kBeginRuinMatchPrologue, reinterpret_cast<void*>(&BeginRuinMatchHook)));
+        if (!g_beginRuinMatch) rfa::Log("Could not hook the Ruin match start; its map list won't be logged");
+    }
     g_loadBuffer = reinterpret_cast<LoadBufferFn>(
         rfa::HookFunction(kLuaLoadBuffer, kLuaLoadBufferPrologue, reinterpret_cast<void*>(&LoadBufferHook)));
     g_findFile = reinterpret_cast<FindFileFn>(
         rfa::HookFunction(kFindFile, kFindFilePrologue, reinterpret_cast<void*>(&FindFileHook)));
+    g_readRuinMaps = reinterpret_cast<ReadRuinMapsFn>(
+        rfa::HookFunction(kReadRuinMaps, kReadRuinMapsPrologue, reinterpret_cast<void*>(&ReadRuinMapsHook)));
+    if (!g_readRuinMaps) rfa::Log("Could not hook the Ruin map reader; Ruin starts maps by their place in its table");
     const auto newFiles = std::count_if(g_newFiles.begin(), g_newFiles.end(),
                                         [](const auto& file) { return file.first.find('\\') != std::string::npos; });
     rfa::Log("Overrides: %u in overrides\\, and %u new files; Lua scripts %s, other files %s",
