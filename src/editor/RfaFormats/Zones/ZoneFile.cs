@@ -38,7 +38,8 @@ public sealed class ZoneFile
     /// The extra block holds destruction links, 40 bytes each: two u16 numbers (pieces of the two
     /// objects, 0xFFFF for none), flags (u32), the two destructible objects' handles (rfg_mover,
     /// general_mover), 0xFFFFFFFF twice (nearly always), a number (a strength?), 0xFFFFFFFF twice,
-    /// and the link's own number (the low three bytes; the top byte is a flag, 0 or 8). An
+    /// and the link's own number: its place in the list in the low two bytes (all 783,517 links in
+    /// the game), flags in the other two (the third byte 0 or 0x40, the fourth 0, 4 or 8). An
     /// object's "dynamic_links" lists the numbers of the links that name it, in order, then a 0.
     /// </summary>
     public const int DestructionLinkSize = 40;
@@ -163,6 +164,123 @@ public sealed class ZoneFile
         Renumber();
     }
 
+    /// <summary>
+    /// The objects that make one breakable object with <paramref name="picked"/>, to be copied
+    /// together: from the topmost object it hangs from by an attachment and destruction links both
+    /// (a loose piece hangs from its fixed part: in world_08_03 each red coolant tank, a
+    /// general_mover, is attached to its base, an rfg_mover, and joined to it by 8 links), everything
+    /// attached to that. A light attached to a building isn't a piece of it (no links), so it goes
+    /// with what is attached to it alone. The first is the topmost.
+    /// </summary>
+    public IReadOnlyList<ZoneObject> PiecesWith(ZoneObject picked)
+    {
+        var byHandle = objects.GroupBy(o => o.Handle).ToDictionary(g => g.Key, g => g.First());
+        var linked = new HashSet<(uint, uint)>();
+        for (int at = 0; at + DestructionLinkSize <= extra.Length; at += DestructionLinkSize)
+        {
+            uint a = BitConverter.ToUInt32(extra, at + 8), b = BitConverter.ToUInt32(extra, at + 12);
+            linked.Add((a, b));
+            linked.Add((b, a));
+        }
+        ZoneObject root = picked;
+        var seen = new HashSet<ZoneObject> { root };
+        while (root.Parent != ZoneObject.None && byHandle.TryGetValue(root.Parent, out ZoneObject? parent) &&
+               linked.Contains((root.Handle, parent.Handle)) && seen.Add(parent))
+            root = parent;
+        return WithAttached(root);
+    }
+
+    /// <summary>
+    /// Adds copies of objects that belong together (see <see cref="PiecesWith"/>; the first is the
+    /// topmost) at the end of the list, moved by <paramref name="by"/>: each with a handle of its own
+    /// (see <see cref="NewHandle"/>; <paramref name="taken"/> are the zone's other files' handles),
+    /// attached to each other as the originals are, and with copies of the destruction links between
+    /// them, numbered after the zone's own, which each copy's "dynamic_links" lists. Links to objects
+    /// outside them belong to the originals and aren't copied, so the copy stands on its own (as the
+    /// game's own unstacked crates do). Copying a loose piece without its fixed part, or the other way
+    /// round, gives the game what its levels never have: the game froze with such copies.
+    /// </summary>
+    /// <returns>The copies, in the same order as <paramref name="group"/>.</returns>
+    public IReadOnlyList<ZoneObject> AddCopies(IReadOnlyList<ZoneObject> group, IEnumerable<uint> taken, Vector3 by)
+    {
+        if (relationTable != null && objects.Count + group.Count > ZoneRelationTable.Entries)
+            throw new InvalidOperationException($"a zone can hold at most {ZoneRelationTable.Entries:N0} objects");
+        var used = taken.ToHashSet();
+        var copyOf = new Dictionary<uint, ZoneObject>();
+        var copies = new List<ZoneObject>();
+        foreach (ZoneObject original in group)
+        {
+            uint handle = NewHandle(original, used);
+            used.Add(handle);
+            var copy = new ZoneObject(original.Snapshot()) { Handle = handle };
+            copy.Parent = copy.Sibling = copy.Child = ZoneObject.None;
+            copies.Add(copy);
+            copyOf[original.Handle] = copy;
+        }
+        // Attached to each other as the originals are; the topmost hangs from nothing. Each copy's
+        // children are the copies of the objects naming its original as their parent: in the order
+        // its original's chain (child, then each one's sibling) gives, then any the chain misses (in
+        // world_00_02 some of the game's own chains run on into objects attached elsewhere), so the
+        // copies' chains always agree with their parents.
+        var originalOf = new Dictionary<uint, ZoneObject>();
+        foreach (ZoneObject original in group) originalOf.TryAdd(original.Handle, original);
+        for (int i = 1; i < group.Count; i++)
+            if (copyOf.TryGetValue(group[i].Parent, out ZoneObject? parent)) copies[i].Parent = parent.Handle;
+        for (int i = 0; i < group.Count; i++)
+        {
+            var children = new List<ZoneObject>();
+            var listed = new HashSet<ZoneObject>();
+            for (uint along = group[i].Child;
+                 along != ZoneObject.None && originalOf.TryGetValue(along, out ZoneObject? child) && child.Parent == group[i].Handle && listed.Add(copyOf[along]);
+                 along = child.Sibling)
+                children.Add(copyOf[along]);
+            for (int j = 1; j < group.Count; j++)
+                if (group[j].Parent == group[i].Handle && listed.Add(copies[j])) children.Add(copies[j]);
+            copies[i].Child = children.Count > 0 ? children[0].Handle : ZoneObject.None;
+            for (int k = 0; k < children.Count; k++) children[k].Sibling = k + 1 < children.Count ? children[k + 1].Handle : ZoneObject.None;
+        }
+
+        // The destruction links between them, copied after the zone's own (a link's own number is its place).
+        int links = extra.Length / DestructionLinkSize, next = links;
+        var added = new MemoryStream();
+        var numbers = copies.ToDictionary(c => c, _ => new List<ushort>());
+        for (int i = 0; i < links; i++)
+        {
+            int at = i * DestructionLinkSize;
+            if (!copyOf.TryGetValue(BitConverter.ToUInt32(extra, at + 8), out ZoneObject? a) ||
+                !copyOf.TryGetValue(BitConverter.ToUInt32(extra, at + 12), out ZoneObject? b)) continue;
+            if (next >= ushort.MaxValue) throw new InvalidOperationException("a zone can hold at most 65,535 destruction links");
+            byte[] link = extra[at..(at + DestructionLinkSize)];
+            BitConverter.TryWriteBytes(link.AsSpan(8), a.Handle);
+            BitConverter.TryWriteBytes(link.AsSpan(12), b.Handle);
+            uint flag = BitConverter.ToUInt32(link, 36) & 0xFFFF0000;  // the flags; the low two bytes are the number
+            BitConverter.TryWriteBytes(link.AsSpan(36), flag | (uint)next);
+            added.Write(link);
+            numbers[a].Add((ushort)next);
+            if (b != a) numbers[b].Add((ushort)next);
+            next++;
+        }
+        foreach (ZoneObject copy in copies)
+        {
+            if (copy.Property(DynamicLinks) is not { } list) continue;
+            if (numbers[copy].Count == 0)
+            {
+                copy.RemoveProperty(DynamicLinks);
+                continue;
+            }
+            var value = new byte[(numbers[copy].Count + 1) * 2];  // the numbers, then a closing 0
+            for (int i = 0; i < numbers[copy].Count; i++) BitConverter.TryWriteBytes(value.AsSpan(i * 2), numbers[copy][i]);
+            copy.Resize(list, value);
+        }
+        if (added.Length > 0)
+            extra = [.. extra.AsSpan(0, links * DestructionLinkSize), .. added.ToArray(), .. extra.AsSpan(links * DestructionLinkSize)];
+
+        foreach (ZoneObject copy in copies) copy.MoveTo(copy.Placement.Position + by);
+        objects.AddRange(copies);
+        Renumber();
+        return copies;
+    }
+
     // ---- What names an object ------------------------------------------------------------------
 
     /// <summary>An object and every object attached to it, and to those, and so on (by their parent handles).</summary>
@@ -229,7 +347,7 @@ public sealed class ZoneFile
     ///   an object attached to one that stays is taken out of its parent's children (the parent's
     ///     child, or the sibling before it, then points past it);
     ///   the destruction links naming any of them go, the others are numbered again from 0 (each
-    ///     keeping its flag), and every object's "dynamic_links" follows (one left with none loses
+    ///     keeping its flags), and every object's "dynamic_links" follows (one left with none loses
     ///     the property, as objects without links have none in the game's files).
     /// </summary>
     /// <returns>What is needed to put them back: see <see cref="PutBack"/>.</returns>
@@ -279,7 +397,7 @@ public sealed class ZoneFile
                 continue;
             }
             byte[] link = extra[at..(at + DestructionLinkSize)];
-            uint flag = BitConverter.ToUInt32(link, 36) & 0xFF000000;
+            uint flag = BitConverter.ToUInt32(link, 36) & 0xFFFF0000;  // the flags; the low two bytes are the number
             BitConverter.TryWriteBytes(link.AsSpan(36), flag | (uint)keptCount);
             kept.Write(link);
             renumbered[i] = keptCount++;

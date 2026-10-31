@@ -331,18 +331,28 @@ of a level (buildings and props, lights, spawn points, navigation points, trigge
   or pick it in the outliner) and drag the arrows of the **Move** tool (W) along X (red), Y (green)
   or Z (blue), or the rings of the **Rotate** tool (E) to turn it around them. **Q** is just
   picking. **Snap** moves in steps of the chosen size and turns in 15° steps. The handles are drawn
-  on top of everything and stay the same size on screen.
+  on top of everything and stay the same size on screen. What is attached to the picked object
+  (a tank on its base, a building's pieces and lights) moves and turns with it.
 - **Add** (+ in the toolbar) lists one of each kind of object the file has (a crate, a light, a
   squad spawn, a building piece, ...), with a Find box; picking one adds a copy where the middle of
-  the view points. **Duplicate** (**Ctrl+D**) copies the picked object in the same place, to be
-  dragged away. A copy is a new object with a handle of its own, attached to nothing; its model is
-  already in the zone, so the game can show it. **Delete** (**Del**) removes the picked object
-  with the objects attached to it (a building's lights) and its destruction links to the buildings
-  next to it (the game's table of which pieces hold onto which, renumbered as the game's own
-  files number it). It is refused, saying what, while something else names one of them (another
-  object's links, such as navpoints linked in a path, or an object in a mission layer). The
-  game's object table (the zone's relation table) is built again on saving, as the game's tools
-  do. Not tried in the game yet.
+  the view points. **Duplicate** (**Ctrl+D**) copies the picked object beside it (to the view's
+  right, clear of it). A copy is a whole breakable object, as the game's own are: picking a loose
+  piece (the tank of an explosive tanker) copies the part it hangs from too (the tanker's base),
+  with everything attached and the destruction links holding the pieces together, each with a
+  handle of its own. Its model is already in the zone, so the game can show it. **Delete**
+  (**Del**) removes the picked object with the objects attached to it (a building's lights) and
+  its destruction links to the buildings next to it (the game's table of which pieces hold onto
+  which, renumbered as the game's own files number it). It is refused, saying what, while
+  something else names one of them (another object's links, such as navpoints linked in a path,
+  or an object in a mission layer). The game's object table (the zone's relation table) is built
+  again on saving, as the game's tools do, and the asset lists get the zone's new size (the
+  container's entry, and the group entries such as `1_c0812` that the game sets memory aside by).
+  **Experimental:** tried in the game on 2026-10-31. With objects added to `world_08_03` the game
+  froze, stuck in its breakable objects' destruction links: the zone had grown, but a group entry
+  of the asset list still gave its old size, so the end of the zone ran into other memory. Fixed
+  (saving again mends a list saved before): a new game with four copied tankers in `world_08_03`
+  then loaded and ran, with all four copies in place. Start a new game (after starting the game
+  afresh) when testing added objects: a save made before they were added doesn't know them.
 - Every change can be undone and redone (**Ctrl+Z** / **Ctrl+Y**), one step per drag, edit,
   addition or deletion.
 - Moving around: hold the right mouse button to look around, and use **WASD** (Q/E down/up, Shift
@@ -355,7 +365,8 @@ of a level (buildings and props, lights, spawn points, navigation points, trigge
   on/off flags, and text (up to 255 characters; longer than before makes the object larger).
   Moving or turning an object moves its bounding box (which the game uses) with it.
 - **Save** (to overrides): a zone inside a container is saved through a rebuilt container and updated
-  asset lists, as for textures. Many zones are in the game twice, identically (in a
+  asset lists, as for textures, with the zone's new size when it grew (objects added, longer text):
+  the game sets memory aside by those sizes. Many zones are in the game twice, identically (in a
   `zonescript_*.vpp_pc` archive and in their level's container); the game may read either, so the
   editor saves every copy. **Restore** puts the game's own zone back in every copy; other
   changes in the same containers (such as replaced textures) stay.

@@ -77,14 +77,25 @@ public partial class LevelEditor : UserControl, IEditorDocument
     TransformFields? transform;  // the picked object's position and rotation in the inspector
     byte[]? editStart;           // the picked object's bytes when its current change began (for undo)
     byte[]? turnStart;           // its bytes when it began turning in this change (see TurnSelected)
+    List<Carried> carried = [];  // what is attached to it, moved and turned with it (see StartEdit)
     LevelTool tool = LevelTool.Move;
     bool unsaved, selectingFromView;
 
     /// <summary>
     /// One change, which can be undone and redone: an edit of one object (its bytes before and
-    /// after), or an object added or deleted (<paramref name="AddsOrRemoves"/>).
+    /// after, and those of the objects that moved with it, <paramref name="Others"/>), or objects
+    /// added or deleted (<paramref name="AddsOrRemoves"/>).
     /// </summary>
-    sealed record Change(ZoneObject Object, string What, Action Undo, Action Redo, bool AddsOrRemoves = false);
+    sealed record Change(ZoneObject Object, string What, Action Undo, Action Redo, bool AddsOrRemoves = false,
+                         IReadOnlyList<ZoneObject>? Others = null);
+
+    /// <summary>An object attached to the picked one, and its bytes when the change began and when it began turning.</summary>
+    sealed class Carried(ZoneObject obj)
+    {
+        public ZoneObject Object { get; } = obj;
+        public byte[] Start { get; } = obj.Snapshot();
+        public byte[]? TurnStart { get; set; }
+    }
 
     // What the mouse is doing in the 3D view
     enum Drag { None, Look, Slide, Circle, Handle }
@@ -339,8 +350,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     {
         CommitEdit();
         selected = obj;
-        editStart = obj != null && Editable(obj) ? obj.Snapshot() : null;
-        turnStart = null;
+        StartEdit();
         hotAxis = null;
         ShowSelection();
         ShowProperties();
@@ -445,32 +455,64 @@ public partial class LevelEditor : UserControl, IEditorDocument
 
     // ---- Moving and turning --------------------------------------------------------------------
 
+    /// <summary>
+    /// Begins a change of the picked object: keeps its bytes, and those of the objects attached to
+    /// it (and to those, and so on: see <see cref="ZoneFile.WithAttached"/>), which move and turn
+    /// with it, as a breakable object's pieces, a building's parts or a tank on its base must.
+    /// </summary>
+    void StartEdit()
+    {
+        bool editable = selected != null && Editable(selected);
+        editStart = editable ? selected!.Snapshot() : null;
+        turnStart = null;
+        carried = editable ? zone.WithAttached(selected!).Skip(1).Select(o => new Carried(o)).ToList() : [];
+    }
+
     /// <param name="fromInspector">True when the inspector's numbers did it: they already show the new values.</param>
     void MoveSelected(Vector3 position, bool fromInspector)
     {
         if (selected == null) return;
+        Vector3 by = position - selected.Placement.Position;
         selected.MoveTo(position);
+        foreach (Carried c in carried) c.Object.MoveTo(c.Object.Placement.Position + by);
         AfterMoveOrTurn(fromInspector);
     }
 
     /// <summary>
-    /// Turns the picked object. Each turn of one change (a drag, or typing an angle) starts again
-    /// from the object as it was when it began turning: turning works out the object's new bounding
-    /// box from its old one, and doing that from an already turned box at every step of a drag would
-    /// make the box grow larger and larger.
+    /// Turns the picked object, and what is attached to it around it. Each turn of one change (a
+    /// drag, or typing an angle) starts again from the objects as they were when they began turning:
+    /// turning works out an object's new bounding box from its old one, and doing that from an
+    /// already turned box at every step of a drag would make the box grow larger and larger.
     /// </summary>
     void TurnSelected(Matrix4x4 rotation, bool fromInspector)
     {
         if (selected == null) return;
         if (turnStart == null) turnStart = selected.Snapshot();
         else selected.Restore(turnStart);
+        foreach (Carried c in carried)
+        {
+            if (c.TurnStart == null) c.TurnStart = c.Object.Snapshot();
+            else c.Object.Restore(c.TurnStart);
+        }
+        (Vector3 pivot, Matrix4x4 old) = selected.Placement;
         selected.TurnTo(rotation);
+        if (carried.Count > 0 && selected.CanTurn && Matrix4x4.Invert(old, out Matrix4x4 undoOld))
+        {
+            Matrix4x4 change = undoOld * rotation;  // as TurnTo turns the box: a point's offset from the pivot, times this
+            foreach (Carried c in carried)
+            {
+                (Vector3 position, Matrix4x4 turned) = c.Object.Placement;
+                c.Object.MoveTo(Vector3.Transform(position - pivot, change) + pivot);
+                c.Object.TurnTo(turned * change);
+            }
+        }
         AfterMoveOrTurn(fromInspector);
     }
 
     void AfterMoveOrTurn(bool fromInspector)
     {
         scene?.Place(selected!);
+        foreach (Carried c in carried) scene?.Place(c.Object);
         ShowSelection();
         ShowObjectTitle();  // its CLOE position
         if (!fromInspector) transform?.Refresh();
@@ -548,9 +590,13 @@ public partial class LevelEditor : UserControl, IEditorDocument
             asInGameScene = scene;
         }
         uint moverClass = NameHashes.ClassHash("general_mover");
-        if (gameLink.ReadWhere() is { } answer) ShowWhere(answer, zone.Objects.Where(o => o.ClassHash == moverClass).ToList());
-        else if (DateTime.Now - askedWhere < TimeSpan.FromSeconds(2)) return;  // still waiting for the answer
-        gameLink.AskWhere(zone.Objects.Where(o => o.ClassHash == moverClass).Select(o => o.Handle));
+        var props = zone.Objects.Where(o => o.ClassHash == moverClass).ToList();
+        // An answer that leaves out some of them was to an older question (one left from before
+        // objects were added, say): it is dropped, and asked again.
+        var answer = gameLink.ReadWhere();
+        if (answer != null && props.All(o => answer.ContainsKey(o.Handle))) ShowWhere(answer, props);
+        else if (answer == null && DateTime.Now - askedWhere < TimeSpan.FromSeconds(2)) return;  // still waiting for the answer
+        gameLink.AskWhere(props.Select(o => o.Handle));
         askedWhere = DateTime.Now;
     }
 
@@ -706,17 +752,21 @@ public partial class LevelEditor : UserControl, IEditorDocument
     void OnDuplicateClicked(object sender, RoutedEventArgs e) => DuplicateSelected();
     void OnDeleteClicked(object sender, RoutedEventArgs e) => DeleteSelected();
 
-    /// <summary>Adds a copy of the picked object where it is, and picks the copy, to be moved away.</summary>
+    /// <summary>Adds a copy of the picked object (with what makes one breakable object with it) beside it, and picks the copy.</summary>
     void DuplicateSelected()
     {
         if (selected != null && Editable(selected)) AddCopy(selected, at: null, "Duplicate");
     }
 
     /// <summary>
-    /// Adds a copy of an object (see <see cref="ZoneFile.Copy"/>: a new handle, attached to nothing,
-    /// without its destruction links) at the end of the zone's list, at a place or where the
-    /// original is, and picks it. New handles must not be any the zone's other files use, so this
-    /// waits for the editor to have read every container.
+    /// Adds a copy of an object with the objects that make one breakable object with it (see
+    /// <see cref="ZoneFile.PiecesWith"/> and <see cref="ZoneFile.AddCopies"/>: a loose piece comes
+    /// with its fixed part, everything comes with what is attached to it, and the destruction links
+    /// between them are copied too) at the end of the zone's list, and picks the copy of the object
+    /// asked for. It goes at a place (<paramref name="at"/>, for the copy of the topmost), or else
+    /// beside the original, to the camera's right: never inside it, as physics objects in one
+    /// another fly apart, and explosive ones blow up. New handles must not be any the zone's other
+    /// files use, so this waits for the editor to have read every container.
     /// </summary>
     void AddCopy(ZoneObject source, Vector3? at, string what)
     {
@@ -726,26 +776,48 @@ public partial class LevelEditor : UserControl, IEditorDocument
             return;
         }
         CommitEdit();
-        ZoneObject copy;
-        int index = zone.Objects.Count;
+        IReadOnlyList<ZoneObject> group = zone.PiecesWith(source);
+        IReadOnlyList<ZoneObject> copies;
         try
         {
-            copy = ZoneFile.Copy(source, zone.NewHandle(source, TakenHandles()));
-            if (at is Vector3 position) copy.MoveTo(position);
-            zone.Insert(index, copy);
+            copies = zone.AddCopies(group, TakenHandles(), at is Vector3 position ? position - group[0].Placement.Position : Beside(group));
         }
         catch (InvalidOperationException ex)
         {
             MessageBox.Show($"Couldn't add a copy of {Label(source)}: {ex.Message}.", "Level editor", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        scene?.Add(copy);
-        Record(new Change(copy, what, Undo: () => { zone.Remove(copy); scene?.Remove(copy); },
-                                      Redo: () => { zone.Insert(index, copy); scene?.Add(copy); }, AddsOrRemoves: true));
+        foreach (ZoneObject copy in copies) scene?.Add(copy);
+        RemovedObjects? removed = null;
+        Record(new Change(copies[0], what,
+            Undo: () => { removed = zone.Remove(copies.ToList()); foreach (ZoneObject copy in copies) scene?.Remove(copy); },
+            Redo: () => { if (removed != null) zone.PutBack(removed); foreach (ZoneObject copy in copies) scene?.Add(copy); },
+            AddsOrRemoves: true));
         ObjectsChanged();
-        PickInOutliner(copy);
-        context.Log($"{what}: added {Described(copy)}" +
-                    (at == null ? ", in the same place as the original: drag it away." : $" at {copy.Placement.Position.X:0.#}, {copy.Placement.Position.Y:0.#}, {copy.Placement.Position.Z:0.#}."));
+        ZoneObject picked = copies[Math.Max(0, group.ToList().IndexOf(source))];
+        PickInOutliner(picked);
+        int copiedLinks = copies.Sum(zone.DestructionLinksOf) / 2;  // each joins two of the copies, so is counted twice
+        var others = copies.Where(c => c != picked).ToList();
+        string pieces = others.Count > 0
+            ? $" with the {others.Count} object{(others.Count > 1 ? "s" : "")} joined to it ({string.Join(", ", others.GroupBy(c => names.Class(c.ClassHash)).Select(g => $"{g.Count()} {g.Key}"))})" +
+              (copiedLinks > 0 ? $" and the {copiedLinks} destruction links between them" : "")
+            : "";
+        Vector3 where = copies[0].Placement.Position;
+        context.Log($"{what}: added {Described(picked)}{pieces}, " + (at == null ? "beside the original" : "where the view points") + $", at {where.X:0.#}, {where.Y:0.#}, {where.Z:0.#}.");
+    }
+
+    /// <summary>
+    /// How far to move a copy so it stands beside the original: to the camera's right (level), by the
+    /// width of all the objects' boxes that way and half a metre.
+    /// </summary>
+    Vector3 Beside(IReadOnlyList<ZoneObject> group)
+    {
+        Vector3 min = group.Select(o => o.BoundsMin).Aggregate(Vector3.Min), max = group.Select(o => o.BoundsMax).Aggregate(Vector3.Max);
+        var right = new Vector3((float)camera.Right.X, 0, (float)-camera.Right.Z);  // the game's Z is the view's -Z
+        right = right.LengthSquared() > 1e-6f ? Vector3.Normalize(right) : Vector3.UnitX;
+        Vector3 size = max - min;
+        float across = MathF.Abs(right.X) * size.X + MathF.Abs(right.Z) * size.Z;
+        return right * (across + 0.5f);
     }
 
     /// <summary>
@@ -934,19 +1006,26 @@ public partial class LevelEditor : UserControl, IEditorDocument
 
     // ---- Undo ----------------------------------------------------------------------------------
 
-    /// <summary>Ends the picked object's current change (typing, a drag) as one step that can be undone.</summary>
+    /// <summary>
+    /// Ends the picked object's current change (typing, a drag) as one step that can be undone,
+    /// with the objects attached to it that moved with it.
+    /// </summary>
     void CommitEdit(string what = "Edit")
     {
         if (selected == null || editStart == null) return;
         byte[] now = selected.Snapshot();
-        if (!now.AsSpan().SequenceEqual(editStart))
+        var others = carried.Select(c => (c.Object, Before: c.Start, Now: c.Object.Snapshot()))
+                            .Where(c => !c.Now.AsSpan().SequenceEqual(c.Before)).ToList();
+        if (!now.AsSpan().SequenceEqual(editStart) || others.Count > 0)
         {
             ZoneObject obj = selected;
             byte[] before = editStart;
-            Record(new Change(obj, what, () => obj.Restore(before), () => obj.Restore(now)));
+            Record(new Change(obj, what,
+                () => { obj.Restore(before); foreach (var other in others) other.Object.Restore(other.Before); },
+                () => { obj.Restore(now); foreach (var other in others) other.Object.Restore(other.Now); },
+                Others: others.Select(o => o.Object).ToList()));
         }
-        editStart = now;
-        turnStart = null;
+        StartEdit();
         UpdateUndoButtons();
     }
 
@@ -988,20 +1067,18 @@ public partial class LevelEditor : UserControl, IEditorDocument
             // (their destruction links): the inspector shows the picked object's anew.
             if (selected != null)
             {
-                editStart = Editable(selected) ? selected.Snapshot() : null;
+                StartEdit();
                 ShowProperties();
             }
         }
         else
         {
             scene?.Place(change.Object);
+            foreach (ZoneObject other in change.Others ?? []) scene?.Place(other);
             LinksChanged();
         }
-        if (change.Object == selected)
-        {
-            editStart = selected.Snapshot();
-            ShowProperties();
-        }
+        StartEdit();  // the picked object, or what is attached to it, may be as it was
+        if (selected != null && (change.Object == selected || change.Others?.Contains(selected) == true)) ShowProperties();
         ShowSelection();
         MarkUnsaved();
         UpdateUndoButtons();
@@ -1994,8 +2071,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
     /// <summary>Puts the zone into one place: an override of the file, or a rebuilt container; back to the game's own if it is the same.</summary>
     string Put(string inArchive, string? inContainer, byte[] bytes)
     {
-        if (inContainer != null)
-            return ContainerEdits.Put(Workspace, inArchive, inContainer, new Dictionary<string, byte[]> { [zoneName] = bytes });
+        if (inContainer != null)  // its sentence ends with a full stop; the places are listed with "; "
+            return ContainerEdits.Put(Workspace, inArchive, inContainer, new Dictionary<string, byte[]> { [zoneName] = bytes }).TrimEnd('.');
         if (bytes.AsSpan().SequenceEqual(Workspace.ReadOriginal(inArchive, zoneName)))
         {
             Workspace.DeleteOverride(inArchive, zoneName);
@@ -2056,7 +2133,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
             UpdateUndoButtons();
             zone = ZoneFile.Read(ReadZone());
             selected = null;
-            editStart = null;
+            StartEdit();
             ShowProperties();
             ShowSource();
             BuildObjectTree(FilterBox.Text.Trim());
