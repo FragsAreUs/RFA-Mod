@@ -20,22 +20,26 @@ namespace RfaFormats;
 /// up to that flush. The game's zlib streams are never finished, so they are read by size, not to
 /// their end.
 ///
-/// Red Faction: Guerrilla uses version 3 of this format, with a name hash in each directory entry.
+/// Red Faction: Guerrilla uses version 3 of this format, which is read too (not written): the same
+/// header, and 28 bytes per file in the directory (name offset, 0, data offset, name hash, size,
+/// compressed size, 0).
 /// </summary>
 public sealed class Packfile
 {
     public const uint Magic = 0x51890ACE;
     public const uint Version = 6;
+    public const uint GuerrillaVersion = 3;
     const int HeaderSize = 0x800;
-    const int EntrySize = 24;
 
     readonly Func<long, int, byte[]> readBytes;  // reads from wherever the packfile lives
     readonly byte[] header;
     readonly byte[] directory;
     readonly byte[] names;
+    readonly int entrySize;                       // 24 bytes per file in version 6, 28 in version 3
     byte[]? condensedData;                        // the whole data block, once a condensed file was read
 
     public string Name { get; }
+    public uint FormatVersion { get; }     // 6 (Armageddon) or 3 (Guerrilla)
     public PackfileFlags Flags { get; }
     public long DataStart { get; }
     public uint DataSize { get; }          // uncompressed size of the data block
@@ -53,8 +57,11 @@ public sealed class Packfile
         header = readBytes(0, HeaderSize);
         if (header.Length < HeaderSize || U32(header, 0) != Magic)
             throw new InvalidDataException($"{name} is not a packfile");
-        if (U32(header, 4) != Version)
-            throw new InvalidDataException($"{name} is packfile version {U32(header, 4)}; only version 6 (Armageddon) is supported");
+        FormatVersion = U32(header, 4);
+        if (FormatVersion != Version && FormatVersion != GuerrillaVersion)
+            throw new InvalidDataException($"{name} is packfile version {FormatVersion}; only versions 6 (Armageddon) and 3 (Guerrilla) are read");
+        entrySize = FormatVersion == GuerrillaVersion ? 28 : 24;
+        int sizeAt = FormatVersion == GuerrillaVersion ? 16 : 12;  // the file's size, then its compressed size
 
         Flags = (PackfileFlags)U32(header, 0x14C);
         int count = (int)U32(header, 0x154);
@@ -74,11 +81,11 @@ public sealed class Packfile
         long storedAt = DataStart;
         for (int i = 0; i < count; i++)
         {
-            int at = i * EntrySize;
+            int at = i * entrySize;
             string fileName = CString(names, (int)U32(directory, at));
             uint offset = U32(directory, at + 8);
-            uint size = U32(directory, at + 12);
-            uint compressedSize = U32(directory, at + 16);
+            uint size = U32(directory, at + sizeAt);
+            uint compressedSize = U32(directory, at + sizeAt + 4);
             if (IsCompressed && !IsCondensed)
             {
                 entries.Add(new PackfileEntry(fileName, offset, size, compressedSize, storedAt));
@@ -136,6 +143,8 @@ public sealed class Packfile
     /// </summary>
     public byte[] Rebuild(IReadOnlyDictionary<string, byte[]> replacements)
     {
+        if (FormatVersion != Version)
+            throw new NotSupportedException($"{Name} is a Red Faction: Guerrilla packfile, which is only read");
         if (IsCompressed && !IsCondensed)
             throw new NotSupportedException($"{Name} is compressed file by file, which can't be written yet");
 
@@ -193,9 +202,9 @@ public sealed class Packfile
         byte[] newDirectory = (byte[])directory.Clone();
         for (int i = 0; i < count; i++)
         {
-            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * EntrySize + 8), offsets[i]);
-            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * EntrySize + 12), (uint)files[i].Length);
-            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * EntrySize + 16), stored[i]);
+            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * entrySize + 8), offsets[i]);
+            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * entrySize + 12), (uint)files[i].Length);
+            BitConverter.TryWriteBytes(newDirectory.AsSpan(i * entrySize + 16), stored[i]);
         }
         byte[] newHeader = (byte[])header.Clone();
         BitConverter.TryWriteBytes(newHeader.AsSpan(0x158), (uint)(DataStart + block.Length));
@@ -207,6 +216,47 @@ public sealed class Packfile
         newDirectory.CopyTo(packfile, HeaderSize);
         names.CopyTo(packfile, HeaderSize + Align(directory.Length, 0x800));
         block.CopyTo(packfile, DataStart);
+        return packfile;
+    }
+
+    /// <summary>
+    /// A new uncompressed packfile (version 6) holding these files, in this order, laid out as the
+    /// game's own uncompressed archives are (ruin01.vpp_pc): the 2 KB header (taken from
+    /// <paramref name="templateHeader"/>, a game archive's, with the counts and sizes set), the
+    /// directory (name offset, 0, data offset, size, 0xFFFFFFFF for no compression, 0), the
+    /// NUL-separated names, then the data, each block and each file starting on a 2 KB boundary.
+    /// </summary>
+    public static byte[] Create(Packfile templateHeader, IReadOnlyList<(string Name, byte[] Data)> files)
+    {
+        var names = new MemoryStream();
+        var directory = new MemoryStream();
+        var data = new MemoryStream();
+        foreach (var (name, bytes) in files)
+        {
+            while (data.Length % 0x800 != 0) data.WriteByte(0);
+            directory.Write(BitConverter.GetBytes((uint)names.Length));
+            directory.Write(BitConverter.GetBytes(0u));
+            directory.Write(BitConverter.GetBytes((uint)data.Length));
+            directory.Write(BitConverter.GetBytes((uint)bytes.Length));
+            directory.Write(BitConverter.GetBytes(0xFFFFFFFFu));
+            directory.Write(BitConverter.GetBytes(0u));
+            names.Write(Encoding.Latin1.GetBytes(name));
+            names.WriteByte(0);
+            data.Write(bytes);
+        }
+        long namesStart = HeaderSize + Align(directory.Length, 0x800), dataStart = namesStart + Align(names.Length, 0x800);
+        var packfile = new byte[dataStart + data.Length];
+        templateHeader.header.CopyTo(packfile, 0);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x14C), (uint)PackfileFlags.None);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x154), (uint)files.Count);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x158), (uint)packfile.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x15C), (uint)directory.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x160), (uint)names.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x164), (uint)data.Length);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x168), 0xFFFFFFFFu);
+        directory.ToArray().CopyTo(packfile, HeaderSize);
+        names.ToArray().CopyTo(packfile, namesStart);
+        data.ToArray().CopyTo(packfile, dataStart);
         return packfile;
     }
 

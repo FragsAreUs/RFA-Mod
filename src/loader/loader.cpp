@@ -228,6 +228,23 @@ std::string Lower(std::string text) {
 // it has loaded. An override only replaces the copy from its own archive: the loader notes the size
 // of that copy at startup and swaps a lookup only when the game found a copy of that size. Archives
 // with identical copies (every table is in both table.vpp_pc and misc.vpp_pc) share the override.
+//
+// A file outside any archive's folder that the game folder doesn't have is a new file, such as a
+// new map's archive:
+//   overrides\build\pc\cache\rfg01.vpp_pc
+// When the game looks up a file and finds it nowhere, the loader hands it the new file at that
+// path (build\pc\cache\rfg01.vpp_pc), or of that name, as a loose file. The game mounts archives
+// this way too: before loading a level it asks whether build\pc\cache\<level>.vpp_pc exists
+// (0x6CD1A0, through 0xC92010), then opens it with cf_open (0xC91470 → 0xC914E0), both through
+// FindFile; the mount itself (0xCB5280 → 0xCB53C0) reads the archive from the file it was given.
+
+struct NewFile {
+    std::wstring path;       // full path of the file, in the overrides folder
+    std::string ansiPath;    // the same, for the game's file functions
+    std::string relative;    // its path inside overrides\ (and in the game folder), for the log
+    LONG used = 0;
+};
+std::map<std::string, NewFile> g_newFiles;  // lower-case path in the game folder, and file name -> the file
 
 struct Override {
     std::wstring path;       // full path of the replacement
@@ -287,15 +304,31 @@ void AddOverride(const std::wstring& root, const std::wstring& relative) {
     const size_t slash = relative.find_last_of(L'\\');
     const std::wstring archive = slash == std::wstring::npos ? L"" : relative.substr(0, slash);
     const std::string name = Narrow(relative.substr(slash + 1));
-    if (archive.size() < 7 || _wcsicmp(archive.c_str() + archive.size() - 7, L".vpp_pc") != 0) {
-        rfa::Log("Override %s skipped: put it in the folder of the archive it comes from, "
-                 "e.g. overrides\\build\\pc\\cache\\interface.vpp_pc\\%s", shown.c_str(), name.c_str());
-        return;
-    }
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring gameDir = exe;
     gameDir.resize(gameDir.find_last_of(L'\\'));
+    if (archive.size() < 7 || _wcsicmp(archive.c_str() + archive.size() - 7, L".vpp_pc") != 0) {
+        // Not in an archive's folder: a new file, if the game folder hasn't one there.
+        if (GetFileAttributesW((gameDir + L"\\" + relative).c_str()) != INVALID_FILE_ATTRIBUTES) {
+            rfa::Log("Override %s skipped: the game folder has this file, and whole game files can't be replaced; "
+                     "put replacements in the folder of the archive they come from, "
+                     "e.g. overrides\\build\\pc\\cache\\interface.vpp_pc\\%s", shown.c_str(), name.c_str());
+            return;
+        }
+        const std::wstring path = root + L"\\" + relative;
+        const std::string ansiPath = NarrowExact(path);
+        if (ansiPath.empty() || ansiPath.size() >= sizeof(rfa::game::FileFindResult::name)) {
+            rfa::Log("New file %s skipped: the game can't open files at this path (it must be shorter than 256 "
+                     "characters, without letters outside your Windows language)", shown.c_str());
+            return;
+        }
+        NewFile added{path, ansiPath, shown};
+        g_newFiles[Lower(shown)] = added;
+        g_newFiles.try_emplace(Lower(name), added);  // also by its name alone, if no other new file has it
+        rfa::Log("New file: %s", shown.c_str());
+        return;
+    }
     std::vector<ArchiveFile> files;
     if (!ReadArchiveDirectory(gameDir + L"\\" + archive, files)) {
         rfa::Log("Override %s skipped: the game has no archive %ls", shown.c_str(), archive.c_str());
@@ -372,11 +405,63 @@ using rfa::game::FileFindResult;
 using FindFileFn = bool(__cdecl*)(FileFindResult*, const char*, bool);
 FindFileFn g_findFile;  // the game's FindFile
 
+// A file the game found nowhere: a new file in overrides\ at that path (build\pc\cache\rfg01.vpp_pc,
+// or .\build\pc\cache\..., with / or \), or of that name (also when the game asks with a full
+// path), as a loose file. A request it can't answer whose name holds a new file's own name (rfg01
+// in rfg01.rfgzone_pc) is logged, to show what a new map still lacks.
+bool FindNewFile(FileFindResult* result, const char* name) {
+    std::string key = Lower(name);
+    std::replace(key.begin(), key.end(), '/', '\\');
+    if (key.rfind(".\\", 0) == 0) key.erase(0, 2);
+    auto file = g_newFiles.find(key);
+    if (file == g_newFiles.end()) file = g_newFiles.find(key.substr(key.find_last_of('\\') + 1));
+    if (file == g_newFiles.end()) {
+        for (const auto& [newKey, newFile] : g_newFiles) {
+            const std::string stem = newKey.substr(newKey.find_last_of('\\') + 1, newKey.find_last_of('.') - newKey.find_last_of('\\') - 1);
+            if (stem.size() >= 3 && key.find(stem) != std::string::npos) {
+                RFA_LOG_FIRST(100, "The game looked for %s and found it nowhere (no new file is called that)", name);
+                break;
+            }
+        }
+        return false;
+    }
+    result->source = -1;
+    result->pathType = -1;
+    result->name[0] = '\0';
+    result->size = 0;
+    result->archiveEntry = nullptr;
+    const bool ok = rfa::game::FindLooseFile(result, file->second.ansiPath.c_str(), 0);
+    if (InterlockedExchange(&file->second.used, 1) == 0)
+        rfa::Log(ok ? "Using new file %s (the game asked for %s)" : "New file %s could not be opened (the game asked for %s)",
+                 file->second.relative.c_str(), name);
+    return ok;
+}
+
 // Every file the game looks up by name passes through here. The game finds it first; if it found it
 // in an archive and an override replaces that archive's copy (same size), the result is changed to
 // point at the override instead.
+// [Loader] LogLookups=1: every lookup of a level's files (zones, layers, archives, containers,
+// asset lists, terrain, stitch lists, navigation), with what the game found, goes to the log. For
+// working out which files a level loads (up to 4,000 lines a run).
+bool g_logLookups = false;
+
+bool IsLevelFile(const char* name) {
+    static const char* const kinds[] = {".rfgzone_pc", ".layer_pc", ".vpp_pc", ".str2_pc", ".asm_pc", ".cterrain_pc",
+                                        ".ctmesh_pc", ".stchlst_pc", ".navdata_pc", ".precache"};
+    const size_t length = strlen(name);
+    for (const char* kind : kinds) {
+        const size_t size = strlen(kind);
+        if (length >= size && _stricmp(name + length - size, kind) == 0) return true;
+    }
+    return false;
+}
+
 bool __cdecl FindFileHook(FileFindResult* result, const char* name, bool flag) {
     const bool found = g_findFile(result, name, flag);
+    if (g_logLookups && name && IsLevelFile(name))
+        RFA_LOG_FIRST(4000, "Lookup %s: %s", name,
+                      !found ? "not found" : result->source == 1 ? "in an archive" : result->source == 0 ? "loose file" : "found");
+    if (!found && name && !g_newFiles.empty()) return FindNewFile(result, name);
     if (!found || result->source != 1 || !name) return found;  // not found, or not inside an archive
 
     auto overrides = g_overrides.find(Lower(name));
@@ -467,11 +552,16 @@ void InstallOverrides() {
         return;
     }
     FindOverrides(rfa::RootDir() + L"\\overrides", L"");
+    g_logLookups = rfa::IniInt(L"Loader", L"LogLookups", 0) != 0;
+    if (g_logLookups) rfa::Log("Logging lookups of level files ([Loader] LogLookups=1)");
     g_loadBuffer = reinterpret_cast<LoadBufferFn>(
         rfa::HookFunction(kLuaLoadBuffer, kLuaLoadBufferPrologue, reinterpret_cast<void*>(&LoadBufferHook)));
     g_findFile = reinterpret_cast<FindFileFn>(
         rfa::HookFunction(kFindFile, kFindFilePrologue, reinterpret_cast<void*>(&FindFileHook)));
-    rfa::Log("Overrides: %u in overrides\\; Lua scripts %s, other files %s", static_cast<unsigned>(g_overrideCount),
+    const auto newFiles = std::count_if(g_newFiles.begin(), g_newFiles.end(),
+                                        [](const auto& file) { return file.first.find('\\') != std::string::npos; });
+    rfa::Log("Overrides: %u in overrides\\, and %u new files; Lua scripts %s, other files %s",
+             static_cast<unsigned>(g_overrideCount), static_cast<unsigned>(newFiles),
              g_loadBuffer ? "on" : "FAILED", g_findFile ? "on" : "FAILED");
 }
 

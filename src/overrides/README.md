@@ -13,7 +13,7 @@ overrides\build\pc\cache\interface.vpp_pc\ui_options_gameplay.lua
 ```
 
 At startup the loader checks every file here: the archive must exist in the game folder and must
-contain a file with that name. Each file is then logged as `Override: ...`, or as skipped with the
+contain a file with that name (or, for new files, see below). Each file is then logged as `Override: ...`, or as skipped with the
 reason, in `logs\rfa_mods.log`. Files named `README*` are ignored.
 
 Any file directly inside an archive can be overridden: tables (`.xtbl`), Lua scripts, textures,
@@ -27,6 +27,13 @@ with different contents (a container in each multiplayer map, say), and the game
 the archive it has loaded; the loader tells them apart by size. Archives with identical copies
 share one override: every table is in both `table.vpp_pc` and `misc.vpp_pc`, so an override in
 either folder replaces both.
+
+**New files** go at their path in the game folder, outside any archive's folder, where the game
+folder has no file: `overrides\build\pc\cache\rfg01.vpp_pc` is a new archive (a new map's). When
+the game looks for a file and finds it nowhere, the loader gives it the new file at that path, or
+of that name. The game mounts a level's archive this way too. Each is logged as `New file: ...`,
+and `Using new file ...` when the game first asks for it. A file the game folder already has can't
+be replaced whole: put replacements in its archive's folder as above.
 
 Files *inside* a `.str2_pc` container can't be overridden one by one: the game loads the whole
 container at once. The editor replaces textures in containers by rebuilding the container into
