@@ -22,6 +22,7 @@ cl %CFLAGS% /LD "%ROOT%src\mods\borderless\borderless.cpp" /Fe"%ROOT%bin\mods\bo
 cl %CFLAGS% /LD "%ROOT%src\mods\fov\fov.cpp" /Fe"%ROOT%bin\mods\fov.dll" /link /IMPLIB:fov.lib user32.lib || goto :fail
 cl %CFLAGS% /LD "%ROOT%src\mods\video_settings\video_settings.cpp" /Fe"%ROOT%bin\mods\video_settings.dll" /link /IMPLIB:video_settings.lib || goto :fail
 cl %CFLAGS% /LD "%ROOT%src\mods\console\console.cpp" /Fe"%ROOT%bin\mods\console.dll" /link /IMPLIB:console.lib || goto :fail
+cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_world\guerrilla_world.cpp" /Fe"%ROOT%bin\mods\guerrilla_world.dll" /link /IMPLIB:guerrilla_world.lib || goto :fail
 
 popd
 rem overrides\ mirrors the game folder (one folder per archive), so copy the whole tree.

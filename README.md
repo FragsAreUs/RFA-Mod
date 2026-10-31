@@ -23,7 +23,7 @@ Settings are in `bin\rfa_mods.ini`. Everything the launcher, loader and mods do 
 ```
 src\launcher\            RFAModLauncher.exe: starts the game and injects the loader
 src\loader\              rfa_loader.dll: loads mods, crash reports, overrides, Lua bridge
-src\mods\<name>\         one folder per mod DLL (borderless, console, fov, video_settings)
+src\mods\<name>\         one folder per mod DLL (borderless, console, fov, guerrilla_world, video_settings)
 src\common\              rfa_mod.h (logging, ini, hooking helpers), rfa_game.h (build check, Lua API)
 src\overrides\           replacements for files inside the game's archives, same layout as the game
 src\editor\RfaFormats\   C# library that reads the game's file formats (archives so far)
@@ -127,6 +127,25 @@ plain text file you can read or edit. The game's registry code never runs for th
   game (the object picked in the game, the camera's position, direction and field of view). While
   the folder `bin\link` exists (the level editor makes it), it also runs the console commands the
   editor puts in `bin\link\to_game.txt`, checked ten times a second.
+
+**guerrilla_world**: what a world ported from Red Faction: Guerrilla needs that Armageddon doesn't
+do itself (see `[GuerrillaWorld]` in the ini). So far, Guerrilla's sky and clouds. The sky: a dome
+coloured by the time of day's nine sky colours (four bands up from the horizon on the west side,
+four on the east, and the zenith), worked out the way Guerrilla's sky shader does it. Armageddon
+reads those colours into every time-of-day set but never draws such a dome for a world; its scene
+renderer's sky step (`0xD528E0`) only draws the unlockables viewer's background. The mod wraps that
+step and, in the worlds named by `Worlds=`, draws the sky after it: one triangle over the whole
+screen at the far plane, behind whatever the world has drawn, with the game's own Direct3D device
+(noted when the game makes it) and its own small shader, compiled when first needed. Everything it
+changes on the device is put back. It draws nothing in Armageddon's own worlds. `Brightness=` sets
+how bright the sky is; the mod reads it again whenever `rfa_mods.ini` is saved, so it can be tuned
+while playing. The clouds (`Clouds=`) follow Guerrilla's cloud shader: Guerrilla's cloud model (an
+overhead dome and a ring along the horizon), two textures of two cloud layers each, the layers'
+strengths, light colours, rim light and drift speeds from the time of day. In front of them, a ring
+of far mountains: Guerrilla's backdrop, tinted by the time of day's mountain and haze colours as its
+backdrop shader does. The model and textures (the backdrop's too) are files in
+`mods\guerrilla_world\`, made from your own copy of Guerrilla when the ported world is built (they
+are never shipped); without them the sky is drawn alone.
 
 **FOV slider in the game's menu**: Options → Gameplay gains a **Field of View** slider (45–170,
 the same kind of slider as the audio volumes). The view changes while you move it, so from the
