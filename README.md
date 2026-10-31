@@ -436,12 +436,14 @@ that starts with `v` builds that commit on a clean Windows machine with `build.c
 has a `-` in it (`v0.1.0-beta`). Its text comes from `docs\releases\<tag>.md`. To release:
 
 ```
-git tag -a v0.2.0-beta -m "RFA-Mod v0.2.0-beta"
-git push origin v0.2.0-beta
-``` Others unzip it into a folder of their own (and set
-`GameDir=`, or let the editor ask) or into their game folder. The editor needs the
-64-bit (x64) [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself
-needs nothing else.
+git tag -a v0.2.1-beta -m "RFA-Mod v0.2.1-beta"
+git push origin v0.2.1-beta
+```
+
+Others unzip it into a folder of their own (and set `GameDir=`, or let the editor ask) or into
+their game folder. The editor needs the 64-bit (x64)
+[.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself needs
+nothing else.
 
 ## Writing a mod
 
