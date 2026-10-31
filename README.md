@@ -145,6 +145,13 @@ back. It's saved to `rfa_mods.ini`. This uses two loader features any mod can bu
   changes are marked `[RFA]`; the rest is the game's original. See `src\overrides\README.md`. The
   game's slider code assumes every slider starts at 0, so the override maps mouse clicks and drags
   itself.
+- *New files*: a file in `overrides\` outside any archive's folder, where the game folder has no
+  file (a new map's archive, `overrides\build\pc\cache\<map>.vpp_pc`), is handed to the game when it
+  looks for that path or name and finds nothing; the game mounts a level's archive the same way.
+  A new Ruin map is listed in an override of `wrecking_crew_maps.xtbl`. The game itself starts
+  Ruin maps by their place in that table (it reads at most five), whatever their `file_name` says,
+  so the loader puts each map's `file_name` back after the game reads the table (`0x50E690`).
+  `LogLookups=1` under `[Loader]` logs every lookup of a level's files, to see what a level loads.
 - *Lua bridge*: menu scripts can call `rfa_get_setting(section, key, default)`,
   `rfa_set_setting(section, key, value)` and `rfa_log(text)`. After a change the loader calls
   `RFAMod_SettingChanged(section, key)` in every mod that exports it.
