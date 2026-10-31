@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     void Log(string text)
     {
         LogList.Items.Add(new LogLine($"{DateTime.Now:HH:mm:ss}", text));
+        EditorLog.Write($"{DateTime.Now:HH:mm:ss} {text}");
         LogList.ScrollIntoView(LogList.Items[^1]);
         StatusText.Text = text;
     }

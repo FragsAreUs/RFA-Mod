@@ -13,6 +13,15 @@ public partial class App : Application
         // Nothing here is tied to one PC: the mod folder is wherever the editor was put (next to
         // rfa_mods.ini), and the game is wherever its GameDir says, or that folder itself.
         string modFolder = Workspace.FindModFolder();
+        EditorLog.Start(modFolder);
+        DispatcherUnhandledException += (_, args) =>
+        {
+            EditorLog.Crash(args.Exception);
+            MessageBox.Show($"The editor ran into a problem it can't recover from and has to close:\n\n{args.Exception.Message}\n\n" +
+                            $"What happened is written in {EditorLog.FilePath ?? "the log"}.",
+                            "RFA Editor", MessageBoxButton.OK, MessageBoxImage.Error);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) EditorLog.Crash(error); };
         string? gameFolder = Workspace.FindGameFolder(modFolder) ?? AskForGameFolder(modFolder);
         if (gameFolder == null)
         {

@@ -148,6 +148,14 @@ public partial class LevelEditor : UserControl, IEditorDocument
         BuildScene(frame: false);
         BuildObjectTree(FilterBox.Text.Trim());  // with the zone's other files, found now
         ShowSource();  // the zone's other copies can be found now
+        // The Direct3D view's textures and the game light (the mission layers' lamps, the lamps'
+        // flicker curves, the sky) were looked for before, and many weren't found: again, now.
+        gpuScene?.ForgetTextures();
+        if (zoneLighting != null)
+        {
+            zoneLighting = null;
+            if (GameLightBox.IsChecked == true) OnGameLightChanged(GameLightBox, new RoutedEventArgs());
+        }
     }
 
     Workspace Workspace => context.Workspace;
@@ -884,19 +892,33 @@ public partial class LevelEditor : UserControl, IEditorDocument
     Vector3 PointAhead()
     {
         var middle = new Point(ViewArea.ActualWidth / 2, ViewArea.ActualHeight / 2);
-        Point3D? hitAt = null;
-        VisualTreeHelper.HitTest(SceneViewport, target => target == neighbourContent || target == foliageContent || target == selectionBox
-            ? HitTestFilterBehavior.ContinueSkipSelfAndChildren : HitTestFilterBehavior.Continue, result =>
-        {
-            if (result is RayMeshGeometry3DHitTestResult hit && hit.DistanceToRayOrigin < 300)
-            {
-                hitAt = hit.PointHit;
-                return HitTestResultBehavior.Stop;
-            }
-            return HitTestResultBehavior.Continue;
-        }, new PointHitTestParameters(middle));
-        Point3D at = hitAt ?? camera.Position + camera.Forward * 15;
+        RayMeshGeometry3DHitTestResult? first = HitsAt(middle, sceneContent, relatedContent, geometryContent, terrainContent, decalContent, gridContent)
+            .FirstOrDefault(hit => hit.DistanceToRayOrigin < 300);
+        Point3D at = first?.PointHit ?? camera.Position + camera.Forward * 15;
         return new Vector3((float)at.X, (float)at.Y, (float)-at.Z);
+    }
+
+    /// <summary>
+    /// What a line from the camera through a point of the view meets in these parts of the scene,
+    /// nearest first. It asks the parts themselves, in 3D, rather than the view: the view is hidden
+    /// while the Direct3D view shows the scene (see <see cref="OnGpuViewChanged"/>), and the zones around
+    /// and the foliage are left out (they can't be picked, and their meshes are huge, so a click
+    /// would be slow).
+    /// </summary>
+    List<RayMeshGeometry3DHitTestResult> HitsAt(Point point, params ModelVisual3D[] parts)
+    {
+        (Point3D origin, Vector3D direction) = camera.Ray(point, ViewArea.RenderSize);
+        var ray = new RayHitTestParameters(origin, direction);
+        var hits = new List<RayMeshGeometry3DHitTestResult>();
+        foreach (ModelVisual3D part in parts)
+            if (part.Content != null)
+                VisualTreeHelper.HitTest(part, null, result =>
+                {
+                    if (result is RayMeshGeometry3DHitTestResult hit) hits.Add(hit);
+                    return HitTestResultBehavior.Continue;
+                }, ray);
+        hits.Sort((a, b) => a.DistanceToRayOrigin.CompareTo(b.DistanceToRayOrigin));
+        return hits;
     }
 
     // ---- Undo ----------------------------------------------------------------------------------
@@ -1502,7 +1524,10 @@ public partial class LevelEditor : UserControl, IEditorDocument
             }
         }
         GpuImage.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        SceneViewport.Opacity = on ? 0 : 1;  // still there for picking
+        // Hidden, not just see-through, so WPF doesn't draw the scene a second time under the Direct3D
+        // view. Picking asks the scene's parts along a ray (HitsAt), and the Direct3D view gathers
+        // them from the hidden view all the same.
+        SceneViewport.Visibility = on ? Visibility.Hidden : Visibility.Visible;
         if (!on) GameLightBox.IsChecked = false;  // game light is drawn by the Direct3D view
         if (on) CompositionTarget.Rendering += DrawGpuView;
         else CompositionTarget.Rendering -= DrawGpuView;
@@ -1727,22 +1752,15 @@ public partial class LevelEditor : UserControl, IEditorDocument
     void PickAt(Point point)
     {
         ZoneObject? obj = null;
-        // The zones around this one and the foliage aren't looked through: they can't be picked, and
-        // their meshes are huge, so a click would be slow.
-        VisualTreeHelper.HitTest(SceneViewport, target => target == neighbourContent || target == foliageContent
-            ? HitTestFilterBehavior.ContinueSkipSelfAndChildren : HitTestFilterBehavior.Continue, result =>
+        foreach (RayMeshGeometry3DHitTestResult hit in HitsAt(point, sceneContent, relatedContent, geometryContent, terrainContent))
         {
-            if (result is RayMeshGeometry3DHitTestResult hit && (hit.VisualHit == sceneContent || hit.VisualHit == relatedContent) &&
-                ObjectOf(hit) is ZoneObject found)
+            if (hit.VisualHit == geometryContent || hit.VisualHit == terrainContent) break;  // level geometry or ground in front: nothing behind it is picked
+            if (ObjectOf(hit) is ZoneObject found)
             {
                 obj = found;
-                return HitTestResultBehavior.Stop;
+                break;
             }
-            if (result is RayMeshGeometry3DHitTestResult wall && (wall.VisualHit == geometryContent || wall.VisualHit == terrainContent))
-                return HitTestResultBehavior.Stop;  // level geometry or ground in front: nothing behind it is picked
-            return HitTestResultBehavior.Continue;
-        }, new PointHitTestParameters(point));
-
+        }
         PickInOutliner(obj);
     }
 

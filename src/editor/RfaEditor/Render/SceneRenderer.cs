@@ -263,6 +263,18 @@ sealed class SceneRenderer : IDisposable
     /// <summary>Makes the next frame be drawn even if nothing changed (the picture was lost or made again).</summary>
     public void ForgetLastFrame() => drawnLook = shadowsLook = 0;
 
+    /// <summary>
+    /// Lets go of the game's textures read so far, so they are read again when next drawn: a level
+    /// opened before the editor had read every container couldn't find many of them (or only a
+    /// small decoded copy), and those misses would otherwise stay.
+    /// </summary>
+    public void ForgetTextures()
+    {
+        foreach (GpuTexture? texture in namedTextures.Values) texture?.Dispose();
+        namedTextures.Clear();
+        drawnLook = 0;
+    }
+
     /// <summary>How many shadow maps have been drawn (for the off-screen tests: moving about shouldn't draw many).</summary>
     public int ShadowMapsDrawn { get; private set; }
 

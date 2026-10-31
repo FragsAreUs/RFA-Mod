@@ -167,7 +167,7 @@
                     MouseWheel="OnViewMouseWheel">
                 <Grid>
                     <!-- The Direct3D view (docs\renderer-plan.md), when switched on: it draws the same scene as
-                         SceneViewport, which then stays (unseen) for picking objects -->
+                         SceneViewport, which is then hidden (picking looks along rays through its parts) -->
                     <Image x:Name="GpuImage" Stretch="Fill" Visibility="Collapsed" IsHitTestVisible="False" />
                     <Viewport3D x:Name="SceneViewport" />
                     <!-- The gizmo, in a view of its own on top, so walls never hide it -->
