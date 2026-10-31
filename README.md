@@ -450,6 +450,9 @@ share them, but whatever they pass on, changed or not, must stay under the same 
 source code. The editor's Direct3D libraries are under the MIT License, which allows this; their
 notices are in [docs/third-party-notices.txt](docs/third-party-notices.txt).
 
-None of the game's files are included: the mods and the editor work on your own copy of Red
-Faction: Armageddon, which stays untouched. Red Faction: Armageddon belongs to its owners; this
-is an unofficial fan project, not made or endorsed by them.
+The mods and the editor work on your own copy of Red Faction: Armageddon, which stays untouched,
+and the game's files aren't included, with one exception:
+[ui_options_gameplay.lua](src/overrides/build/pc/cache/interface.vpp_pc/ui_options_gameplay.lua),
+the game's own Options → Gameplay script with our Field of View slider added. Only the lines
+marked `[RFA]` in it are ours and under the GPL; the rest is the game's. Red Faction: Armageddon
+belongs to its owners; this is an unofficial fan project, not made or endorsed by them.
