@@ -8,7 +8,9 @@
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1             package what bin\ has now
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Build      run build.cmd first
 #   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -NoEditor   leave the editor out
-param([switch]$Build, [switch]$NoEditor)
+#   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version v0.1.0-beta
+#       a release: the zip is named after the version, and version.txt says which commit it is
+param([switch]$Build, [switch]$NoEditor, [string]$Version)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $bin = Join-Path $root 'bin'
@@ -24,7 +26,9 @@ $parts = @(
     @{ From = 'bin\rfa_loader.dll';     To = 'rfa_loader.dll' },
     @{ From = 'config\rfa_mods.ini';    To = 'rfa_mods.ini' },
     @{ From = 'config\console.ini';     To = 'console.ini' },
-    @{ From = 'README.md';              To = 'README.md' }
+    @{ From = 'README.md';              To = 'README.md' },
+    # The GPL asks that its text travels with the programs.
+    @{ From = 'LICENSE';                To = 'LICENSE.txt' }
 )
 foreach ($dll in Get-ChildItem -LiteralPath (Join-Path $bin 'mods') -Filter '*.dll') {
     $parts += @{ From = "bin\mods\$($dll.Name)"; To = "mods\$($dll.Name)" }
@@ -82,7 +86,18 @@ foreach ($part in $parts) {
     New-Item -ItemType Directory -Force -Path (Split-Path $to) | Out-Null
     Copy-Item -LiteralPath (Join-Path $root $part.From) -Destination $to
 }
-$zip = Join-Path $dist ("RFA-Mod-{0:yyyy-MM-dd}.zip" -f (Get-Date))
+if ($Version) {
+    # Which source the programs were built from, for bug reports and the GPL's offer of the source.
+    $commit = (& git -C $root rev-parse --short HEAD 2>$null)
+    $dirty = (& git -C $root status --porcelain 2>$null)
+    $from = if (-not $commit) { 'an unknown commit' } elseif ($dirty) { "commit $commit plus changes not yet committed" } else { "commit $commit" }
+    Set-Content -LiteralPath (Join-Path $out 'version.txt') -Encoding ASCII -Value @(
+        "RFA-Mod $Version, built from $from.",
+        'Source code: https://github.com/FragsAreUs/RFA-Mod')
+    $zip = Join-Path $dist "RFA-Mod-$Version.zip"
+} else {
+    $zip = Join-Path $dist ("RFA-Mod-{0:yyyy-MM-dd}.zip" -f (Get-Date))
+}
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip
 Write-Host "Packaged $($parts.Count) files into $out"

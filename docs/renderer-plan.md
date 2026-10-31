@@ -55,8 +55,8 @@ simpler, but nothing of WPF can be drawn over it, so every overlay would have to
 renderer too.
 
 **Shaders** (no decision needed): our own, written in HLSL (readable source in the repository),
-compiled when the editor starts by Windows' own `d3dcompiler_47.dll` (part of Windows 10 and 11,
-present on this PC). The game's compiled shaders expect its engine's inputs, so they can't be
+compiled when the editor starts by Windows' own `d3dcompiler_47.dll` (part of Windows 10 and
+11). The game's compiled shaders expect its engine's inputs, so they can't be
 reused, but they can be disassembled with that same compiler to copy what they do (as was done for
 the ground's blended layers).
 
@@ -107,7 +107,7 @@ to look like the game.
 The level toolbar's monitor icon switches the view to Direct3D 11 (`src\editor\RfaEditor\Render\`):
 
 - `GpuDevice.cs`: one Direct3D 11 device on the chip of Direct3D 9's main adapter (matched by the
-  adapter id; on this PC the RX 9070 XT), and the Direct3D 9 device WPF needs.
+  adapter id: the graphics card WPF draws with), and the Direct3D 9 device WPF needs.
 - `RenderView.cs`: the shared colour picture (shown by a D3DImage, with software fallback so the
   off-screen tests see it too), reversed float depth, reading a frame back as a picture. Each
   frame is drawn into a picture of its own and copied into the shared one while the D3DImage is
@@ -230,7 +230,7 @@ it (layers × their `Diffuse_color_N`, unbrightened): it had come out pale grey-
 
 ## Risks
 
-- **Two graphics chips** (this PC has the RX 9070 XT and the Ryzen's built-in one): the renderer
+- **Two graphics chips** (a PC with a graphics card and a processor's built-in graphics has both): the renderer
   must use the chip WPF draws with, or the picture can't be shared. Pick the adapter of the
   monitor the window is on.
 - **Lost devices**: locking the PC, remote desktop or a driver reset make Direct3D 9 pictures go

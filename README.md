@@ -396,12 +396,13 @@ powershell -ExecutionPolicy Bypass -File tools\package.ps1
 ```
 
 It holds the launcher, the loader, the mods, the mod's own overrides (from `src\overrides\`, not
-the files you edited), the editor (without its `.pdb` debugging files) and this README, with the
-settings templates from `config\` (so `GameDir=` is empty). Your own `rfa_mods.ini`,
+the files you edited), the editor (without its `.pdb` debugging files), this README and the
+licence, with the settings templates from `config\` (so `GameDir=` is empty). Your own `rfa_mods.ini`,
 `console.ini`, `video_settings.cfg`, `logs\`, `link\` and edited overrides stay out. Every file it
 packs is checked for anything naming your PC (your user folder or name, this project's folder,
 your game folder), and nothing is packaged if one does. `-Build` runs `build.cmd` first;
-`-NoEditor` leaves the editor out. Others unzip it into a folder of their own (and set
+`-NoEditor` leaves the editor out; `-Version v0.1.0-beta` makes a release: the zip is named
+`RFA-Mod-v0.1.0-beta.zip` and its `version.txt` says which commit it was built from. Others unzip it into a folder of their own (and set
 `GameDir=`, or let the editor ask) or into their game folder. The editor needs the
 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself
 needs nothing else.
@@ -447,7 +448,8 @@ This project's own code and notes are free software under the GNU General Public
 version 3 or (at your option) any later version ([LICENSE](LICENSE)). Anyone may use, change and
 share them, but whatever they pass on, changed or not, must stay under the same licence with its
 source code. The editor's Direct3D libraries are under the MIT License, which allows this; their
-notices are in [docs/third-party-notices.txt](docs/third-party-notices.txt).
+notices are in [docs/third-party-notices.txt](docs/third-party-notices.txt). The source code is at
+<https://github.com/FragsAreUs/RFA-Mod>; a release's `version.txt` says which commit it was built from.
 
 The mods and the editor work on your own copy of Red Faction: Armageddon, which stays untouched,
 and the game's files aren't included, with one exception:
