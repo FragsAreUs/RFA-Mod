@@ -34,6 +34,9 @@ rem DOTNET_* settings turn off the SDK's usage reporting and its first-run web c
 set DOTNET_CLI_TELEMETRY_OPTOUT=1
 set DOTNET_NOLOGO=1
 set DOTNET_GENERATE_ASPNET_CERTIFICATE=false
+rem vcvarsall (for the 32-bit C++ parts above) sets Platform=x86, which MSBuild would take for the
+rem editor too and build it 32-bit, with 2 GB of memory: too little for big levels. Clear it.
+set Platform=
 where dotnet >nul 2>nul || (echo Skipping the editor: the .NET 10 SDK is not installed & goto :done)
 dotnet build "%ROOT%src\editor\RfaEditor\RfaEditor.csproj" -c Release -o "%ROOT%bin\editor" --artifacts-path "%ROOT%build\editor" -v q -nologo || goto :fail
 

@@ -48,6 +48,13 @@ if (-not $NoEditor) {
 foreach ($part in $parts) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $part.From))) { throw "Missing $($part.From): build first (or pass -Build)." }
 }
+if (-not $NoEditor) {
+    # The editor must be 64-bit (its exe's PE header names the machine: 0x8664 is x64); a 32-bit
+    # one runs out of memory on big levels.
+    $exe = [System.IO.File]::ReadAllBytes((Join-Path $bin 'editor\RfaEditor.exe'))
+    $machine = [BitConverter]::ToUInt16($exe, [BitConverter]::ToInt32($exe, 0x3C) + 4)
+    if ($machine -ne 0x8664) { throw ('bin\editor\RfaEditor.exe is not 64-bit (machine 0x{0:X4}): build it again with build.cmd.' -f $machine) }
+}
 
 # Anything that would tie the package to this PC.
 $personal = @($root, $env:USERPROFILE, $env:USERNAME)

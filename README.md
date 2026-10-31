@@ -158,7 +158,7 @@ back. It's saved to `rfa_mods.ini`. This uses two loader features any mod can bu
 
 ## Editor
 
-`bin\editor\RfaEditor.exe` is an editor for the game's files (needs the .NET 10 Desktop Runtime).
+`bin\editor\RfaEditor.exe` is an editor for the game's files (needs the 64-bit (x64) .NET 10 Desktop Runtime).
 It finds the game through `GameDir` in `rfa_mods.ini`, like the launcher, and only ever reads the
 game folder. One dark window, laid out like other game editors (Nanoforge among them):
 
@@ -440,7 +440,7 @@ git tag -a v0.2.0-beta -m "RFA-Mod v0.2.0-beta"
 git push origin v0.2.0-beta
 ``` Others unzip it into a folder of their own (and set
 `GameDir=`, or let the editor ask) or into their game folder. The editor needs the
-[.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself
+64-bit (x64) [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0); the mod itself
 needs nothing else.
 
 ## Writing a mod

@@ -9,6 +9,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>RfaEditor</RootNamespace>
     <AssemblyName>RfaEditor</AssemblyName>
+    <!-- 64-bit: a level with its zones around needs more than a 32-bit program's 2 GB -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>

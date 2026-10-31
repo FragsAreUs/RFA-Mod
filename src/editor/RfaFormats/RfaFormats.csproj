@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>RfaFormats</RootNamespace>
+    <!-- Any CPU, so the 64-bit editor can load it whatever Platform the build environment sets -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
   </PropertyGroup>
 
 </Project>
