@@ -1069,8 +1069,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
         var parts = model == null ? null : ModelScene.Parts(model, farAway ? model.FarAway(uid) : model.Intact(uid), material =>
         {
             string? diffuse = textures && material < model.Materials.Count ? model.Materials[material].Diffuse : null;
-            // Alpha kept for foliage, and for the materials the game draws see-through (bullet holes over walls, glass).
-            bool alpha = seeThrough || (material < model.Materials.Count && Render.GameMaterial.IsSeeThrough(model.Materials[material]));
+            // Alpha kept for foliage, and for the materials the game draws see-through or cut out (glass, bullet holes over walls).
+            bool alpha = seeThrough || (material < model.Materials.Count && Render.GameMaterial.UsesAlpha(model.Materials[material]));
             return string.IsNullOrEmpty(diffuse) ? null : context.Assets.Texture(diffuse, nearArchive, nearContainer, 256, alpha);
         });
         if (context.Assets.IndexReady) modelParts[key] = parts;  // before then, textures may still be missing

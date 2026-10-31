@@ -64,8 +64,8 @@ static class ModelScene
         foreach (int material in order)
         {
             BitmapSource? texture = diffuse(material);
-            // See-through materials (see GameMaterial) also by how solid they are as a whole.
-            double opacity = material < model.Materials.Count ? Math.Clamp(model.Materials[material].Constant("Main_Opacity")?.X ?? 1, 0, 1) : 1;
+            // Blended materials (see GameMaterial) also by how solid they are as a whole.
+            double opacity = material < model.Materials.Count ? Render.GameMaterial.WholeOpacity(model.Materials[material]) : 1;
             Material shown = texture == null ? Plain(Color.FromRgb(170, 170, 170)) : Textured(texture, opacity);
             if (material < model.Materials.Count) shown = Render.GameMaterial.From(model.Materials[material]).Attach(shown);
             parts.Add((byMaterial[material].ToMesh(), shown));

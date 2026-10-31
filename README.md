@@ -268,8 +268,9 @@ of a level (buildings and props, lights, spawn points, navigation points, trigge
   the environment box the camera is in, and the game's tone curve. Surfaces use their materials as
   the game does: bumps (normal maps), shine (specular maps), glow (light fixtures, screens, light
   strips) and their colour multiplier. Caves come out dark, lit by their lamps. Lamps flicker and
-  sway as in the game (fire, strobes, broken lights), see-through surfaces such as the bullet holes
-  laid over walls are drawn see-through, and outdoors the area's sky is drawn behind everything
+  sway as in the game (fire, strobes, broken lights), surfaces are see-through or cut out only where
+  the game's material says so (glass and water; the bullet holes laid over walls, hair, leaves), the
+  Legion's creatures, tentacles and pods are drawn as the game's alien skin shader draws them, and outdoors the area's sky is drawn behind everything
   (the game's own sky picture). Lamps the game gives shadows (spotlights over the wreck, the
   tunnels' floodlights; 561 in the game) cast them as the game does, soft-edged, as dark as each
   lamp says, fading out away from the camera. Not yet: the sky's moving clouds, shadows of the

@@ -4,7 +4,7 @@
 //  - even light, as WPF lit the old view: an ambient light and up to four lights shining one way;
 //  - game light (step 3): as the game's own shaders light a level (read from ir_light_point,
 //    ir_light_spot_noshadows, ir_light_tube, ir_light_local_ambient, ir_light_ambient, ir_default_s,
-//    ir_defaultglow_s and rl_hdr): the material's colour, bumps (normal map) and shine (specular
+//    ir_defaultglow_s, ir_alienskin and rl_hdr): the material's colour, bumps (normal map) and shine (specular
 //    map), ambient light from above and below, the zone's lamps, glow, the exposure, the game's
 //    tone curve, then the screen's sRGB; and the sky behind it all (SkyPixel). Lamps that cast
 //    shadows are checked against their shadow maps (LampShadowAt; the maps drawn by ShadowPixel).
@@ -41,7 +41,9 @@ cbuffer Draw : register(b1)
     float4 Shine;          // game light: rgb Specular_Color; w Specular_Power
     float4 Surface;        // game light: x Normal_Height, y Self_Illumination, z Glow_Falloff_Power, w Glow_Falloff_Inversion
     float4 Glow;           // game light: rgb Glow_Color; w: 1 with a glow map
-    float4 Options;        // x: 1 to take the colour texture's alpha (see-through); 0 for solid surfaces, whose textures may keep other things there
+    float4 Options;        // x: 1 to take the colour texture's alpha (see-through); 0 for solid surfaces, whose textures may keep other things there;
+                           // y: cut out below this alpha, solid above it (0: not cut out)
+    float4 Skin;           // game light, alien skin (ir_alienskin; see GameMaterial): x 1 full, 2 simple, 0 not alien skin; y Rim_Light_Amount; z Rim_Light_Power
 };
 
 // A lamp, in the view's space (the game's with Z turned round, as WPF's).
@@ -104,6 +106,7 @@ PixelIn VertexMain(VertexIn input)
 float3 SrgbToLinear(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 float3 LinearToSrgb(float3 c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1 / 2.4) - 0.055; }
 float Luminance(float3 c) { return dot(c, float3(0.3, 0.59, 0.11)); }  // the game's weights
+float Brightness(float3 c) { return dot(c, float3(0.213, 0.715, 0.072)); }  // the alien skin shader's other weights
 
 // The game's colour for a surface by how it faces the light: facing it, the front colour; side-on,
 // the side colour; facing away, the back colour; blended in between.
@@ -204,6 +207,12 @@ float4 PixelMain(PixelIn input, bool front : SV_IsFrontFace) : SV_Target
         colour.rgb *= picture.rgb;
         if (Options.x > 0) colour.a *= picture.a;
     }
+    if (Options.y > 0)
+    {
+        // Cut out (hair, capes, bullet holes): missing below the threshold, solid above it.
+        if (colour.a < Options.y) discard;
+        colour.a = 1;
+    }
     if (colour.a < 0.004) discard;  // nothing to see: and it mustn't hide what is behind it
 
     float3 shown;
@@ -212,7 +221,11 @@ float4 PixelMain(PixelIn input, bool front : SV_IsFrontFace) : SV_Target
         // Game light. Up in the view's space is +Y, as in the game.
         float3 toEye = normalize(CameraPosition.xyz - input.World);
         float3 surface = Flags.z > 0 ? Bumped(normal, input.World, input.Uv) : normal;
-        float3 albedo = SrgbToLinear(colour.rgb) * DiffuseColour.rgb;
+        float3 albedo = SrgbToLinear(colour.rgb);
+        if (Skin.x > 0)
+            albedo = lerp(albedo, Brightness(albedo) * DiffuseColour.rgb, Skin.y);  // alien skin: towards Diffuse_Color, by Rim_Light_Amount
+        else
+            albedo *= DiffuseColour.rgb;
         float3 light = lerp(AmbientBelow.rgb, AmbientAbove.rgb, 0.5 + 0.5 * surface.y) * Scales.x;
         float exponent = min(Shine.w, 50) * 5.12, shine = 0;
         uint tileSize = (uint)Mode.y, perTile = (uint)Mode.w;
@@ -231,11 +244,23 @@ float4 PixelMain(PixelIn input, bool front : SV_IsFrontFace) : SV_Target
             shine += lampShine * strength;
         }
         float3 scene = albedo * light;
+        float4 specular = Flags.w > 0 ? SpecularMap.Sample(Repeat, input.Uv) : 0;
         if (Flags.w > 0)
         {
-            // Shine, coloured as the light falling there (ir_default_s), by the specular map and colour.
+            // Shine, coloured as the light falling there (ir_default_s), by the specular map and colour
+            // (alien skin: by the map's green only).
             float3 shineColour = light * shine / (Luminance(light) + 0.00001);
-            scene += shineColour * SpecularMap.Sample(Repeat, input.Uv).rgb * Shine.rgb;
+            scene += shineColour * (Skin.x > 0 ? specular.ggg : specular.rgb) * Shine.rgb;
+        }
+        if (Skin.x > 0 && Glow.w > 0)
+        {
+            // Alien skin's glow (ir_alienskin): only where the specular map's alpha is, fading in
+            // strong light, and (the full shader) towards the edges. The game scrolls the glow map
+            // along the mesh's second texture coordinates, which the editor hasn't: its average colour.
+            float dark = pow(1 - saturate(Brightness(light)), Skin.x == 1 ? Skin.z : Surface.z);
+            float edges = Skin.x == 1 ? pow(max(dot(normal, toEye), 0), Surface.z) : 1;
+            float3 glowColour = SrgbToLinear(GlowMap.SampleLevel(Repeat, input.Uv, 16).rgb);
+            scene += glowColour * Glow.rgb * Surface.y * specular.a * specular.a * edges * dark;
         }
         if (FogColour.w > 0)
         {
@@ -243,7 +268,7 @@ float4 PixelMain(PixelIn input, bool front : SV_IsFrontFace) : SV_Target
             scene = lerp(scene, FogColour.rgb, far);
         }
         scene = scene * Tint.rgb * Tint.w + SrgbToLinear(Emissive.rgb);
-        if (Glow.w > 0)
+        if (Glow.w > 0 && Skin.x == 0)
         {
             // Glow (ir_defaultglow_s): added after the tint and exposure, faded towards the edges
             // (or the middle) by how squarely the surface faces the eye.

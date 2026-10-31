@@ -848,9 +848,9 @@ public partial class FilePreview : UserControl, IEditorDocument
     {
         if (model == null || modelAt == null || material >= model.Materials.Count) return null;
         string? name = model.Materials[material].Diffuse;
-        // Alpha kept for the materials the game draws see-through (glass, bullet holes, hair).
+        // Alpha kept for the materials the game draws see-through or cut out (glass, bullet holes, hair).
         return string.IsNullOrEmpty(name) ? null : context.Assets.Texture(name, modelAt.Archive, modelAt.Container, 1024,
-                                                                            alpha: Render.GameMaterial.IsSeeThrough(model.Materials[material]));
+                                                                            alpha: Render.GameMaterial.UsesAlpha(model.Materials[material]));
     }
 
     byte[] ReadFrom(string archive, string? container, string fileName)

@@ -162,9 +162,10 @@ fixtures and the pipe's light strips glow, scratched metal shines where lamps re
 surfaces are as dark as their `Diffuse_Color` makes them in the game. Loading the maps takes about
 2 s the first time game light is switched on in a zone.
 
-Then decals, flicker and the sky (2026-10-30). Materials with a `Main_Opacity` are drawn
-see-through after the solid ones (the bullet holes over the first mission's walls had shown as
-white squares). Lamps with curves (`RfaFormats\Zones\LightCurve.cs`) flicker and sway: each
+Then decals, flicker and the sky (2026-10-30). Materials the game draws see-through are drawn
+after the solid ones (the bullet holes over the first mission's walls had shown as white
+squares). (At first that was any material with a `Main_Opacity`; since 2026-10-30 it is the
+material's flags, see "Alien skin and the material flags" below.) Lamps with curves (`RfaFormats\Zones\LightCurve.cs`) flicker and sway: each
 frame `LampTiles` works out every such lamp's brightness and offset from the editor's clock and
 the shader applies them, and the view keeps drawing while any lamp moves. The sky: where the
 environment names a sky effect, its picture is read from the effect file's texture names
@@ -198,6 +199,18 @@ zones around, mission layers, following the game), from the WPF scene. What is l
    pixels across. The game's textures keep alpha even where it isn't see-through, so it is
    taken only for see-through surfaces (`Options.x` in `Scene.hlsl`). Checked off-screen: signs
    and rock sharper, bushes still cut out, the first frame no slower.
+
+   **Alien skin and the material flags** (2026-10-30, after the user saw monsters turn red in
+   game light and the tentacles break): the full-size textures' alpha made the solid materials
+   that take a `Main_Opacity` (tentacles, creepers' legs, cloth, walkers) vanish, and the alien
+   skin's glow covered them (flat blue tentacles and pods, red creatures). Now see-through
+   follows the material's flags (`ModelMaterial.Flags`: blended in the see-through pass, cut out
+   in the solid pass by `Options.y`, everything else solid), and alien skin is drawn as its
+   shader does (`Skin` in `Scene.hlsl`; see docs\game-notes.md, "Alien skin"), its glow from the
+   glow map's average colour since the editor doesn't read the second texture coordinates.
+   Checked off-screen: mp_inf01's tentacles whole and textured, a creeper with its legs and a
+   few red spots of glow, the world_00_02 pods dark and textured, grunts their own olive with red
+   streaks; world_08_03 unchanged but for the bushes, now cut out crisply at half alpha.
 2. **Picking on the card**: each object's number drawn into a hidden picture, read under the
    mouse, instead of WPF's hit testing (which needs every mesh as WPF objects).
 3. **Meshes straight to the card**: the builders (`LevelScene`, `LevelGeometry`, `FoliageScene`,

@@ -52,7 +52,8 @@ sealed class SceneRenderer : IDisposable
         public Matrix4x4 World;
         public Vector4 Colour, Emissive, Flags;
         public Vector4 DiffuseColour, Shine, Surface, Glow;  // the game material's (see GameMaterial, Scene.hlsl)
-        public Vector4 Options;  // x: 1 to take the colour texture's alpha
+        public Vector4 Options;  // x: 1 to take the colour texture's alpha; y: cut out below this alpha (0: not cut out)
+        public Vector4 Skin;     // alien skin (see GameMaterial): x 1 full, 2 simple, 0 not; y Rim_Light_Amount; z Rim_Light_Power
     }
 
     /// <summary>A mesh on the graphics card.</summary>
@@ -140,6 +141,13 @@ sealed class SceneRenderer : IDisposable
     /// 1/32 it was half as bright. (The time of day's own ambient there is nearly nothing at noon.)
     /// </summary>
     public float AmbientScale { get; set; } = 1 / 8f;
+
+    /// <summary>
+    /// Where a cut-out material (see <see cref="GameMaterial"/>) is solid: its colour texture's alpha
+    /// at least this. The game's shaders take it from the engine (Alpha_Threshold); its value isn't
+    /// found yet, so the usual half.
+    /// </summary>
+    const float CutOutAlpha = 0.5f;
 
     /// <summary>Whether lamps that cast shadows do (game light); off, they light through everything, as the others do.</summary>
     public bool Shadows
@@ -302,7 +310,7 @@ sealed class SceneRenderer : IDisposable
                 Material? material = item.Front ?? item.Back;
                 (Vector4 colour, _, BitmapSource? picture) = Look(material);
                 GameMaterial? carried = GameMaterial.Of(material);
-                bool seeThrough = carried?.SeeThrough == true || colour.W < 1 || (picture != null && KeepsAlpha(picture));
+                bool seeThrough = carried?.SeeThrough == true || carried?.CutOut == true || colour.W < 1 || (picture != null && KeepsAlpha(picture));
                 if ((picture == null && carried == null) || Mesh(item.Mesh) is not GpuMesh mesh) continue;
                 // Out of the lamp's reach: its ball, moved and scaled as the item is.
                 Vector3 centre = Vector3.Transform(mesh.Centre, item.World);
@@ -428,8 +436,11 @@ sealed class SceneRenderer : IDisposable
             // The game material's maps, in game light only (they are read when first needed).
             GameMaterial? game = gameLighting != null ? carried : null;
             if (game?.Picture != null) picture = game.Picture.Value;  // its own picture for game light (the ground)
-            (GpuTexture? texture, bool alpha) = ColourTexture(picture, game?.Picture == null ? carried : null, SeeThrough(item));
+            // Cut out (hair, capes, bullet holes): solid where its alpha reaches the game's threshold.
+            bool cutOut = carried?.CutOut == true && !SeeThrough(item);
+            (GpuTexture? texture, bool alpha) = ColourTexture(picture, game?.Picture == null ? carried : null, SeeThrough(item) || cutOut);
             GpuTexture? normals = NamedTexture(game?.NormalMap), shine = NamedTexture(game?.SpecularMap), glow = NamedTexture(game?.GlowMap);
+            AlienSkin? skin = game?.Skin;
             Upload(context, drawBuffer, new DrawConstants
             {
                 World = item.World,
@@ -440,7 +451,8 @@ sealed class SceneRenderer : IDisposable
                 Shine = game != null ? new Vector4(game.SpecularColour.X, game.SpecularColour.Y, game.SpecularColour.Z, game.SpecularPower) : Vector4.Zero,
                 Surface = game != null ? new Vector4(game.NormalHeight, game.SelfIllumination, game.GlowFalloffPower, game.GlowFalloffInversion) : Vector4.Zero,
                 Glow = game != null && glow != null ? new Vector4(game.GlowColour.X, game.GlowColour.Y, game.GlowColour.Z, 1) : Vector4.Zero,
-                Options = new Vector4(alpha ? 1 : 0, 0, 0, 0),
+                Options = new Vector4(alpha ? 1 : 0, cutOut && texture != null ? CutOutAlpha : 0, 0, 0),
+                Skin = skin != null ? new Vector4(skin.Full ? 1 : 2, skin.RimLightAmount, skin.RimLightPower, 0) : Vector4.Zero,
             });
             context.PSSetShaderResource(0, texture?.View!);
             context.PSSetShaderResource(3, normals?.View!);
