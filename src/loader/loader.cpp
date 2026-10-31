@@ -441,13 +441,14 @@ bool FindNewFile(FileFindResult* result, const char* name) {
 // in an archive and an override replaces that archive's copy (same size), the result is changed to
 // point at the override instead.
 // [Loader] LogLookups=1: every lookup of a level's files (zones, layers, archives, containers,
-// asset lists, terrain, stitch lists, navigation), with what the game found, goes to the log. For
-// working out which files a level loads (up to 4,000 lines a run).
+// asset lists, terrain, stitch lists, navigation, tables, time of day), with what the game found,
+// goes to the log. For working out which files a level loads (up to 4,000 lines a run).
 bool g_logLookups = false;
 
 bool IsLevelFile(const char* name) {
     static const char* const kinds[] = {".rfgzone_pc", ".layer_pc", ".vpp_pc", ".str2_pc", ".asm_pc", ".cterrain_pc",
-                                        ".ctmesh_pc", ".stchlst_pc", ".navdata_pc", ".precache", ".xtbl"};
+                                        ".ctmesh_pc", ".stchlst_pc", ".navdata_pc", ".precache", ".xtbl",
+                                        ".gtodx", ".dtodx"};
     const size_t length = strlen(name);
     for (const char* kind : kinds) {
         const size_t size = strlen(kind);
