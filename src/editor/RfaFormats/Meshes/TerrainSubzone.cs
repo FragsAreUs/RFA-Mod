@@ -34,15 +34,24 @@ namespace RfaFormats.Meshes;
 /// block count +0x2C), with 44-byte submeshes (one run-time word instead of two). Vertices are
 /// packed the same (format 14), but Guerrilla's zones are 511 m wide, so a grid step is 1 m.
 ///
-/// Guerrilla cuts its roads and paved places out of the ground and lays them in as more
-/// version-6 blocks later in the c-file (each block's g-data after the one before, from a multiple
-/// of 16): the roads (under a "_Road" name; 16-byte vertices, format 0: position as 3 floats, 4
-/// more bytes) on the ground's 1 m grid, and the paving around them (24-byte vertices, format 25,
-/// position first; with a ground material that has a road texture as a fifth layer). Their
-/// positions are metres from the zone's centre (the records before the blocks say so). They meet
-/// the ground exactly at the cut's edges and never overlap it; with them, what is still uncovered
-/// is where Guerrilla's rocks (stitch pieces) close the ground themselves. Read into
-/// <see cref="Paving"/>.
+/// After the ground's mesh block both games' files go on as their loaders walk them (Guerrilla's
+/// terrain_load_subzone): from a multiple of 4 the stitch pieces (104 bytes each: name, skirt
+/// count, skirts, stitched mesh count, stitched meshes, position, rotation, a Havok handle), then
+/// for each its name (to 4), its skirts (32 bytes each: two run-time words, the skirt's submesh in
+/// the stitch mesh, its position, two dead words) and its stitched mesh list (4 bytes each), to 4;
+/// a word, and if it isn't 0 the stitch mesh (from 16): the skirts, ground pieces on the 1 m grid
+/// around every stitch piece (the rocks, and a pseudo-piece named "_Road"; 16-byte vertices,
+/// format 0: position as 3 floats, a normal); then from 4 the road decal meshes' records (40 bytes
+/// each: instance count, run-time words, position), and for each, from 16, its mesh (24-byte
+/// vertices, Guerrilla's format 25 and Armageddon's 36: position, normal, tangent, UV), a run-time
+/// word for each of its instances, its texture name list (from 4: the list's size, the names), its
+/// material map (from 16, 16 bytes) and its material (the road shader, ir_terrain_road_layer2 in
+/// Armageddon: the ground's layers 0-2, the road texture and the blend map). The counts are in
+/// the header's fields (the stitch pieces at +0x5C, the road decals at +0x64), each mesh's g-data
+/// after the one before from a multiple of 16, and positions are metres from the record's (the
+/// zone's centre). Guerrilla cuts the ground open under its skirts and road decals, and they meet
+/// it exactly; with them, what is still uncovered is where the rocks close the ground themselves.
+/// Guerrilla's are read into <see cref="Paving"/> and <see cref="RoadDecals"/>.
 /// </summary>
 public sealed class TerrainSubzone
 {
@@ -73,8 +82,11 @@ public sealed class TerrainSubzone
     /// <summary>The triangles of each patch (its submesh), in the patches' order.</summary>
     public IReadOnlyList<int[]> PatchTriangles { get; }
 
-    /// <summary>Guerrilla's roads and paving in the sub-zone, three corners a triangle, in the world (empty for Armageddon's).</summary>
+    /// <summary>Guerrilla's skirts and road decals in the sub-zone (what fills the ground's cut-outs), three corners a triangle, in the world (empty for Armageddon's).</summary>
     public Vector3[] Paving { get; } = [];
+
+    /// <summary>Guerrilla's road decal meshes in the sub-zone (empty for Armageddon's).</summary>
+    public IReadOnlyList<GuerrillaRoadDecal> RoadDecals { get; } = [];
 
     TerrainSubzone(byte[] header, byte[] data)
     {
@@ -152,43 +164,128 @@ public sealed class TerrainSubzone
         }
         PatchTriangles = patches;
         Triangles = [.. patches.SelectMany(p => p)];
-        if (guerrilla) Paving = GuerrillaPaving(header, data, at);
+        if (guerrilla) (Paving, RoadDecals) = GuerrillaFill(header, data, fields, at);
     }
 
-    /// <summary>The road and paving blocks after the ground's (at <paramref name="groundAt"/>): their triangles' corners in the world.</summary>
-    Vector3[] GuerrillaPaving(byte[] header, byte[] data, int groundAt)
+    /// <summary>Where a road decal's parts are in a sub-zone's c-file: its record, mesh block, name list (its size first), material map and material; where the material ends; where its g-data starts.</summary>
+    internal sealed record RoadDecalSections(int Record, int Mesh, int Names, int Map, int Material, int End, int Data);
+
+    /// <summary>
+    /// The sections after the ground's mesh block (at <paramref name="groundAt"/>), walked as the
+    /// game's loader walks them (see the class's notes): the stitch mesh (-1 if none) and where its
+    /// g-data starts, and the road decals' parts. <paramref name="fields"/> is where version 42's
+    /// fields start (Guerrilla's a word before its own).
+    /// </summary>
+    internal static (int StitchMesh, int StitchMeshData, List<RoadDecalSections> Decals) Sections(byte[] header, int fields, int groundAt, bool guerrilla)
     {
-        // The zone's centre: the middle of the 511 m square around the sub-zone.
-        const float zoneWidth = 511;
-        Vector3 middle = (BoundsMin + BoundsMax) / 2;
-        var centre = new Vector3(MathF.Floor(middle.X / zoneWidth) * zoneWidth + zoneWidth / 2, 0, MathF.Floor(middle.Z / zoneWidth) * zoneWidth + zoneWidth / 2);
-        var corners = new List<Vector3>();
-        int dataAt = 0;
-        for (int at = groundAt; at + 0x30 <= header.Length; at += 4)
+        static int Align(int value, int to) => (value + to - 1) / to * to;
+        int I(int o) => BitConverter.ToInt32(header, o);
+        int stitchPieces = I(fields + 0x5C), roadDecals = I(fields + 0x64);
+        int dataAt = Align(I(groundAt + 0x0C), 16);
+        int at = Align(groundAt + I(groundAt + 8), 4);
+        int pieces = at;
+        at += stitchPieces * 104;
+        for (int k = 0; k < stitchPieces; k++)
         {
-            // A block is taken only where its checksum also starts the next g-data.
-            if (!IsGuerrillaMeshBlock(header, at) || dataAt + 4 > data.Length || U32(data, dataAt) != U32(header, at + 4)) continue;
-            int start = dataAt;
-            dataAt = (dataAt + (int)U32(header, at + 0x0C) + 15) & ~15;
-            int vertexSize = header[at + 0x1C], format = header[at + 0x1D];
-            if (at == groundAt || !(vertexSize == 16 && format == 0 || vertexSize == 24 && format == 25) || header[at + 0x2C] != 2 || header[at + 0x2D] != 0) continue;
-            int submeshes = (int)U32(header, at + 0x10), table = at + (int)U32(header, at + 0x14), vertexCount = (int)U32(header, at + 0x18);
-            int vertexOffset = start + (int)U32(header, at + 0x20), indexCount = (int)U32(header, at + 0x24), indexOffset = start + (int)U32(header, at + 0x28);
-            var positions = new Vector3[vertexCount];
-            for (int v = 0; v < vertexCount; v++)
-            {
-                int p = vertexOffset + v * vertexSize;
-                positions[v] = centre + new Vector3(F32(data, p), F32(data, p + 4), F32(data, p + 8));
-            }
-            var indices = new int[indexCount];
-            for (int i = 0; i < indexCount; i++) indices[i] = BitConverter.ToUInt16(data, indexOffset + i * 2);
-            // Each submesh has the next of the render blocks (20 bytes: a word, first index, count, ...), as many as its first word says.
-            int blockTable = table + submeshes * 44;
-            for (int s = 0, b = 0; s < submeshes; s++)
-                for (int end = b + (int)U32(header, table + s * 44); b < end; b++)
-                    foreach (int corner in ModelFile.StripToTriangles(indices, (int)U32(header, blockTable + b * 20 + 4), (int)U32(header, blockTable + b * 20 + 8)))
-                        corners.Add(positions[corner]);
+            int nameEnd = Array.IndexOf(header, (byte)0, at);
+            at = Align(nameEnd + 1, 4);
+            at += I(pieces + k * 104 + 4) * 32;   // its skirts
+            at += I(pieces + k * 104 + 0x0C) * 4;  // its stitched meshes
+            at = Align(at, 4);
         }
+        int stitchMesh = -1, stitchMeshData = -1;
+        if (I(at) != 0)
+        {
+            stitchMesh = Align(at + 4, 16);
+            stitchMeshData = dataAt;
+            dataAt = Align(dataAt + I(stitchMesh + 0x0C), 16);
+            at = stitchMesh + I(stitchMesh + 8);
+        }
+        else at += 4;
+        at = Align(at, 4);
+        int records = at;
+        at += roadDecals * 40;
+        var decals = new List<RoadDecalSections>();
+        for (int k = 0; k < roadDecals; k++)
+        {
+            int mesh = Align(at, 16);
+            // After the mesh, a run-time slot for each of its instances (the record's first word), then from 4 the name list's size and names.
+            int names = Align(mesh + I(mesh + 8) + I(records + k * 40) * 4, 4);
+            int map = Align(names + 4 + I(names), 16), material = map + 16;
+            at = material + I(material);
+            decals.Add(new RoadDecalSections(records + k * 40, mesh, names, map, material, at, dataAt));
+            dataAt = Align(dataAt + I(mesh + 0x0C), 16);
+        }
+        if (at > header.Length) throw new InvalidDataException("the sub-zone's stitch and road sections run past its end");
+        return (stitchMesh, stitchMeshData, decals);
+    }
+
+    /// <summary>Guerrilla's skirts and road decals after the ground's mesh block (at <paramref name="groundAt"/>): all their triangles' corners in the world, and the road decals.</summary>
+    static (Vector3[] Corners, IReadOnlyList<GuerrillaRoadDecal> Decals) GuerrillaFill(byte[] header, byte[] data, int fields, int groundAt)
+    {
+        // The skirts' positions are from the zone's centre (their records say so), the road decals' from their records'.
+        const float zoneWidth = 511;
+        Vector3 middle = (BoundsMinOf(header, fields) + BoundsMaxOf(header, fields)) / 2;
+        var centre = new Vector3(MathF.Floor(middle.X / zoneWidth) * zoneWidth + zoneWidth / 2, 0, MathF.Floor(middle.Z / zoneWidth) * zoneWidth + zoneWidth / 2);
+        var (stitchMesh, stitchMeshData, sections) = Sections(header, fields, groundAt, guerrilla: true);
+        var corners = new List<Vector3>();
+        if (stitchMesh >= 0) corners.AddRange(MeshCorners(header, data, stitchMesh, stitchMeshData, centre));
+        var decals = new List<GuerrillaRoadDecal>();
+        foreach (var d in sections)
+        {
+            var position = new Vector3(F32(header, d.Record + 0x1C), F32(header, d.Record + 0x20), F32(header, d.Record + 0x24));
+            var triangles = MeshCorners(header, data, d.Mesh, d.Data, position);
+            corners.AddRange(triangles);
+            int gSize = (int)U32(header, d.Mesh + 0x0C);
+            // The texture names (the list's size, then the names one after another) and the material's slots and constants.
+            var names = new List<string>();
+            for (int n = d.Names + 4, end = d.Names + 4 + (int)U32(header, d.Names); n < end;)
+            {
+                int zero = Array.IndexOf(header, (byte)0, n);
+                if (zero > n) names.Add(Encoding.ASCII.GetString(header, n, zero - n));
+                n = zero + 1;
+            }
+            int textureCount = BitConverter.ToUInt16(header, d.Material + 0x10), constantCount = header[d.Material + 0x12];
+            string NameAt(int offset)
+            {
+                int start = d.Names + 4 + offset;
+                return Encoding.ASCII.GetString(header, start, Array.IndexOf(header, (byte)0, start) - start);
+            }
+            var slots = Enumerable.Range(0, textureCount).Select(t => (U32(header, d.Material + 0x20 + t * 12 + 4), NameAt((int)U32(header, d.Material + 0x20 + t * 12)))).ToList();
+            int hashes = d.Material + 0x20 + textureCount * 12, values = d.Material + ((0x20 + textureCount * 12 + constantCount * 4 + 15) & ~15);
+            var constants = new Dictionary<uint, Vector4>();
+            for (int c = 0; c < constantCount; c++)
+                constants[U32(header, hashes + c * 4)] = new Vector4(F32(header, values + c * 16), F32(header, values + c * 16 + 4), F32(header, values + c * 16 + 8), F32(header, values + c * 16 + 12));
+            decals.Add(new GuerrillaRoadDecal(header[d.Record..(d.Record + 40)], position, header[d.Mesh..(d.Mesh + (int)U32(header, d.Mesh + 8))],
+                                              data[d.Data..(d.Data + gSize)], names, slots, constants, triangles));
+        }
+        return ([.. corners], decals);
+    }
+
+    static Vector3 BoundsMinOf(byte[] header, int fields) => new(F32(header, fields + 0x24), F32(header, fields + 0x28), F32(header, fields + 0x2C));
+    static Vector3 BoundsMaxOf(byte[] header, int fields) => new(F32(header, fields + 0x30), F32(header, fields + 0x34), F32(header, fields + 0x38));
+
+    /// <summary>A version-6 mesh block's triangles' corners, its positions (3 floats first in each vertex) from <paramref name="origin"/>; its g-data from <paramref name="dataAt"/>.</summary>
+    static Vector3[] MeshCorners(byte[] header, byte[] data, int at, int dataAt, Vector3 origin)
+    {
+        int vertexSize = header[at + 0x1C];
+        int submeshes = (int)U32(header, at + 0x10), table = at + (int)U32(header, at + 0x14), vertexCount = (int)U32(header, at + 0x18);
+        int vertexOffset = dataAt + (int)U32(header, at + 0x20), indexCount = (int)U32(header, at + 0x24), indexOffset = dataAt + (int)U32(header, at + 0x28);
+        var positions = new Vector3[vertexCount];
+        for (int v = 0; v < vertexCount; v++)
+        {
+            int p = vertexOffset + v * vertexSize;
+            positions[v] = origin + new Vector3(F32(data, p), F32(data, p + 4), F32(data, p + 8));
+        }
+        var indices = new int[indexCount];
+        for (int i = 0; i < indexCount; i++) indices[i] = BitConverter.ToUInt16(data, indexOffset + i * 2);
+        // Each submesh has the next of the render blocks (20 bytes: a word, first index, count, ...), as many as its first word says.
+        var corners = new List<Vector3>();
+        int blockTable = table + submeshes * 44;
+        for (int s = 0, b = 0; s < submeshes; s++)
+            for (int end = b + (int)U32(header, table + s * 44); b < end; b++)
+                foreach (int corner in ModelFile.StripToTriangles(indices, (int)U32(header, blockTable + b * 20 + 4), (int)U32(header, blockTable + b * 20 + 8)))
+                    corners.Add(positions[corner]);
         return [.. corners];
     }
 
@@ -282,8 +379,10 @@ public sealed class TerrainSubzone
     /// g-file.
     /// </summary>
     /// <param name="number">The sub-zone's number in its zone, 0 to 8 (row × 3 + column, rows from the lowest z).</param>
+    /// <param name="roads">Road decal meshes to lay after the ground (see the class's notes), or none.</param>
     public static (byte[] Header, byte[] Data) Write(int number, Vector2 origin, IReadOnlyList<GroundVertex> vertices,
-                                                     IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep = GridStep)
+                                                     IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep = GridStep,
+                                                     IReadOnlyList<RoadDecalToWrite>? roads = null)
     {
         const int fields = 0x18;
         byte[] prefix = new byte[fields + 0x48 + LoadArea];
@@ -293,6 +392,7 @@ public sealed class TerrainSubzone
         BitConverter.TryWriteBytes(prefix.AsSpan(0x0C), HeaderWord);
         BitConverter.TryWriteBytes(prefix.AsSpan(fields), 1);
         BitConverter.TryWriteBytes(prefix.AsSpan(fields + 4), number);
+        BitConverter.TryWriteBytes(prefix.AsSpan(fields + 0x64), roads?.Count ?? 0);
         // The checksum: a hash of the ground (any value ties the halves together, as long as both carry it).
         uint checksum = 2166136261;
         void Mix(int value) { foreach (byte b in BitConverter.GetBytes(value)) checksum = (checksum ^ b) * 16777619; }
@@ -301,12 +401,13 @@ public sealed class TerrainSubzone
         foreach (var patch in patches) foreach (PatchBlock b in patch) { Mix((int)b.Kind); foreach (int i in b.Strip) Mix(i); }
         if (checksum == 0) checksum = 1;
         byte[] sixFloats = [.. new[] { 1f, 1f, 1f, 0f, 0f, 0f }.SelectMany(BitConverter.GetBytes)];
-        return Write(prefix, fields, checksum, GroundKind, sixFloats, new byte[4], BitConverter.GetBytes(checksum), origin, vertices, patches, gridStep);
+        return Write(prefix, fields, checksum, GroundKind, sixFloats, new byte[4], BitConverter.GetBytes(checksum), origin, vertices, patches, gridStep, roads);
     }
 
     /// <summary>The shared part: <paramref name="prefix"/> is the header up to the first patch, its fields at <paramref name="fields"/>.</summary>
     static (byte[] Header, byte[] Data) Write(byte[] prefix, int fields, uint checksum, uint material, byte[] sixFloats, byte[] afterBlock, byte[] dataTail,
-                                              Vector2 origin, IReadOnlyList<GroundVertex> vertices, IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep)
+                                              Vector2 origin, IReadOnlyList<GroundVertex> vertices, IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep,
+                                              IReadOnlyList<RoadDecalToWrite>? roads = null)
     {
         if (vertices.Count is 0 or > 65536) throw new ArgumentException($"{vertices.Count} vertices: a sub-zone holds 1 to 65,536");
         if (patches.Count == 0 || patches.Any(p => p.Count == 0 || p.Any(b => b.Strip.Length < 3))) throw new ArgumentException("every patch needs a strip");
@@ -407,7 +508,30 @@ public sealed class TerrainSubzone
         while (output.Length % 16 != 0) h.Write((byte)0);
         h.Write(meshBlock.ToArray());
         h.Write(afterBlock);
-        return (output.ToArray(), dataBytes);
+        if (roads == null || roads.Count == 0) return (output.ToArray(), dataBytes);
+
+        // The road decals (after no stitch pieces and no stitch mesh: the 0 word in afterBlock): their
+        // records from 4, then each one's mesh from 16, a run-time slot for each instance, from 4 its
+        // name list, from 16 its material map and material; each mesh's g-data after the ground's, from 16.
+        void Align(int to) { while (output.Length % to != 0) h.Write((byte)0); }
+        Align(4);
+        foreach (RoadDecalToWrite road in roads) h.Write(road.Record);
+        var roadData = new MemoryStream();
+        roadData.Write(dataBytes);
+        foreach (RoadDecalToWrite road in roads)
+        {
+            Align(16);
+            h.Write(road.Mesh);
+            h.Write(new byte[road.Instances * 4]);
+            Align(4);
+            h.Write(road.Names);
+            Align(16);
+            h.Write(road.Map);
+            h.Write(road.Material);
+            while (roadData.Length % 16 != 0) roadData.WriteByte(0);
+            roadData.Write(road.Data);
+        }
+        return (output.ToArray(), roadData.ToArray());
     }
 
     static byte NormalByte(float value) => (byte)Math.Clamp(MathF.Round((value + 1) * 127.5f), 0, 255);
@@ -453,3 +577,19 @@ public sealed class TerrainSubzone
 
 /// <summary>A vertex of ground to write (see <see cref="TerrainSubzone.Write"/>): its place on the sub-zone's grid (0-255 steps from its origin), its height in metres, and its normal.</summary>
 public readonly record struct GroundVertex(int XStep, int ZStep, float Height, Vector3 Normal);
+
+/// <summary>
+/// One of Guerrilla's road decal meshes: its 40-byte record, its position (the zone's centre, its
+/// vertices' origin), its version-6 mesh block and g-data, its texture name list, its material's
+/// slots (slot hash, texture) and constants (name hash, value), and its triangles in the world.
+/// </summary>
+public sealed record GuerrillaRoadDecal(byte[] Record, Vector3 Position, byte[] MeshBlock, byte[] MeshData, IReadOnlyList<string> Names,
+                                        IReadOnlyList<(uint Slot, string Texture)> Slots, IReadOnlyDictionary<uint, Vector4> Constants, Vector3[] Corners);
+
+/// <summary>
+/// A road decal mesh as Armageddon's sub-zones hold it: its 40-byte record (instance count first,
+/// then run-time words and its position), its version-9 mesh block, how many instances it has (a
+/// run-time slot each after the mesh), its texture name list (the list's size, then the names),
+/// its 16-byte material map and its material block; and its mesh's g-data.
+/// </summary>
+public sealed record RoadDecalToWrite(byte[] Record, byte[] Mesh, int Instances, byte[] Names, byte[] Map, byte[] Material, byte[] Data);

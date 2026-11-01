@@ -25,6 +25,9 @@ public static class MeshBlockConversion
         int I(int o) => BitConverter.ToInt32(file, at + o);
         if (I(0) != 6) throw new InvalidDataException($"mesh block version {I(0)}, not 6");
         int submeshes = I(0x10), table = I(0x14), blocks = BitConverter.ToUInt16(file, at + 0x2E);
+        // The terrain's road decal and skirt meshes give 0 render blocks here and as many a submesh as
+        // its first word says (Armageddon's own keep the 0): count them from the submeshes.
+        if (blocks == 0) blocks = Enumerable.Range(0, submeshes).Sum(s => I(table + s * 44));
         uint checksum = BitConverter.ToUInt32(file, at + 4);
         int end6 = table + submeshes * 44 + blocks * 20;
         if (BitConverter.ToUInt32(file, at + end6) != checksum) throw new InvalidDataException("the version-6 block doesn't end with its checksum where its counts say");
