@@ -60,6 +60,7 @@ public static class Icons
     public const string Spawn = "";
     public const string Pickup = "\uE7B8";  // Package
     public const string Mission = "\uE7C1";  // Flag: a mission layer shown with its zone
+    public const string Locked = "\uE72E";   // Lock: a property Volition's editor kept read-only
     public const string Marker = "";
 }
 

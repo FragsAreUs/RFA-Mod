@@ -79,7 +79,7 @@
 
                         <Rectangle Style="{StaticResource ToolbarSeparator}" />
                         <Button x:Name="AddButton" Style="{StaticResource ToolButton}" Click="OnAddClicked"
-                                ToolTip="Add an object: a copy of one of this file's, where the middle of the view points">
+                                ToolTip="Add an object where the middle of the view points: a copy of one of this file's, or a new one of any class in the game's schema">
                             <TextBlock Text="{x:Static local:Icons.Add}" Style="{StaticResource Icon}" />
                         </Button>
                         <Popup x:Name="AddPopup" PlacementTarget="{Binding ElementName=AddButton}" Placement="Bottom" StaysOpen="False"
@@ -88,7 +88,7 @@
                                     CornerRadius="4" Padding="8" Width="380">
                                 <DockPanel>
                                     <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource DimTextBrush}" Margin="0,0,0,6"
-                                               Text="Add a copy of one of this file's objects where the middle of the view points. Its model is already in the zone, so the game can show it." />
+                                               Text="Added where the middle of the view points: a copy of one of this file's objects (its model is already in the zone, so the game can show it), or a new object of a class from the game's schema, with its defaults." />
                                     <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
                                         <TextBox x:Name="AddFilterBox" Padding="26,4,4,4" TextChanged="OnAddFilterChanged" PreviewKeyDown="OnAddListKey" />
                                         <TextBlock Text="{x:Static local:Icons.Search}" Style="{StaticResource Icon}" FontSize="12" HorizontalAlignment="Left"
@@ -229,8 +229,11 @@
             </StackPanel>
             <StackPanel x:Name="PropertiesSection">
                 <TextBlock Text="PROPERTIES" Style="{StaticResource SectionTitle}"
-                           ToolTip="Hover over a property's name for its name in the game and its type" />
+                           ToolTip="As the game's zone schema (Volition's level editor's) describes them. Hover over a property's name for its name in the game, its type and default" />
                 <StackPanel x:Name="PropertyPanel" />
+                <CheckBox x:Name="ShowAllPropertiesBox" Content="Show hidden and read-only properties" Margin="0,8,0,0"
+                          Checked="OnShowAllPropertiesChanged" Unchecked="OnShowAllPropertiesChanged"
+                          ToolTip="Volition's editor hid some properties and kept others read-only (its tools set them: a model's name, a light's curve files). Tick to show and change them anyway" />
             </StackPanel>
             <StackPanel x:Name="LinksSection" Visibility="Collapsed">
                 <TextBlock Text="LINKS" Style="{StaticResource SectionTitle}"

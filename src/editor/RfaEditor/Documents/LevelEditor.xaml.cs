@@ -62,6 +62,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     readonly HashSet<ObjectKind> hiddenKinds = [];
     ZoneFile zone;
     readonly ZoneNames names;
+    readonly ZonePropertyRows propertyRows;  // the inspector's properties, as the game's zone schema describes them
     LevelScene? scene;
     List<RelatedFile>? related;  // the zone's other files, drawn with it (found once the index is ready)
     readonly Dictionary<ZoneObject, RelatedFile> relatedOf = [];  // ...and which of them each of their objects is in
@@ -117,6 +118,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         Outliner = DocumentParts.Detach(OutlinerPart);
         Inspector = DocumentParts.Detach(InspectorPart);
         names = context.Assets.ZoneNames;
+        propertyRows = new ZonePropertyRows(names, context.Assets.ZoneSchema, context.Assets.Choices);
         zone = ZoneFile.Read(ReadZone());
         gameLink = new GameLink(Workspace.ModFolder);
         ViewArea.SizeChanged += (_, _) => UpdateCamera();  // the field of view depends on the view's shape while following the game
@@ -395,10 +397,25 @@ public partial class LevelEditor : UserControl, IEditorDocument
             rotation => TurnSelected(rotation, fromInspector: true),
             () => CommitEdit());
         TransformHost.Content = transform.View;
-        foreach (UIElement row in ZonePropertyRows.For(selected, names, OnPropertyChanged, () => CommitEdit()))
-            PropertyPanel.Children.Add(row);
+        ShowPropertyRows();
         ShowLinkRows();
     }
+
+    /// <summary>
+    /// The picked object's properties (see <see cref="ZonePropertyRows"/>). Made again after a
+    /// property was added or taken out (a flag ticked, a default set), as the object's properties
+    /// are read afresh then; after the click that did it has finished.
+    /// </summary>
+    void ShowPropertyRows()
+    {
+        PropertyPanel.Children.Clear();
+        if (selected == null) return;
+        foreach (UIElement row in propertyRows.For(selected, ShowAllPropertiesBox.IsChecked == true, OnPropertyChanged, () => CommitEdit(),
+                                                   () => Dispatcher.BeginInvoke(ShowPropertyRows)))
+            PropertyPanel.Children.Add(row);
+    }
+
+    void OnShowAllPropertiesChanged(object sender, RoutedEventArgs e) => ShowPropertyRows();
 
     void ShowObjectTitle()
     {
@@ -444,7 +461,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         if (pack.Find(file.Name) is { } entry) context.OpenLevel(new GameFile(pack, entry, file.Archive, file.Container));
     }
 
-    void OnPropertyChanged(ZoneProperty property)
+    void OnPropertyChanged()
     {
         MarkUnsaved();
         if (selected == null) return;
@@ -903,7 +920,10 @@ public partial class LevelEditor : UserControl, IEditorDocument
         LinksChanged();
     }
 
-    /// <summary>The Add list: one of each kind of object the file has (by class and name), to add a copy of.</summary>
+    /// <summary>
+    /// The Add list: one of each kind of object the file has (by class and name), to add a copy of;
+    /// then every class in the game's zone schema that can be made from it, to add a new one of.
+    /// </summary>
     void OnAddClicked(object sender, RoutedEventArgs e)
     {
         AddFilterBox.Text = "";
@@ -926,49 +946,128 @@ public partial class LevelEditor : UserControl, IEditorDocument
             .Select(g => (g.Key.Class, g.Key.Label, Example: g.First(), Count: g.Count(), Kind: KindOf(g.First())))
             .Where(k => filter.Length == 0 || k.Class.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                         k.Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(k => ObjectKind.All.IndexOf(k.Kind)).ThenBy(k => k.Label.Length == 0 ? k.Class : k.Label, StringComparer.OrdinalIgnoreCase);
+            .OrderBy(k => ObjectKind.All.IndexOf(k.Kind)).ThenBy(k => k.Label.Length == 0 ? k.Class : k.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (kinds.Count > 0) AddList.Items.Add(AddListHeading("COPY ONE OF THIS FILE'S"));
         foreach (var (className, label, example, count, kind) in kinds)
+            AddList.Items.Add(AddListRow(kind, label.Length > 0 ? label : className, label.Length > 0 ? className : null, count.ToString("N0"),
+                                         $"{className}: {count:N0} in this file. A copy of one is added where the middle of the view points.", example));
+
+        if (context.Assets.ZoneSchema is not { } schema) return;
+        bool Matches(SchemaClass type) => filter.Length == 0 || type.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
+                                          type.Description?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true;
+        var classes = schema.Classes.Where(c => c.CantMake == null && Matches(c))
+            .Select(c => (Class: c, Kind: ObjectKind.Of(c.ZoneClassNames[0], false), Title: c.Description is { Length: > 0 } title ? title : c.Name))
+            .OrderBy(c => ObjectKind.All.IndexOf(c.Kind)).ThenBy(c => c.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (classes.Count > 0) AddList.Items.Add(AddListHeading("NEW, FROM THE GAME'S SCHEMA"));
+        foreach (var (type, kind, title) in classes)
+            AddList.Items.Add(AddListRow(kind, title, title != type.Name ? type.Name : null, type.InTheGame ? "" : "unused",
+                                         $"A new {type.Name}{(type.Description != null ? $" ({type.Description})" : "")}, with every property the schema's " +
+                                         "default, added where the middle of the view points." +
+                                         (type.InTheGame ? "" : "\nNone of the game's levels have one, so the game may do nothing with it."), type));
+        var cant = schema.Classes.Where(c => c.CantMake != null && Matches(c)).ToList();
+        if (cant.Count > 0)
         {
-            var row = new DockPanel { ToolTip = $"{className}: {count:N0} in this file. A copy of one is added where the middle of the view points." };
-            TextBlock icon = Theme.Icon(kind.Icon, 12, kind.Brush);
-            icon.Width = 18;
-            DockPanel.SetDock(icon, Dock.Left);
-            row.Children.Add(icon);
-            var counted = new TextBlock { Text = count.ToString("N0"), Foreground = Theme.Brush("DimTextBrush"), FontSize = 11, Margin = new Thickness(8, 0, 0, 0) };
-            DockPanel.SetDock(counted, Dock.Right);
-            row.Children.Add(counted);
-            var text = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis };
-            text.Inlines.Add(new System.Windows.Documents.Run(label.Length > 0 ? label : className));
-            if (label.Length > 0)
-                text.Inlines.Add(new System.Windows.Documents.Run("  " + className) { Foreground = Theme.Brush("DimTextBrush"), FontSize = 11 });
-            row.Children.Add(text);
-            AddList.Items.Add(new ListBoxItem { Content = row, Tag = example });
+            var note = new ListBoxItem
+            {
+                IsEnabled = false, Focusable = false,
+                Content = new TextBlock { Text = $"{cant.Count} more can't be made from the schema alone (hover to see why)", FontSize = 11, Foreground = Theme.Brush("DimTextBrush") },
+                ToolTip = string.Join("\n", cant.Select(c => $"{c.Name}: {c.CantMake}")),
+            };
+            ToolTipService.SetShowOnDisabled(note, true);
+            AddList.Items.Add(note);
         }
+    }
+
+    static ListBoxItem AddListHeading(string text) => new()
+    {
+        IsEnabled = false, Focusable = false,
+        Content = new TextBlock { Text = text, Style = Theme.Style("SectionTitle"), Margin = new Thickness(0, 4, 0, 2) },
+    };
+
+    /// <summary>A row of the Add list: the kind's icon, a title and a dim second name, a note on the right; its tag is what to add.</summary>
+    static ListBoxItem AddListRow(ObjectKind kind, string title, string? dim, string note, string tip, object tag)
+    {
+        var row = new DockPanel { ToolTip = tip };
+        TextBlock icon = Theme.Icon(kind.Icon, 12, kind.Brush);
+        icon.Width = 18;
+        DockPanel.SetDock(icon, Dock.Left);
+        row.Children.Add(icon);
+        var noted = new TextBlock { Text = note, Foreground = Theme.Brush("DimTextBrush"), FontSize = 11, Margin = new Thickness(8, 0, 0, 0) };
+        DockPanel.SetDock(noted, Dock.Right);
+        row.Children.Add(noted);
+        var text = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis };
+        text.Inlines.Add(new System.Windows.Documents.Run(title));
+        if (dim != null) text.Inlines.Add(new System.Windows.Documents.Run("  " + dim) { Foreground = Theme.Brush("DimTextBrush"), FontSize = 11 });
+        row.Children.Add(text);
+        return new ListBoxItem { Content = row, Tag = tag };
     }
 
     void OnAddListClicked(object sender, MouseButtonEventArgs e)
     {
-        if ((e.OriginalSource as DependencyObject) is { } hit && ItemsControl.ContainerFromElement(AddList, hit) is ListBoxItem { Tag: ZoneObject example })
-            AddFromList(example);
+        if ((e.OriginalSource as DependencyObject) is { } hit && ItemsControl.ContainerFromElement(AddList, hit) is ListBoxItem { Tag: { } chosen })
+            AddFromList(chosen);
     }
 
     void OnAddListKey(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && AddList.SelectedItem is ListBoxItem { Tag: ZoneObject example }) AddFromList(example);
+        if (e.Key == Key.Enter && AddList.SelectedItem is ListBoxItem { Tag: { } chosen }) AddFromList(chosen);
         else if (e.Key == Key.Down && sender == AddFilterBox && AddList.Items.Count > 0)
         {
-            AddList.SelectedIndex = 0;
-            (AddList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem)?.Focus();
+            int first = AddList.Items.Cast<ListBoxItem>().ToList().FindIndex(item => item.IsEnabled);
+            if (first < 0) return;
+            AddList.SelectedIndex = first;
+            (AddList.ItemContainerGenerator.ContainerFromIndex(first) as ListBoxItem)?.Focus();
         }
         else return;
         e.Handled = true;
     }
 
-    void AddFromList(ZoneObject example)
+    /// <summary>Adds what was picked in the Add list: a copy of one of the file's objects, or a new object of a schema class.</summary>
+    void AddFromList(object chosen)
     {
         AddPopup.IsOpen = false;
-        AddCopy(example, PointAhead(), "Add");
+        if (chosen is ZoneObject example) AddCopy(example, PointAhead(), "Add");
+        else if (chosen is SchemaClass type) AddNew(type, PointAhead());
         ViewArea.Focus();
+    }
+
+    /// <summary>
+    /// Adds a new object of a class from the game's zone schema at a place, with every property the
+    /// schema's default, as Volition's tools would have written it (see
+    /// <see cref="SchemaClass.NewObject"/> and <see cref="ZoneFile.AddNew"/>), and picks it. As for
+    /// copies, its handle must not be one the zone's other files use, so this waits for the index.
+    /// </summary>
+    void AddNew(SchemaClass type, Vector3 at)
+    {
+        if (!context.Assets.IndexReady)
+        {
+            context.Log("The editor is still reading the game's files (to find handles the zone's other files use). Try again in a few seconds.");
+            return;
+        }
+        CommitEdit();
+        ZoneObject obj;
+        try
+        {
+            (Vector3 min, Vector3 max) = type.NewObjectBounds(at);
+            obj = zone.AddNew(NameHashes.ClassHash(type.ZoneClassNames[0]), type.NewObject(at, context.Assets.Choices), min, max, TakenHandles());
+        }
+        catch (InvalidOperationException ex)
+        {
+            MessageBox.Show($"Couldn't add a new {type.Name}: {ex.Message}.", "Level editor", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        scene?.Add(obj);
+        RemovedObjects? removed = null;
+        Record(new Change(obj, "Add",
+            Undo: () => { removed = zone.Remove(obj); scene?.Remove(obj); },
+            Redo: () => { if (removed != null) zone.PutBack(removed); scene?.Add(obj); },
+            AddsOrRemoves: true));
+        ObjectsChanged();
+        PickInOutliner(obj);
+        context.Log($"Add: a new {type.Name} (handle {obj.Handle:X8}) with the schema's defaults, where the view points, at {at.X:0.#}, {at.Y:0.#}, {at.Z:0.#}." +
+                    (type.InTheGame ? "" : " None of the game's levels have one, so the game may do nothing with it."));
     }
 
     /// <summary>Where the middle of the view points: the first thing drawn there (within 300 m), or 15 m ahead.</summary>
