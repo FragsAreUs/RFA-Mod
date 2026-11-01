@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
+using RfaFormats.Meshes;
 using RfaFormats.Textures;
 
 namespace RfaFormats.Guerrilla;
@@ -25,16 +26,17 @@ namespace RfaFormats.Guerrilla;
 /// over in place, so the new names must be no longer: short aliases), its tint (Guerrilla's
 /// Diffuse_Color, on the same scale as Guerrilla's ground layer tints) and its detail map (a white
 /// one of ours, which the boulder's shader, ir_detail_nospec, multiplying the colour by
-/// lerp(1, detail, k), leaves as it is). Its collision stays the boulder's: the stitch lists'
-/// collision tree doesn't reach the rocks yet, so they have none.
+/// lerp(1, detail, k), leaves as it is). Its collision is Guerrilla's own collision mesh for the
+/// piece, written into the template's Havok 2010 collision with a tree of ours over its triangles
+/// (<see cref="PieceCollision"/>); the zone's stitch list's tree reaches every piece.
 /// </summary>
 public static class GuerrillaRocks
 {
     /// <summary>The Armageddon piece the rocks are made over, in dlc01_precache.vpp_pc.</summary>
     public const string TemplatePiece = "ter_sur_blder";
 
-    /// <summary>A converted piece: its files, the box its mesh fills (in its own coordinates), its Guerrilla texture names (with .tga) and its tint.</summary>
-    public sealed record Piece(byte[] Header, byte[] Data, Vector3 Min, Vector3 Max, string Diffuse, string Normal, Vector4 Tint);
+    /// <summary>A converted piece: its files, the box its mesh fills (in its own coordinates), its Guerrilla texture names (with .tga), its tint, and the box its collision fills.</summary>
+    public sealed record Piece(byte[] Header, byte[] Data, Vector3 Min, Vector3 Max, string Diffuse, string Normal, Vector4 Tint, Vector3 CollisionMin, Vector3 CollisionMax);
 
     /// <summary>A piece a Guerrilla zone places: its name, where (world position), turned how (rows right, up, forward), the area it covers from above.</summary>
     public sealed record Placement(string Name, Vector3 Position, float[] Rotation, Vector2 AreaMin, Vector2 AreaMax);
@@ -136,7 +138,13 @@ public static class GuerrillaRocks
         Rename(header, TemplateDetailTexture + ".tga", WhiteTexture + ".tga");
         var tint = MaterialBlocks.GuerrillaConstant(rfgHeader, DiffuseColor) ?? throw new InvalidDataException("the Guerrilla piece has no Diffuse_Color");
         if (MaterialBlocks.SetConstant(header, DiffuseColor, tint) != 1) throw new InvalidDataException("the template's Diffuse_Color wasn't found");
-        return new Piece(header, dataBytes, min, max, diffuse, normal, tint);
+
+        // Its collision: Guerrilla's own collision mesh, in the template's Havok 2010 layout.
+        var (collisionVertices, collisionTriangles) = PieceCollision.Read(rfgHeader);
+        header = PieceCollision.Replace(header, collisionVertices, collisionTriangles);
+        var collisionMin = collisionVertices.Aggregate(new Vector3(float.MaxValue), Vector3.Min);
+        var collisionMax = collisionVertices.Aggregate(new Vector3(float.MinValue), Vector3.Max);
+        return new Piece(header, dataBytes, min, max, diffuse, normal, tint, collisionMin, collisionMax);
     }
 
     static void Rename(byte[] header, string oldName, string newName)

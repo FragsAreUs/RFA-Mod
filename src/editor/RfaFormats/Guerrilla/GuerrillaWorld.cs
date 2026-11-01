@@ -233,6 +233,9 @@ public static class GuerrillaWorld
         var floorModel = ModelFile.Read(FloorPiece + ".cstch_pc", floorHeader, floorData);
         Vector2 floorMin = new(floorModel.Positions.Min(p => p.X), floorModel.Positions.Min(p => p.Z));
         Vector2 floorMax = new(floorModel.Positions.Max(p => p.X), floorModel.Positions.Max(p => p.Z));
+        var (floorCollision, _) = PieceCollision.Read(floorHeader);
+        var floorCollisionMin = floorCollision.Aggregate(new Vector3(float.MaxValue), Vector3.Min);
+        var floorCollisionMax = floorCollision.Aggregate(new Vector3(float.MinValue), Vector3.Max);
 
         byte[] terrainTemplate = Pre("ruin01.cterrain_pc"), terrainDataTemplate = Pre("ruin01.gterrain_pc"), navTemplate = Pre("ruin01.navdata_pc");
         byte[] zoneTemplate = Ruin("ruin01.rfgzone_pc"), persistentTemplate = Ruin("p_ruin01.rfgzone_pc");
@@ -332,15 +335,17 @@ public static class GuerrillaWorld
             zonescript.Add((zone + ".rfgzone_pc", zoneBytes));
             zonescript.Add(("p_" + zone + ".rfgzone_pc", persistent.ToBytes()));
 
-            // The stitch list: the buried floor piece (piece 0, the one the collision tree reaches:
-            // first of list 0 when there are rocks, else in the middle list) and the rocks.
+            // The stitch list: the buried floor piece (first of list 0 when there are rocks, else in the
+            // middle list) and the rocks, with a collision tree reaching all of them, each by the box
+            // its own collision fills where it is placed.
             var rocks = rocksIn[(col, row)];
             var floorAt = new Vector3(zoneMiddle.X, FloorDepth, zoneMiddle.Z);
             var floor = new StitchPieceToWrite(FloorPiece, rocks.Count > 0 ? 0 : 4, floorAt, StitchPieceToWrite.Unturned, 4,
                                                new Vector2(floorAt.X, floorAt.Z) + floorMin, new Vector2(floorAt.X, floorAt.Z) + floorMax);
-            var treeFrom = new Vector3(floor.AreaMin.X - 20, FloorDepth - 40, floor.AreaMin.Y - 20);
-            float treeSize = MathF.Max(floor.AreaMax.X - floor.AreaMin.X + 40, MathF.Max(80, floor.AreaMax.Y - floor.AreaMin.Y + 40));
-            byte[] stitch = StitchList.Write([floor, .. rocks], zoneMiddle, treeFrom, treeSize, StitchList.BoxTreeCode());
+            var boxes = new List<(Vector3 Min, Vector3 Max)> { StitchList.PlacedBox(floorCollisionMin, floorCollisionMax, StitchPieceToWrite.Unturned, floorAt) };
+            foreach (var r in rocks)
+                boxes.Add(StitchList.PlacedBox(rockPieces[r.Name].CollisionMin, rockPieces[r.Name].CollisionMax, r.Rotation, r.Position));
+            byte[] stitch = StitchList.Write([floor, .. rocks], zoneMiddle, boxes);
 
             // Its containers and asset list entries.
             var files = new List<(string Name, byte[] Data)>(shared);

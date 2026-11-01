@@ -105,6 +105,36 @@ public sealed class StitchList
     }
 
     /// <summary>
+    /// A stitch list of these pieces whose collision tree reaches every one of them: <paramref name="boxes"/>
+    /// are the pieces' collision boxes in the world, in the same order as <paramref name="pieces"/>. The
+    /// tree's leaves follow the pieces as written (list by list), its frame the boxes with a metre to spare.
+    /// </summary>
+    public static byte[] Write(IReadOnlyList<StitchPieceToWrite> pieces, Vector3 zoneMiddle, IReadOnlyList<(Vector3 Min, Vector3 Max)> boxes)
+    {
+        if (boxes.Count != pieces.Count) throw new ArgumentException("a box for every piece");
+        var order = Enumerable.Range(0, pieces.Count).OrderBy(i => pieces[i].List).ToList();  // stable: as Write lays them out
+        var written = order.Select(i => boxes[i]).ToList();
+        var min = new Vector3(written.Min(b => b.Min.X), written.Min(b => b.Min.Y), written.Min(b => b.Min.Z)) - Vector3.One;
+        var max = new Vector3(written.Max(b => b.Max.X), written.Max(b => b.Max.Y), written.Max(b => b.Max.Z)) + Vector3.One;
+        float size = MathF.Max(max.X - min.X, MathF.Max(max.Y - min.Y, max.Z - min.Z));
+        return Write(pieces, zoneMiddle, min, size, TreeCode(written, min, size));
+    }
+
+    /// <summary>A box round a piece's own box (<paramref name="min"/> to <paramref name="max"/>) placed in the world: turned by <paramref name="rotation"/> (rows right, up, forward) and moved to <paramref name="position"/>.</summary>
+    public static (Vector3 Min, Vector3 Max) PlacedBox(Vector3 min, Vector3 max, IReadOnlyList<float> rotation, Vector3 position)
+    {
+        Vector3 right = new(rotation[0], rotation[1], rotation[2]), up = new(rotation[3], rotation[4], rotation[5]), forward = new(rotation[6], rotation[7], rotation[8]);
+        Vector3 low = new(float.MaxValue), high = new(float.MinValue);
+        for (int k = 0; k < 8; k++)
+        {
+            var corner = position + ((k & 1) == 0 ? min.X : max.X) * right + ((k & 2) == 0 ? min.Y : max.Y) * up + ((k & 4) == 0 ? min.Z : max.Z) * forward;
+            low = Vector3.Min(low, corner);
+            high = Vector3.Max(high, corner);
+        }
+        return (low, high);
+    }
+
+    /// <summary>
     /// The MOPP code of a tree whose one leaf is piece <paramref name="piece"/>, its whole frame: the
     /// frame bounded on its three axes (0x28 z, 0x27 y, 0x26 x, each from 0 to 255 of the frame), then
     /// the piece (0x30 + n, for n under 32). The code the game's one-piece lists have.
@@ -113,6 +143,71 @@ public sealed class StitchList
     {
         if (piece is < 0 or >= 32) throw new ArgumentOutOfRangeException(nameof(piece));
         return [0x28, 0x00, 0xFF, 0x27, 0x00, 0xFF, 0x26, 0x00, 0xFF, (byte)(0x30 + piece)];
+    }
+
+    /// <summary>
+    /// The MOPP code of a tree over pieces with these boxes (in the world), within the frame from
+    /// <paramref name="from"/>, <paramref name="size"/> across on every axis: piece n is leaf n (its place
+    /// in the list's order, lists 0 to 8). The tree's language, as the game's 119 stitch lists read
+    /// (every piece of their single-tree lists lies in the box its leaf is reached in):
+    ///   0x26/0x27/0x28 lo hi: go on only if x / y / z, as a byte of the frame (256 across), is in lo..hi;
+    ///   0x10-0x12 a b j: split on x / y / z: what is at most a goes on, what is at least b jumps j
+    ///   bytes on (from the end of the command); 0x20-0x22 c j: the same at one cut; 0x23-0x25 a b j k:
+    ///   the same with two 16-bit jumps (big-endian), j to the low side and k to the high side;
+    ///   0x13-0x1C: splits on diagonal axes; 0x29-0x2B: bound checks with 24-bit values; 0x01-0x04 x y z:
+    ///   zoom 2^n into the sub-box starting at those bytes; 0x09 n / 0x0A n n: add to the leaf number
+    ///   (on this path); 0x70 and 4 bytes: jump to that offset in the code (big-endian; the game's long
+    ///   codes are cut into 16-byte-aligned chunks padded with 0xCD); 0x30 + n (n under 32), 0x50 n:
+    ///   leaf n; 0x51 n n: leaf n, 16-bit big-endian (a piece's own tree reaches triangle 357 of 386 as
+    ///   51 01 65).
+    /// This writes the plainest of it: halves split on the axis the pieces' middles spread most along
+    /// (0x23-0x25, the low half straight after), and each piece's box (0x28, 0x27, 0x26, as the game's
+    /// one-piece trees) before its leaf. Bytes are a 256th of the frame, so boxes are rounded outwards
+    /// to that; no zooming. The same code serves a piece's own collision, its leaves its triangles. A
+    /// tree too long for 16-bit jumps that way (Guerrilla's statues' 8,000-odd triangles) is written
+    /// without the leaves' own boxes, only the splits narrowing each down: about half as long, and as
+    /// right (what a tree finds is tested against the shapes themselves), only less choosy.
+    /// </summary>
+    public static byte[] TreeCode(IReadOnlyList<(Vector3 Min, Vector3 Max)> boxes, Vector3 from, float size)
+    {
+        if (boxes.Count is 0 or > 65536) throw new ArgumentException($"{boxes.Count} leaves: a tree holds 1 to 65,536");
+        return TreeCode(boxes, from, size, leafBoxes: true) ?? TreeCode(boxes, from, size, leafBoxes: false)
+            ?? throw new InvalidOperationException("the tree's code is too long for 16-bit jumps");
+    }
+
+    static byte[]? TreeCode(IReadOnlyList<(Vector3 Min, Vector3 Max)> boxes, Vector3 from, float size, bool leafBoxes)
+    {
+        byte Low(float v, float o) => (byte)Math.Clamp((int)MathF.Floor((v - o) * 256 / size), 0, 255);
+        byte High(float v, float o) => (byte)Math.Clamp((int)MathF.Floor((v - o) * 256 / size), 0, 255);
+        var lo = boxes.Select(b => new[] { Low(b.Min.X, from.X), Low(b.Min.Y, from.Y), Low(b.Min.Z, from.Z) }).ToArray();
+        var hi = boxes.Select(b => new[] { High(b.Max.X, from.X), High(b.Max.Y, from.Y), High(b.Max.Z, from.Z) }).ToArray();
+
+        var code = new List<byte>();
+        bool tooLong = false;
+        void Leaf(int n)
+        {
+            if (leafBoxes) code.AddRange([0x28, lo[n][2], hi[n][2], 0x27, lo[n][1], hi[n][1], 0x26, lo[n][0], hi[n][0]]);
+            code.AddRange(n < 32 ? [(byte)(0x30 + n)] : n < 256 ? [0x50, (byte)n] : [0x51, (byte)(n >> 8), (byte)n]);
+        }
+        void Node(List<int> pieces)
+        {
+            if (pieces.Count == 1) { Leaf(pieces[0]); return; }
+            int axis = Enumerable.Range(0, 3).MaxBy(a => pieces.Max(n => lo[n][a] + hi[n][a]) - pieces.Min(n => lo[n][a] + hi[n][a]));
+            var sorted = pieces.OrderBy(n => lo[n][axis] + hi[n][axis]).ToList();
+            var low = sorted.Take(sorted.Count / 2).ToList();
+            var high = sorted.Skip(sorted.Count / 2).ToList();
+            int at = code.Count;
+            code.AddRange([(byte)(0x23 + axis), (byte)low.Max(n => hi[n][axis]), (byte)high.Min(n => lo[n][axis]), 0, 0, 0, 0]);
+            int lowStart = code.Count;
+            Node(low);
+            int jump = code.Count - lowStart;
+            if (jump > ushort.MaxValue) tooLong = true;
+            code[at + 5] = (byte)(jump >> 8);
+            code[at + 6] = (byte)jump;
+            Node(high);
+        }
+        Node([.. Enumerable.Range(0, boxes.Count)]);
+        return tooLong ? null : [.. code];
     }
 
     public static StitchList Read(byte[] data)
