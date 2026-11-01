@@ -18,6 +18,7 @@ sealed class Workspace
     (string Key, Packfile Container)? lastContainer;
     Dictionary<string, List<string>>? overrides;  // file name -> override paths, once looked at
     List<(string Archive, string Name)>? assetLists;
+    List<string>? allArchives;
 
     public string GameFolder { get; }
     public string ModFolder { get; }
@@ -51,12 +52,37 @@ sealed class Workspace
 
     // ---- The game's files ----------------------------------------------------------------------
 
+    /// <summary>
+    /// Every archive, as a path relative to the game folder: the game's own, then the new ones in
+    /// overrides\ (an archive file there that the game folder hasn't, such as the Guerrilla world's
+    /// build\pc\cache\rfg_l0.vpp_pc; the loader gives it to the game as if it were in the game folder).
+    /// </summary>
+    public IReadOnlyList<string> Archives() => allArchives ??= [.. RfaFormats.GameFolder.Archives(GameFolder), .. NewArchives()];
+
+    /// <summary>Where an archive is: in the game folder, or in overrides\ if it is a new one.</summary>
+    public string ArchivePath(string archive) => IsNewArchive(archive) ? Path.Combine(OverridesFolder, archive) : Path.Combine(GameFolder, archive);
+
+    /// <summary>True for an archive in overrides\ that the game hasn't.</summary>
+    public bool IsNewArchive(string archive) =>
+        !File.Exists(Path.Combine(GameFolder, archive)) && File.Exists(Path.Combine(OverridesFolder, archive));
+
+    IEnumerable<string> NewArchives()
+    {
+        string build = Path.Combine(OverridesFolder, "build");
+        if (!Directory.Exists(build)) return [];
+        return Directory.EnumerateFiles(build, "*.vpp_pc", SearchOption.AllDirectories)
+            .Where(path => !Path.GetDirectoryName(path)!.EndsWith(".vpp_pc", StringComparison.OrdinalIgnoreCase))  // not an override of a file in an archive
+            .Select(path => Path.GetRelativePath(OverridesFolder, path))
+            .Where(archive => !File.Exists(Path.Combine(GameFolder, archive)))
+            .OrderBy(archive => archive, StringComparer.OrdinalIgnoreCase);
+    }
+
     /// <summary>An archive, by its path relative to the game folder. Opened once, then kept.</summary>
     public Packfile Archive(string archive)
     {
         if (!archives.TryGetValue(archive, out Packfile? pack))
         {
-            pack = Packfile.Open(Path.Combine(GameFolder, archive));
+            pack = Packfile.Open(ArchivePath(archive));
             archives[archive] = pack;
         }
         return pack;
@@ -91,7 +117,7 @@ sealed class Workspace
     /// </summary>
     public byte[]? ReadAsGameSeesIt(string fileName)
     {
-        foreach (string archive in RfaFormats.GameFolder.Archives(GameFolder))
+        foreach (string archive in Archives())
             if (Archive(archive).Find(fileName) != null) return Read(archive, fileName);
         return null;
     }
@@ -99,7 +125,7 @@ sealed class Workspace
     /// <summary>Every asset list (.asm_pc) in the game: which archive, and its name.</summary>
     public IReadOnlyList<(string Archive, string Name)> AssetLists()
     {
-        assetLists ??= RfaFormats.GameFolder.Archives(GameFolder)
+        assetLists ??= Archives()
             .SelectMany(archive => Archive(archive).Entries.Where(e => e.Extension == "asm_pc").Select(e => (archive, e.Name)))
             .ToList();
         return assetLists;
@@ -128,6 +154,10 @@ sealed class Workspace
     /// <summary>Writes an override for this archive's copy of a file.</summary>
     public string WriteOverride(string archive, string fileName, byte[] data)
     {
+        // The archive's own file is where its folder of overrides would go.
+        if (IsNewArchive(archive))
+            throw new InvalidOperationException($"{Path.GetFileName(archive)} isn't the game's: it was added in {RelativeToMod(Path.GetDirectoryName(ArchivePath(archive))!)}, " +
+                                                $"so its files can't be overridden. Change what made it instead.");
         string path = OverridePath(archive, fileName);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, data);
@@ -148,6 +178,7 @@ sealed class Workspace
     void Changed()
     {
         overrides = null;
+        allArchives = null;
         lastContainer = null;
     }
 
@@ -157,7 +188,7 @@ sealed class Workspace
     {
         try
         {
-            return File.Exists(Path.Combine(GameFolder, archive)) ? Archive(archive).Find(fileName)?.Size : null;
+            return File.Exists(ArchivePath(archive)) ? Archive(archive).Find(fileName)?.Size : null;
         }
         catch (InvalidDataException)
         {

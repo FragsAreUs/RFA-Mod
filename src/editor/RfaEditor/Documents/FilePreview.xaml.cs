@@ -114,13 +114,14 @@ public partial class FilePreview : UserControl, IEditorDocument
         Try(() =>
         {
             Packfile pack = node.Open();
-            long size = new FileInfo(Path.Combine(Workspace.GameFolder, node.Archive)).Length;
+            long size = new FileInfo(Workspace.ArchivePath(node.Archive)).Length;
+            string where = Workspace.IsNewArchive(node.Archive) ? $" (new: {Workspace.RelativeToMod(Workspace.ArchivePath(node.Archive))})" : "";
             selectedNode = node;
             SetTitle("Preview: " + node.Label);
             ShowKind(FileKind.Archive);
             TitleText.Text = node.Label;
             EmptyHintText.Text = "Expand it in the explorer to see its files.";
-            DetailsText.Text = $"Archive {node.Archive}\n{pack.Entries.Count:N0} files, {size:N0} bytes on disk, {Storage(pack)}.";
+            DetailsText.Text = $"Archive {node.Archive}{where}\n{pack.Entries.Count:N0} files, {size:N0} bytes on disk, {Storage(pack)}.";
             SetButtons(extract: false, extractAll: true, copy: false, showOverride: false);
         });
     }

@@ -30,17 +30,19 @@ sealed class TerrainPainter
     /// <summary>The picture's detail. 12 pixels a metre is about 1,000 pixels for a sub-zone.</summary>
     public const int PixelsPerMetre = 12;
 
-    const float ZoneSize = 255;
+    const float ZoneSize = 255;  // the layers' texture coordinates are the world over this (see ColourAt)
 
     readonly ZoneTerrain? ground;      // null: paint the colour map
     readonly RgbaImage map;             // the blend map, or the colour map
     readonly RgbaImage[] layers;        // the layers' textures, as decoded
     readonly Vector3[] gains;           // per layer: what its colours are multiplied by
     readonly Vector2 zoneCorner;
+    readonly float zoneWidth;           // what the map covers from the corner: 255 m, or 511 m
     bool asInGame;  // mix as the game does (see PaintAsInGame)
 
-    TerrainPainter(ZoneTerrain? ground, RgbaImage map, RgbaImage[] layers, Vector3[] gains, Vector2 zoneCorner)
+    TerrainPainter(ZoneTerrain? ground, RgbaImage map, RgbaImage[] layers, Vector3[] gains, Vector2 zoneCorner, float zoneWidth)
     {
+        this.zoneWidth = zoneWidth;
         this.ground = ground;
         this.map = map;
         this.layers = layers;
@@ -53,8 +55,9 @@ sealed class TerrainPainter
 
     /// <param name="layers">The four layers' textures, in order, as decoded.</param>
     /// <param name="zoneCorner">The zone's corner (lowest x and z): where the blend map starts.</param>
+    /// <param name="zoneWidth">The zone's width, which the blend map covers.</param>
     /// <param name="colourMap">The zone's colour map, to fit the curve to; or null.</param>
-    public static TerrainPainter ForLayers(ZoneTerrain ground, RgbaImage blend, RgbaImage[] layers, Vector2 zoneCorner, RgbaImage? colourMap)
+    public static TerrainPainter ForLayers(ZoneTerrain ground, RgbaImage blend, RgbaImage[] layers, Vector2 zoneCorner, float zoneWidth, RgbaImage? colourMap)
     {
         (float gamma, float scale) = colourMap == null ? (1 / 2.2f, 1.25f) : FitCurve(ground, blend, layers, colourMap);
         Vector3[] gains = layers.Select((texture, i) =>
@@ -63,11 +66,11 @@ sealed class TerrainPainter
             Vector3 wanted = 255 * scale * ThroughCurve(average / 255, gamma);
             return Tinted(wanted / Vector3.Max(average, Vector3.One), ground.Layers[i].Tint);
         }).ToArray();
-        return new TerrainPainter(ground, blend, layers, gains, zoneCorner) { Curve = $"gamma {gamma:0.00}, scale {scale:0.00}" };
+        return new TerrainPainter(ground, blend, layers, gains, zoneCorner, zoneWidth) { Curve = $"gamma {gamma:0.00}, scale {scale:0.00}" };
     }
 
     /// <summary>A painter of the zone's colour map, stretched over the zone from its corner.</summary>
-    public static TerrainPainter ForColourMap(RgbaImage colourMap, Vector2 zoneCorner) => new(null, colourMap, [], [], zoneCorner);
+    public static TerrainPainter ForColourMap(RgbaImage colourMap, Vector2 zoneCorner, float zoneWidth) => new(null, colourMap, [], [], zoneCorner, zoneWidth);
 
     /// <summary>
     /// The size to decode a layer's texture at: one mip level more than the pixels a repeat of it
@@ -86,7 +89,7 @@ sealed class TerrainPainter
     public BitmapSource PaintAsInGame(Vector2 from, Vector2 to)
     {
         if (ground == null) return Paint(from, to);
-        var painter = new TerrainPainter(ground, map, layers, ground.Layers.Select(l => new Vector3(l.Tint.X, l.Tint.Y, l.Tint.Z)).ToArray(), zoneCorner)
+        var painter = new TerrainPainter(ground, map, layers, ground.Layers.Select(l => new Vector3(l.Tint.X, l.Tint.Y, l.Tint.Z)).ToArray(), zoneCorner, zoneWidth)
         {
             asInGame = true,
         };
@@ -120,7 +123,7 @@ sealed class TerrainPainter
     Vector3 ColourAt(float x, float z)
     {
         // The blend map (or colour map) covers the zone from its corner.
-        Vector4 here = Sample(map, (x - zoneCorner.X) / ZoneSize * map.Width - 0.5f, (z - zoneCorner.Y) / ZoneSize * map.Height - 0.5f, wrap: false);
+        Vector4 here = Sample(map, (x - zoneCorner.X) / zoneWidth * map.Width - 0.5f, (z - zoneCorner.Y) / zoneWidth * map.Height - 0.5f, wrap: false);
         if (ground == null) return new Vector3(here.X, here.Y, here.Z);
 
         Span<float> weights = stackalloc float[ZoneTerrain.LayerCount];

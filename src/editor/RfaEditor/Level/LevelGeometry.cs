@@ -113,12 +113,14 @@ static partial class LevelGeometry
 
     /// <summary>
     /// The corner of the zone the sub-zones are in (lowest x and z), where its blend and colour maps
-    /// start. Zones sit on a 255 m grid, so it is the lowest sub-zone origin rounded down to a
-    /// multiple of 255.
+    /// start. Zones sit on a grid of their width (255 m, or 511 m in our port of Guerrilla's world),
+    /// so it is the lowest sub-zone origin rounded down to a multiple of that.
     /// </summary>
-    public static System.Numerics.Vector2 ZoneCorner(IReadOnlyList<TerrainSubzone> subzones) => new(
-        MathF.Floor(subzones.Min(s => s.Origin.X) / 255) * 255,
-        MathF.Floor(subzones.Min(s => s.Origin.Y) / 255) * 255);
+    public static System.Numerics.Vector2 ZoneCorner(IReadOnlyList<TerrainSubzone> subzones)
+    {
+        float width = subzones[0].ZoneWidth;
+        return new(MathF.Floor(subzones.Min(s => s.Origin.X) / width) * width, MathF.Floor(subzones.Min(s => s.Origin.Y) / width) * width);
+    }
 
     /// <summary>A zone's terrain: the ground of its sub-zones that have any (caves mostly have none).</summary>
     /// <param name="picture">A picture of a sub-zone's ground over its box (x and z), or null to draw it plain.</param>
@@ -132,11 +134,11 @@ static partial class LevelGeometry
         }, inGameLight);
 
     /// <summary>
-    /// A zone's terrain with one picture across its whole 255 m square from <paramref name="corner"/>
-    /// (its colour map, which the game shows on far-away ground), or plain.
+    /// A zone's terrain with one picture across its whole square from <paramref name="corner"/> (its
+    /// colour map, which the game shows on far-away ground), or plain.
     /// </summary>
     public static Model3DGroup BuildTerrain(IReadOnlyList<TerrainSubzone> subzones, BitmapSource? zonePicture, System.Numerics.Vector2 corner) =>
-        BuildTerrain(subzones, _ => (zonePicture, p => new System.Windows.Point((p.X - corner.X) / 255, (p.Z - corner.Y) / 255)));
+        BuildTerrain(subzones, s => (zonePicture, p => new System.Windows.Point((p.X - corner.X) / s.ZoneWidth, (p.Z - corner.Y) / s.ZoneWidth)));
 
     /// <param name="paint">For a sub-zone: its picture (or null, plain), and where a point of it is in the picture (0 to 1).</param>
     static Model3DGroup BuildTerrain(IReadOnlyList<TerrainSubzone> subzones,

@@ -73,6 +73,17 @@ public sealed class TerrainSubzone
     public bool HasGround => Triangles.Length > 0;
     public Vector3 BoundsMin { get; }
     public Vector3 BoundsMax { get; }
+
+    /// <summary>
+    /// Its grid step: <see cref="GridStep"/>, or 1 m in Guerrilla's and in a world the game gives
+    /// 511 m zones (ours of Guerrilla's world: the same version 42, told apart by the box the
+    /// ground fills).
+    /// </summary>
+    public float Step { get; }
+
+    /// <summary>The width of the zone it is a ninth of: 255 m, or 511 m.</summary>
+    public float ZoneWidth => Step * 511;
+
     public Vector3[] Positions { get; }
     public Vector3[] Normals { get; }
 
@@ -106,6 +117,7 @@ public sealed class TerrainSubzone
         PatchCount = BitConverter.ToInt32(header, fields + 0x14);
         BoundsMin = new Vector3(F32(header, fields + 0x24), F32(header, fields + 0x28), F32(header, fields + 0x2C));
         BoundsMax = new Vector3(F32(header, fields + 0x30), F32(header, fields + 0x34), F32(header, fields + 0x38));
+        Step = guerrilla ? GuerrillaGridStep : GridStep;
         if (PatchCount == 0)
         {
             Positions = Normals = [];
@@ -134,7 +146,20 @@ public sealed class TerrainSubzone
         if (vertexFormat != (guerrilla ? 14 : 24) || vertexSize != 8) throw new NotSupportedException($"terrain vertex format {vertexFormat} ({vertexSize} bytes)");
         if (indexSize != 2) throw new NotSupportedException($"{indexSize}-byte terrain indices");
 
-        float step = guerrilla ? GuerrillaGridStep : GridStep;
+        if (!guerrilla && vertexCount > 0)
+        {
+            // The box's width over the grid steps it spans says which step it was written with.
+            int fewest = int.MaxValue, most = int.MinValue;
+            for (int v = 0; v < vertexCount; v++)
+            {
+                int xStep = data[vertexOffset + v * vertexSize + 2];
+                fewest = Math.Min(fewest, xStep);
+                most = Math.Max(most, xStep);
+            }
+            float each = most > fewest ? (BoundsMax.X - BoundsMin.X) / (most - fewest) : GridStep;
+            if (MathF.Abs(each - GuerrillaGridStep) < MathF.Abs(each - GridStep)) Step = GuerrillaGridStep;
+        }
+        float step = Step;
         Positions = new Vector3[vertexCount];
         Normals = new Vector3[vertexCount];
         for (int v = 0; v < vertexCount; v++)

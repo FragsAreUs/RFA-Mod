@@ -87,7 +87,7 @@ sealed class FolderNode : TreeNode
     }
 }
 
-/// <summary>A .vpp_pc archive in the game folder.</summary>
+/// <summary>A .vpp_pc archive in the game folder, or a new one in overrides\ (noted "new").</summary>
 sealed class ArchiveNode : TreeNode
 {
     readonly Workspace workspace;
@@ -100,6 +100,7 @@ sealed class ArchiveNode : TreeNode
         Archive = archive;
         Label = Path.GetFileName(archive);
         Kind = FileKind.Archive;
+        if (workspace.IsNewArchive(archive)) Note = "new, in overrides";
         AddPlaceholder();
     }
 

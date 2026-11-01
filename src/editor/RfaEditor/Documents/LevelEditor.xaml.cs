@@ -1347,7 +1347,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
             List<TerrainSubzone> subzones = ReadSubzones(zone);
             if (subzones.Count == 0) continue;
             System.Numerics.Vector2 corner = LevelGeometry.ZoneCorner(subzones);
-            (TerrainPainter? painter, string look) = ShowTexturesBox.IsChecked == true ? GroundPainter(zone, corner) : (null, "plain");
+            (TerrainPainter? painter, string look) = ShowTexturesBox.IsChecked == true ? GroundPainter(zone, corner, subzones[0].ZoneWidth) : (null, "plain");
             static System.Numerics.Vector2 From(TerrainSubzone s) => new(s.BoundsMin.X, s.BoundsMin.Z);
             static System.Numerics.Vector2 To(TerrainSubzone s) => new(s.BoundsMax.X, s.BoundsMax.Z);
             terrain = LevelGeometry.BuildTerrain(subzones, subzone => painter?.Paint(From(subzone), To(subzone)),
@@ -1492,7 +1492,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     /// from the zone's terrain file (world_08_02.cterrain_pc); or, if those can't be found, the
     /// zone's colour map; or nothing (plain). Also says which, for the log.
     /// </summary>
-    (TerrainPainter? Painter, string Look) GroundPainter(string zone, System.Numerics.Vector2 corner)
+    (TerrainPainter? Painter, string Look) GroundPainter(string zone, System.Numerics.Vector2 corner, float zoneWidth)
     {
         RgbaImage? Decode(string texture, int maxSize) =>
             context.Assets.FindTexture(texture, archive, container) is var (peg, found) ? peg.Decode(found, maxSize) : null;
@@ -1505,7 +1505,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
                 RgbaImage?[] layers = ground.Layers.Select(layer => Decode(layer.Texture, TerrainPainter.DetailNeeded(layer))).ToArray();
                 if (layers.All(layer => layer != null))
                 {
-                    TerrainPainter painter = TerrainPainter.ForLayers(ground, blend, layers!, corner, colourMap);
+                    TerrainPainter painter = TerrainPainter.ForLayers(ground, blend, layers!, corner, zoneWidth, colourMap);
                     return (painter, "painted from " + string.Join(", ", ground.Layers.Select(l => System.IO.Path.GetFileNameWithoutExtension(l.Texture))) +
                                      $" ({painter.Curve})");
                 }
@@ -1515,7 +1515,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         {
             context.Log($"{zone}.cterrain_pc couldn't be read: {ex.Message}");
         }
-        return colourMap != null ? (TerrainPainter.ForColourMap(colourMap, corner), "coloured with its colour map") : (null, "plain");
+        return colourMap != null ? (TerrainPainter.ForColourMap(colourMap, corner, zoneWidth), "coloured with its colour map") : (null, "plain");
     }
 
     void BuildGrid()

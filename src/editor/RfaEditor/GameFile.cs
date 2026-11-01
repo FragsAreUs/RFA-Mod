@@ -40,12 +40,15 @@ sealed record IndexedFile(string Name, string Archive, string? Container)
 
 static class FileIndex
 {
-    /// <summary>Every file directly inside the archives. Quick: only the archives' name lists are read.</summary>
-    public static List<IndexedFile> ArchiveFiles(string gameFolder)
+    /// <summary>
+    /// Every file directly inside the archives (each as its path relative to the game folder, and
+    /// where it is: see <see cref="Workspace.ArchivePath"/>). Quick: only the archives' name lists are read.
+    /// </summary>
+    public static List<IndexedFile> ArchiveFiles(IReadOnlyList<(string Archive, string Path)> archives)
     {
         var files = new List<IndexedFile>();
-        foreach (string archive in GameFolder.Archives(gameFolder))
-            foreach (PackfileEntry entry in Packfile.Open(System.IO.Path.Combine(gameFolder, archive)).Entries)
+        foreach ((string archive, string path) in archives)
+            foreach (PackfileEntry entry in Packfile.Open(path).Entries)
                 files.Add(new IndexedFile(entry.Name, archive, null));
         return files;
     }
@@ -56,13 +59,13 @@ static class FileIndex
     /// container or directly in an archive. Slower: each container is read out of its archive (and
     /// decompressed) to get its name list and the headers of its texture files.
     /// </summary>
-    public static List<IndexedFile> ContainerFiles(string gameFolder, IProgress<string> progress, Dictionary<string, TextureRef> textures)
+    public static List<IndexedFile> ContainerFiles(IReadOnlyList<(string Archive, string Path)> archives, IProgress<string> progress, Dictionary<string, TextureRef> textures)
     {
         var files = new List<IndexedFile>();
         int done = 0;
-        foreach (string archive in GameFolder.Archives(gameFolder))
+        foreach ((string archive, string path) in archives)
         {
-            Packfile pack = Packfile.Open(System.IO.Path.Combine(gameFolder, archive));
+            Packfile pack = Packfile.Open(path);
             NoteTextures(pack, archive, null, textures);
             foreach (PackfileEntry entry in pack.Entries.Where(e => e.IsContainer))
             {

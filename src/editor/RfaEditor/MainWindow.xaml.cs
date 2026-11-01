@@ -158,7 +158,7 @@ public partial class MainWindow : Window
 
     void BuildTree()
     {
-        var folders = GameFolder.Archives(workspace.GameFolder)
+        var folders = workspace.Archives()
             .GroupBy(archive => Path.GetDirectoryName(archive) ?? "")
             .Select(group => new FolderNode(group.Key, group.Select(archive => new ArchiveNode(workspace, archive))));
         Tree.ItemsSource = folders.ToList();
@@ -190,14 +190,14 @@ public partial class MainWindow : Window
 
     async Task BuildSearchIndexAsync()
     {
-        string gameFolder = workspace.GameFolder;
+        List<(string, string)> archives = workspace.Archives().Select(archive => (archive, workspace.ArchivePath(archive))).ToList();
         var progress = new Progress<string>(text => StatusText.Text = text);
         try
         {
-            searchIndex = await Task.Run(() => FileIndex.ArchiveFiles(gameFolder));
+            searchIndex = await Task.Run(() => FileIndex.ArchiveFiles(archives));
             StatusText.Text = $"{searchIndex.Count:N0} files in the archives. Reading the containers for search, models and textures...";
             var textures = new Dictionary<string, TextureRef>(StringComparer.OrdinalIgnoreCase);
-            List<IndexedFile> inContainers = await Task.Run(() => FileIndex.ContainerFiles(gameFolder, progress, textures));
+            List<IndexedFile> inContainers = await Task.Run(() => FileIndex.ContainerFiles(archives, progress, textures));
             searchIndex = [.. searchIndex, .. inContainers];
             context.Assets.SetIndex(searchIndex, textures);
             Log($"Ready: {searchIndex.Count:N0} files can be searched.");
