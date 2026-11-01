@@ -13,8 +13,8 @@ namespace RfaFormats.Guerrilla;
 /// says so, ZoneSize=511; the game itself does for worlds named mpl_*), so its 16 × 16 grid is
 /// Guerrilla's 8 km map.
 ///
-/// For each zone: its ground sampled every 1 m from Guerrilla's sub-zones (GroundLayout.Whole), holes
-/// (where Guerrilla cuts its roads) filled smoothly, deep shafts capped and sheer drops limited over
+/// For each zone: its ground sampled every 1 m from Guerrilla's sub-zones (GroundLayout.Whole), its
+/// roads and paving with it, holes (under its rocks) filled smoothly, deep shafts capped and sheer drops limited over
 /// all zones together (so shared edges stay equal); its nine sub-zones and the height field written
 /// from that; its far-away meshes; its ground material from Guerrilla's (its four layers' textures at
 /// Guerrilla's own scale and tints, its blend and colour maps, the cliff material from its layers 0
@@ -49,7 +49,7 @@ public static class GuerrillaWorld
     public static readonly (int Col, int Row) DefaultStart = (12, 11);
 
     const float MaxPit = 60;    // no ground more than this below where its hollow spills
-    const float MaxStep = 3f;   // nor more than this below a neighbouring sample, 1 m away (71.6°)
+    const float MaxStep = 25f;  // nor more than this below a neighbouring sample, 1 m away: only the deep shafts' walls, not Guerrilla's own cliffs and retaining walls
     const float BoxBottom = -500, BoxTop = 1500;   // the environment boxes' heights
     const float FloorDepth = -150;                 // the buried floor piece's height
     const string FloorPiece = "dlib_floor_flat";
@@ -128,6 +128,41 @@ public static class GuerrillaWorld
             return rfgPrecache.Find(file) is { } p && p.Size >= minSize ? rfgPrecache.Read(p) : null;
         }
 
+        // ---- Guerrilla's rocks where its zones place them, in the list of the sub-zone each stands in.
+        var rockPieces = new Dictionary<string, GuerrillaRocks.Piece>(StringComparer.OrdinalIgnoreCase);
+        var rockTextures = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
+        var rocksIn = zones.ToDictionary(z => z, _ => new List<StitchPieceToWrite>());
+        var rockPlacements = zones.ToDictionary(z => z, _ => new List<GuerrillaRocks.Placement>());
+        var whiteFiles = GuerrillaRocks.WhiteTextureFiles();
+        byte[] rockHeader = Pre(GuerrillaRocks.TemplatePiece + ".cstch_pc"), rockData = Pre(GuerrillaRocks.TemplatePiece + ".gstch_pc");
+        float third = ZoneWidth / 3;
+        foreach (var (col, row) in zones)
+        {
+            byte[] terrain = RfgFile(col, row, $"terr01_{col:00}_{row:00}.cterrain_pc")!;
+            var corner = Corner(col, row);
+            foreach (var p in GuerrillaRocks.Placements(terrain))
+            {
+                if (!rockPieces.ContainsKey(p.Name))
+                {
+                    byte[] h = RfgFile(col, row, p.Name + ".cstch_pc") ?? throw new InvalidDataException($"no {p.Name}.cstch_pc");
+                    byte[] g = RfgFile(col, row, p.Name + ".gstch_pc", 16) ?? throw new InvalidDataException($"no {p.Name}.gstch_pc");
+                    var piece = GuerrillaRocks.Convert(rockHeader, rockData, h, g, Alias);
+                    rockPieces[p.Name] = piece;
+                    foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(t => !rockTextures.ContainsKey(t)))
+                    {
+                        byte[] th = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc");
+                        byte[] tg = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? throw new InvalidDataException($"no {texture}.gvbm_pc");
+                        rockTextures[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(th, tg, Alias(texture))), (Alias(texture) + ".gvbm_pc", tg)];
+                    }
+                }
+                float x = p.Position.X - corner.X, z = p.Position.Z - corner.Y;
+                int list = Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2);
+                rocksIn[(col, row)].Add(new StitchPieceToWrite(p.Name, list, p.Position, p.Rotation, 0, p.AreaMin, p.AreaMax));
+                rockPlacements[(col, row)].Add(p);
+            }
+        }
+        log($"Rocks: {rocksIn.Values.Sum(r => r.Count)} placed, {rockPieces.Count} pieces, {rockTextures.Count} textures");
+
         // ---- The ground, sampled whole from Guerrilla's sub-zones of each zone and those around it.
         int S = Layout.Samples, last = S - 1;
         var heights = new Dictionary<(int, int), float[]>();
@@ -149,9 +184,23 @@ public static class GuerrillaWorld
             var corner = Corner(col, row);
             var over = subzones.Where(s => s.Positions.Length > 0 && s.Positions.Max(p => p.X) >= corner.X - 1 && s.Positions.Min(p => p.X) <= corner.X + ZoneWidth + 1 &&
                                            s.Positions.Max(p => p.Z) >= corner.Y - 1 && s.Positions.Min(p => p.Z) <= corner.Y + ZoneWidth + 1);
-            heights[(col, row)] = GuerrillaGround.Sample(over, corner, Layout) ?? throw new InvalidDataException($"no Guerrilla ground for terr01_{col:00}_{row:00}");
+            heights[(col, row)] = GuerrillaGround.Sample(over, corner, Layout, RockCorners(col, row)) ?? throw new InvalidDataException($"no Guerrilla ground for terr01_{col:00}_{row:00}");
         }
         log($"Ground: {zones.Count} zones sampled, {S} × {S} samples each");
+        // The triangles (in the world) of the rocks placed in a zone and those around it: where the
+        // ground has a hole under one, the rock closes it (see GuerrillaGround.Sample).
+        IEnumerable<Vector3> RockCorners(int col, int row)
+        {
+            for (int dc = -1; dc <= 1; dc++)
+                for (int dr = -1; dr <= 1; dr++)
+                    if (rockPlacements.TryGetValue((col + dc, row + dr), out var placed))
+                        foreach (var p in placed)
+                        {
+                            var r = p.Rotation;
+                            Vector3 right = new(r[0], r[1], r[2]), up = new(r[3], r[4], r[5]), forward = new(r[6], r[7], r[8]);
+                            foreach (var v in rockPieces[p.Name].Corners) yield return p.Position + v.X * right + v.Y * up + v.Z * forward;
+                        }
+        }
         // Neighbours sample their shared edge at the same points, but where Guerrilla's ground has holes
         // each fills them from its own side: a zone's first column (lowest x) is made its west
         // neighbour's last, its first row (lowest z) its south neighbour's (row + 1) last.
@@ -199,39 +248,6 @@ public static class GuerrillaWorld
                 layerFiles[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(header, data, Alias(texture))), (Alias(texture) + ".gvbm_pc", data)];
             }
 
-        // ---- Guerrilla's rocks where its zones place them, in the list of the sub-zone each stands in.
-        var rockPieces = new Dictionary<string, GuerrillaRocks.Piece>(StringComparer.OrdinalIgnoreCase);
-        var rockTextures = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
-        var rocksIn = zones.ToDictionary(z => z, _ => new List<StitchPieceToWrite>());
-        var whiteFiles = GuerrillaRocks.WhiteTextureFiles();
-        byte[] rockHeader = Pre(GuerrillaRocks.TemplatePiece + ".cstch_pc"), rockData = Pre(GuerrillaRocks.TemplatePiece + ".gstch_pc");
-        float third = ZoneWidth / 3;
-        foreach (var (col, row) in zones)
-        {
-            byte[] terrain = RfgFile(col, row, $"terr01_{col:00}_{row:00}.cterrain_pc")!;
-            var corner = Corner(col, row);
-            foreach (var p in GuerrillaRocks.Placements(terrain))
-            {
-                if (!rockPieces.ContainsKey(p.Name))
-                {
-                    byte[] h = RfgFile(col, row, p.Name + ".cstch_pc") ?? throw new InvalidDataException($"no {p.Name}.cstch_pc");
-                    byte[] g = RfgFile(col, row, p.Name + ".gstch_pc", 16) ?? throw new InvalidDataException($"no {p.Name}.gstch_pc");
-                    var piece = GuerrillaRocks.Convert(rockHeader, rockData, h, g, Alias);
-                    rockPieces[p.Name] = piece;
-                    foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(t => !rockTextures.ContainsKey(t)))
-                    {
-                        byte[] th = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc");
-                        byte[] tg = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? throw new InvalidDataException($"no {texture}.gvbm_pc");
-                        rockTextures[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(th, tg, Alias(texture))), (Alias(texture) + ".gvbm_pc", tg)];
-                    }
-                }
-                float x = p.Position.X - corner.X, z = p.Position.Z - corner.Y;
-                int list = Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2);
-                rocksIn[(col, row)].Add(new StitchPieceToWrite(p.Name, list, p.Position, p.Rotation, 0, p.AreaMin, p.AreaMax));
-            }
-        }
-        log($"Rocks: {rocksIn.Values.Sum(r => r.Count)} placed, {rockPieces.Count} pieces, {rockTextures.Count} textures");
-
         // ---- Guerrilla's destructible objects: the rfg_movers and general_movers its zones place whose
         // chunk files are asked for, each file converted, its textures under new names (as the
         // ground's and rocks').
@@ -265,13 +281,19 @@ public static class GuerrillaWorld
                             missing.Add(name);
                             continue;
                         }
-                        var (header, textures) = GuerrillaChunks.Convert(c, Alias);
+                        var (header, textures) = GuerrillaChunks.Convert(c, t => t == GuerrillaMaterials.GlassReflection ? t : Alias(t));
                         chunkFiles[name] = (header, g, textures);
                         foreach (string texture in textures.Where(t => !chunkTextures.ContainsKey(t)))
                         {
                             if (GuerrillaBuiltIns.Files(texture, Alias(texture)) is { } builtIn)
                             {
                                 chunkTextures[texture] = builtIn;
+                                continue;
+                            }
+                            // Glass's reflection cube is Armageddon's own, as it is.
+                            if (texture == GuerrillaMaterials.GlassReflection)
+                            {
+                                chunkTextures[texture] = [(texture + ".cvbm_pc", Pre(texture + ".cvbm_pc")), (texture + ".gvbm_pc", Pre(texture + ".gvbm_pc"))];
                                 continue;
                             }
                             // A texture that isn't there (some name Guerrilla's built-in "missing") is drawn white.
@@ -586,8 +608,10 @@ public static class GuerrillaWorld
     /// Guerrilla's ground has round openings (where it puts other pieces) whose walls go down hundreds
     /// of metres. No point is left more than MaxPit below where its hollow would spill (a priority
     /// flood from the edge of the zones built), then none more than MaxStep below a neighbouring
-    /// sample (the low side raised): seen from inside or below, sheer walls look like flat sheets
-    /// hanging in the sky.
+    /// sample (the low side raised): seen from inside or below, the shafts' walls look like flat
+    /// sheets hanging in the sky. MaxStep is kept above Guerrilla's own vertical faces (cliffs and
+    /// the retaining walls beside its roads, up to about 24 m a metre): a lower one pushes ramps of
+    /// ground out from them, into the buildings and onto the roads at their feet.
     /// </summary>
     static void LimitGround(IReadOnlyList<(int Col, int Row)> zones, Dictionary<(int, int), float[]> heights, Action<string> log)
     {

@@ -11,9 +11,16 @@ namespace RfaFormats.Guerrilla;
 /// nearest of Armageddon's by the textures it has: colour, normal and specular map ir_default (as
 /// Guerrilla's metal, brdf and environment-mapped kinds, which lose their extras); colour and normal
 /// ir_nospec; colour and specular ir_nonormal; colour only ir_nospec_nonormal; with a decal
-/// ir_singledecal, with two ir_twodecal. A cut-out material (flags 2) is ir_at_default, and so is a
-/// see-through one (flags 1, glass): Armageddon's glass shaders want a reflection map Guerrilla's
-/// don't have.
+/// ir_singledecal, with two ir_twodecal. A cut-out material (flags 2) is ir_at_default, and so is
+/// any other see-through one (flags 1). Guerrilla's glass (its shaders rfg-glass, flags 1, and
+/// rfg-eosglass, flags 0) is ir_carglass, the shader Armageddon's glass buildings draw their whole
+/// panes with, blended (flags 0x41) as Armageddon's glass is: Guerrilla's colour map (its alpha the
+/// pane's see-through), white for the pattern map, Armageddon's reflection cube
+/// str_gls_cube_default_a (from its dlc01_precache), and its window panes' values (no dust, opacity
+/// 1, reflection brightness 0.5 and contrast 0.1). Not ir_glass_shatter, which those buildings give
+/// their broken-off pieces: it reads four UV channels, the last three the corners of each shard's
+/// triangle, and discards every pixel outside it; Guerrilla's panes have no such channels, and drawn
+/// with it they show in fragments.
 ///
 /// A material block in both games: its size, its shader's and its own name hashes, flags (Guerrilla 0
 /// / 1 / 2, Armageddon 0x40 | the same), the texture count (u16), the constant count and room (u8s),
@@ -36,8 +43,15 @@ public static class GuerrillaMaterials
     /// <summary>The built-in textures filling slots a material hasn't: Guerrilla's own built-ins for white and flat normals, and ours for no specular.</summary>
     public const string White = "misc-white", FlatNormal = "flat-normalmap", NoSpecular = "rfg_nospec";
 
+    /// <summary>The reflection cube glass is given: Armageddon's own (in its dlc01_precache.vpp_pc), named as it is.</summary>
+    public const string GlassReflection = "str_gls_cube_default_a";
+
     static readonly uint NormalMap = H("Normal_Map"), DiffuseMap = H("Diffuse_Map"), SpecularMap = H("Specular_Map"),
-        Decal1Map = H("Decal1_Map"), Decal2Map = H("Decal2_Map"), GuerrillaDecal1 = H("Decal_Map_1"), GuerrillaDecal2 = H("Decal_Map_2");
+        Decal1Map = H("Decal1_Map"), Decal2Map = H("Decal2_Map"), GuerrillaDecal1 = H("Decal_Map_1"), GuerrillaDecal2 = H("Decal_Map_2"),
+        PatternMap = H("Pattern_map"), ReflectionMap = H("reflection_map");
+
+    /// <summary>Guerrilla's glass shaders.</summary>
+    static readonly HashSet<uint> GuerrillaGlass = [H("rfg-glass"), H("rfg-eosglass")];
 
     /// <summary>One of Armageddon's shaders: its texture slots in its sampler order, and its constants (from the shader's header, without the engine's own).</summary>
     sealed record Shader(string Name, uint[] Slots, string[] Constants);
@@ -59,6 +73,11 @@ public static class GuerrillaMaterials
          "Decal1_Color", "decal2_color", "reflection_brightness", "reflection_contrast"]);
     static readonly Shader CutOut = new("ir_at_default", [DiffuseMap, NormalMap, SpecularMap],
         ["Diffuse_TilingU", "Diffuse_TilingV", "Normal_Height", "Specular_Power", "Diffuse_color", "Specular_Color"]);
+    static readonly Shader Glass = new("ir_carglass", [DiffuseMap, PatternMap, ReflectionMap],
+        ["Diffuse_color", "Dust_Amount", "reflection_brightness", "reflection_contrast", "Dust_Color", "Main_Opacity"]);
+
+    /// <summary>Whether the Guerrilla material block at <paramref name="at"/> is glass (one of Guerrilla's glass shaders).</summary>
+    internal static bool IsGlass(byte[] file, int at) => GuerrillaGlass.Contains(BitConverter.ToUInt32(file, at + 0x04));
 
     /// <summary>
     /// Armageddon's material block for the Guerrilla one at <paramref name="at"/> in <paramref name="file"/>.
@@ -80,8 +99,9 @@ public static class GuerrillaMaterials
         for (int c = 0; c < constantCount; c++)
             constants[BitConverter.ToUInt32(file, hashesAt + c * 4)] = Read(file, valuesAt + c * 16);
 
-        bool cutOut = (flags & 3) != 0;
-        Shader shader = cutOut ? CutOut
+        bool glass = IsGlass(file, at), cutOut = !glass && (flags & 3) != 0;
+        Shader shader = glass ? Glass
+            : cutOut ? CutOut
             : textures.ContainsKey(Decal2Map) ? TwoDecal
             : textures.ContainsKey(Decal1Map) ? SingleDecal
             : textures.ContainsKey(NormalMap) && textures.ContainsKey(SpecularMap) ? Default
@@ -96,7 +116,7 @@ public static class GuerrillaMaterials
         Put(0x00, (uint)size);
         Put(0x04, H(shader.Name));
         Array.Copy(file, at + 0x08, block, 0x08, 4);   // the material's own name hash
-        Put(0x0C, 0x40u | (cutOut ? 2u : 0u));
+        Put(0x0C, 0x40u | (glass ? 1u : cutOut ? 2u : 0u));
         BitConverter.TryWriteBytes(block.AsSpan(0x10), (ushort)shader.Slots.Length);
         block[0x12] = (byte)shader.Constants.Length;
         block[0x13] = (byte)room;
@@ -104,8 +124,8 @@ public static class GuerrillaMaterials
         for (int t = 0; t < shader.Slots.Length; t++)
         {
             uint slot = shader.Slots[t];
-            int name = textures.TryGetValue(slot, out int n) ? n
-                : names.Add((slot == NormalMap ? FlatNormal : slot == SpecularMap ? NoSpecular : White) + ".tga");
+            int name = textures.TryGetValue(slot, out int n) && slot != ReflectionMap ? n
+                : names.Add((slot == NormalMap ? FlatNormal : slot == SpecularMap ? NoSpecular : slot == ReflectionMap ? GlassReflection : White) + ".tga");
             Put(0x24 + t * 12, (uint)name);
             Put(0x28 + t * 12, slot);
             Put(0x2C + t * 12, (uint)t);
@@ -113,13 +133,13 @@ public static class GuerrillaMaterials
         for (int c = 0; c < shader.Constants.Length; c++)
         {
             Put(hashes + c * 4, H(shader.Constants[c]));
-            Write(block, values + c * 16, Value(shader.Constants[c], constants));
+            Write(block, values + c * 16, Value(shader.Constants[c], constants, glass));
         }
         return block;
     }
 
     /// <summary>An Armageddon constant's value from the Guerrilla material's constants.</summary>
-    static Vector4 Value(string constant, Dictionary<uint, Vector4> from)
+    static Vector4 Value(string constant, Dictionary<uint, Vector4> from, bool glass)
     {
         Vector4? Get(string name) => from.TryGetValue(H(name), out var v) ? v : null;
         static Vector4 X(float x) => new(x, 0, 0, 0);
@@ -137,7 +157,11 @@ public static class GuerrillaMaterials
             "Decal2_Opacity" => Get("Decal_Map_2_Opacity") ?? X(1),
             "decal2_tilingU" or "decal2_tilingV" => X(1),
             "Decal1_Color" or "decal2_color" => Vector4.One,
-            "reflection_brightness" or "reflection_contrast" => X(0),
+            "reflection_brightness" => X(glass ? 0.5f : 0),
+            "reflection_contrast" => X(glass ? 0.1f : 0),
+            "Dust_Amount" => X(0),
+            "Dust_Color" => Vector4.One,
+            "Main_Opacity" => X(1),
             _ => throw new InvalidOperationException($"no value for {constant}"),
         };
     }

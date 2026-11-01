@@ -17,7 +17,8 @@ namespace RfaFormats.Guerrilla;
 ///                               for one of Armageddon's shaders (<see cref="GuerrillaMaterials"/>)
 ///   general objects (128)       88 → 100 bytes each (12 run-time bytes more), then their names;
 ///                               header 0x14 is the size from 0x200 to their end
-///   destruction data (128)      the same, but each link's last half-word (flags: Armageddon's 0x10 in
+///   destruction data (128)      the same, but glass pieces flagged as glass (<see cref="GlassPiece"/>),
+///                               each link's last half-word (flags: Armageddon's 0x10 in
 ///                               98% of its links, Guerrilla's always 0) and each piece's run-time
 ///                               state (36 → 40 bytes: +0 −1 → 0, +24 → 0, +34 0xFF → 0, four 0s
 ///                               more), with the offsets in that run-time block moved on to match
@@ -38,6 +39,16 @@ public static class GuerrillaChunks
     const int GuerrillaPieceState = 36, PieceState = 40;
     const int ScriptPointSize = 116, GuerrillaIdSize = 520, IdSize = 808, IdHeader = 40, SnapPointSize = 48;
     const ushort LinkFlags = 0x10;
+
+    /// <summary>
+    /// A piece's flag (its byte +63) Armageddon sets on every pane of glass, and only there (439
+    /// pieces, all of physical material Glass-Weak). Guerrilla never sets it: it knows its glass by
+    /// the piece's physical material (piece data +8), Glass-Weak or EOS-Glass. It is set on those of
+    /// Guerrilla's pieces whose submesh is drawn with one of its glass materials (598 more are of glass
+    /// but drawn otherwise: frames, frosted panels).
+    /// </summary>
+    const byte GlassPiece = 0x40;
+    static readonly HashSet<uint> GlassMaterials = [Zones.NameHashes.PropertyHash("Glass-Weak"), Zones.NameHashes.PropertyHash("EOS-Glass")];
 
     /// <summary>
     /// The Armageddon c-file for a Guerrilla one, and the textures its materials name (as Guerrilla
@@ -78,12 +89,21 @@ public static class GuerrillaChunks
         int counts = Align(names + 4 + nameSize, 16), materialCount = I(counts + 4);
         int zeros = Align(counts + 8 + materialCount * 4, 16), blocks = Align(zeros + materialCount * 4, 16);
         var materials = new List<byte[]>();
+        var glassMaterials = new HashSet<int>();
         int at = blocks;
         for (int k = 0; k < materialCount; k++)
         {
             materials.Add(GuerrillaMaterials.Convert(g, at, nameList));
+            if (GuerrillaMaterials.IsGlass(g, at)) glassMaterials.Add(k);
             at += I(at);
         }
+        // The submeshes drawn with glass (version 6: submesh count +0x10, table +0x14, 44 bytes each,
+        // the first word its render block count; then the render blocks, 20 bytes, the material first).
+        int submeshCount = I(mesh + 0x10), submeshTable = mesh + I(mesh + 0x14), renderBlocks = submeshTable + submeshCount * 44;
+        var glassSubmeshes = new HashSet<int>();
+        for (int s = 0, b = 0; s < submeshCount; s++)
+            for (int end = b + I(submeshTable + s * 44); b < end; b++)
+                if (glassMaterials.Contains(BitConverter.ToUInt16(g, renderBlocks + b * 20))) glassSubmeshes.Add(s);
         int materialsEnd = at;
         // The name list written again: the names the materials use, renamed.
         var textures = new List<string>();
@@ -125,7 +145,7 @@ public static class GuerrillaChunks
         o.Align(128);
         int destruction = o.Count;
         o.Put(0x28, destruction);
-        int destructionEnd = ConvertDestruction(g, I(0x28), o);
+        int destructionEnd = ConvertDestruction(g, I(0x28), o, glassSubmeshes);
         o.Put(0x2C, o.Count - destruction);
         if (Align(destructionEnd, 64) != I(0x1C)) throw new InvalidDataException("the destruction data doesn't end where the collision starts");
 
@@ -162,7 +182,7 @@ public static class GuerrillaChunks
     }
 
     /// <summary>Writes the destruction data at <paramref name="destruction"/> as Armageddon's; returns where Guerrilla's ends.</summary>
-    static int ConvertDestruction(byte[] g, int destruction, Output o)
+    static int ConvertDestruction(byte[] g, int destruction, Output o, HashSet<int> glassSubmeshes)
     {
         int I(int at) => BitConverter.ToInt32(g, at);
         int at = Align(destruction, 128), count = I(at);
@@ -178,11 +198,19 @@ public static class GuerrillaChunks
             o.Add(g.AsSpan(at, 44));
             at = Align(at + 44, 128); o.Align(128);
 
-            // The pieces, their data and link numbers.
+            // The pieces, their data (+6 the submesh, +8 the physical material) and link numbers; panes of
+            // glass (glass drawn with glass) flagged as Armageddon flags its own.
             int linkNumbers = 0;
             for (int p = 0; p < pieceCount; p++) linkNumbers += g[at + p * 64 + 62];
             int length = pieceCount * (64 + 12) + linkNumbers * 2;
-            o.Add(g.AsSpan(at, length));
+            byte[] pieces = g.AsSpan(at, length).ToArray();
+            for (int p = 0; p < pieceCount; p++)
+            {
+                int pieceData = pieceCount * 64 + p * 12;
+                if (GlassMaterials.Contains(BitConverter.ToUInt32(pieces, pieceData + 8)) && glassSubmeshes.Contains(BitConverter.ToUInt16(pieces, pieceData + 6)))
+                    pieces[p * 64 + 63] |= GlassPiece;
+            }
+            o.Add(pieces);
             at = Align(at + length, 4); o.Align(4);
 
             // The links, with Armageddon's flags.

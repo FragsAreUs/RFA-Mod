@@ -246,7 +246,11 @@ The world itself is built by `editor\GuerrillaWorld.exe` (code in `src\editor\Gu
 `rfg` into `overrides\build\pc\cache\` and the sky's files into `mods\guerrilla_world\`. What it
 converts:
 - **The ground** of each of Guerrilla's 102 zones, sampled whole, with its own textures and cliff
-  material, far-away meshes, and a starting point in the middle of every zone.
+  material, far-away meshes, and a starting point in the middle of every zone. Guerrilla cuts its
+  roads and paved places out of the ground and lays them in as separate meshes in the same
+  sub-zone files (`TerrainSubzone.Paving`); their heights are sampled with the ground's (their own
+  road textures aren't drawn yet). Where a rock closes the ground itself (a cap on a pillar, a cover
+  on a slope), the ground is laid half a metre under the rock's surface.
 - **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
   (Havok MOPP code, written from scratch) over each zone's pieces.
 - **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file

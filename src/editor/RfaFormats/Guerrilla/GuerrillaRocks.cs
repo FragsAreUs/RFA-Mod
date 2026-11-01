@@ -35,8 +35,8 @@ public static class GuerrillaRocks
     /// <summary>The Armageddon piece the rocks are made over, in dlc01_precache.vpp_pc.</summary>
     public const string TemplatePiece = "ter_sur_blder";
 
-    /// <summary>A converted piece: its files, the box its mesh fills (in its own coordinates), its Guerrilla texture names (with .tga), its tint, and the box its collision fills.</summary>
-    public sealed record Piece(byte[] Header, byte[] Data, Vector3 Min, Vector3 Max, string Diffuse, string Normal, Vector4 Tint, Vector3 CollisionMin, Vector3 CollisionMax);
+    /// <summary>A converted piece: its files, the box its mesh fills (in its own coordinates), its Guerrilla texture names (with .tga), its tint, the box its collision fills, and its triangles (three corners each, in its own coordinates).</summary>
+    public sealed record Piece(byte[] Header, byte[] Data, Vector3 Min, Vector3 Max, string Diffuse, string Normal, Vector4 Tint, Vector3 CollisionMin, Vector3 CollisionMax, Vector3[] Corners);
 
     /// <summary>A piece a Guerrilla zone places: its name, where (world position), turned how (rows right, up, forward), the area it covers from above.</summary>
     public sealed record Placement(string Name, Vector3 Position, float[] Rotation, Vector2 AreaMin, Vector2 AreaMax);
@@ -79,15 +79,17 @@ public static class GuerrillaRocks
             for (int i = 0; i < count; i++) strip.Add(At(i));
         }
         var vertices = new byte[vertexCount * 24];
+        var positions = new Vector3[vertexCount];
         Vector3 min = new(float.MaxValue), max = new(float.MinValue);
         for (int v = 0; v < vertexCount; v++)
         {
             int from = vertexOffset + v * vertexSize;
             Buffer.BlockCopy(rfgData, from, vertices, v * 24, 24);  // position, normal, tangent, the first UV channel
-            var p = new Vector3(BitConverter.ToSingle(rfgData, from), BitConverter.ToSingle(rfgData, from + 4), BitConverter.ToSingle(rfgData, from + 8));
+            var p = positions[v] = new Vector3(BitConverter.ToSingle(rfgData, from), BitConverter.ToSingle(rfgData, from + 4), BitConverter.ToSingle(rfgData, from + 8));
             min = Vector3.Min(min, p);
             max = Vector3.Max(max, p);
         }
+        var corners = ModelFile.StripToTriangles([.. strip.Select(i => (int)i)], 0, strip.Count).Select(i => positions[i]).ToArray();
 
         // Its textures: the colour and normal maps (names ending _d and _n).
         var names = Regex.Matches(Encoding.Latin1.GetString(rfgHeader), @"[A-Za-z0-9_]+\.tga").Select(m => m.Value).ToList();
@@ -144,7 +146,7 @@ public static class GuerrillaRocks
         header = PieceCollision.Replace(header, collisionVertices, collisionTriangles);
         var collisionMin = collisionVertices.Aggregate(new Vector3(float.MaxValue), Vector3.Min);
         var collisionMax = collisionVertices.Aggregate(new Vector3(float.MinValue), Vector3.Max);
-        return new Piece(header, dataBytes, min, max, diffuse, normal, tint, collisionMin, collisionMax);
+        return new Piece(header, dataBytes, min, max, diffuse, normal, tint, collisionMin, collisionMax, corners);
     }
 
     static void Rename(byte[] header, string oldName, string newName)

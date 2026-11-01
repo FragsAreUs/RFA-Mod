@@ -65,19 +65,56 @@ public static class GuerrillaGround
 
     /// <summary>
     /// Guerrilla's ground over the square from <paramref name="corner"/> (x, z in its world), from
-    /// its sub-zones there: the top surface's height at each sample, <c>[z * Samples + x]</c>.
-    /// Points no sub-zone covers (its roads' cut-outs) are filled smoothly from the covered ones
-    /// around them. Null if none is covered.
+    /// its sub-zones there: the top surface's height at each sample, <c>[z * Samples + x]</c>, its
+    /// roads and paving included. Points no sub-zone covers are where Guerrilla's rocks close the
+    /// ground themselves (caps on pillar tops, covers on slopes); they are filled smoothly from the
+    /// covered ones around them, and then, where one of <paramref name="closers"/> (the rocks'
+    /// triangles in the world, three corners each) lies just above that fill (its first surface
+    /// there no more than <see cref="ClosedReach"/> up), raised to <see cref="ClosedBelow"/> under
+    /// it, so the ground stays inside the rock with no gap under its rim. A rock surface higher up
+    /// spans the hole (an arch, a tall spire's flank) rather than closing it, and is left alone.
+    /// Null if nothing is covered.
     /// </summary>
-    public static float[]? Sample(IEnumerable<TerrainSubzone> subzones, Vector2 corner, GroundLayout? layout = null)
+    public static float[]? Sample(IEnumerable<TerrainSubzone> subzones, Vector2 corner, GroundLayout? layout = null, IEnumerable<Vector3>? closers = null)
     {
         layout ??= GroundLayout.Quarter;
         int samples = layout.Samples;
         var heights = Cover(subzones, corner, layout);
         if (heights.All(float.IsNaN)) return null;
         bool[] hole = heights.Select(float.IsNaN).ToArray();
-        // Holes (Guerrilla cuts its roads out of the ground, for road models to fill): first the
-        // nearest covered sample's height, spreading out a step at a time.
+        Fill(heights, hole, samples);
+        if (closers == null) return heights;
+        // The first rock surface at or above each filled sample's fill, if near enough.
+        var under = new float[heights.Length];
+        Array.Fill(under, float.NaN);
+        using var corners = closers.GetEnumerator();
+        while (corners.MoveNext())
+        {
+            var a = corners.Current;
+            if (!corners.MoveNext()) break;
+            var b = corners.Current;
+            if (!corners.MoveNext()) break;
+            Visit(a, b, corners.Current, corner, layout, (i, h) =>
+            {
+                if (hole[i] && h >= heights[i] - ClosedBelow && h <= heights[i] + ClosedReach && (float.IsNaN(under[i]) || h < under[i])) under[i] = h;
+            });
+        }
+        bool closed = false;
+        for (int i = 0; i < heights.Length; i++)
+            if (!float.IsNaN(under[i]))
+            {
+                heights[i] = MathF.Max(heights[i], under[i] - ClosedBelow);
+                hole[i] = false;
+                closed = true;
+            }
+        // The rest of each hole smoothed again around what the rocks closed.
+        if (closed) Smooth(heights, hole, samples);
+        return heights;
+    }
+
+    /// <summary>The samples marked as holes filled: first the nearest covered sample's height, spreading out a step at a time; then smoothed.</summary>
+    static void Fill(float[] heights, bool[] hole, int samples)
+    {
         while (heights.Any(float.IsNaN))
         {
             float[] before = (float[])heights.Clone();
@@ -93,9 +130,16 @@ public static class GuerrillaGround
                         }
                 }
         }
-        // Then smoothed: each filled sample the mean of its neighbours, over and over, so a hole
-        // spans its sides smoothly (a road across a slope) instead of stepping between them where
-        // the spreading from each side met.
+        Smooth(heights, hole, samples);
+    }
+
+    /// <summary>
+    /// Each hole sample made the mean of its neighbours, over and over, so a hole spans its sides
+    /// smoothly (across a slope) instead of stepping between them where the spreading from each
+    /// side met.
+    /// </summary>
+    static void Smooth(float[] heights, bool[] hole, int samples)
+    {
         int[] filled = Enumerable.Range(0, hole.Length).Where(i => hole[i]).ToArray();
         for (int pass = 0; pass < HoleSmoothing; pass++)
             foreach (int i in filled)
@@ -109,17 +153,22 @@ public static class GuerrillaGround
                 if (z < samples - 1) { sum += heights[i + samples]; count++; }
                 heights[i] = sum / count;
             }
-        return heights;
     }
 
-    /// <summary>How many times holes are smoothed (enough to settle across a road a few dozen metres wide).</summary>
+    /// <summary>How many times holes are smoothed (enough to settle across a hole a few dozen metres wide).</summary>
     const int HoleSmoothing = 400;
+
+    /// <summary>How far below a rock's surface the ground goes where the rock closes a hole (m).</summary>
+    public const float ClosedBelow = 0.5f;
+
+    /// <summary>How far above a hole's smooth fill a rock's surface may be and still close the hole (m); the floating rocks' rims were 1–4.5 m up.</summary>
+    public const float ClosedReach = 6f;
 
     /// <summary>Which samples of the square (as <see cref="Sample"/>'s) no sub-zone covers.</summary>
     public static bool[] Uncovered(IEnumerable<TerrainSubzone> subzones, Vector2 corner, GroundLayout? layout = null) =>
         Cover(subzones, corner, layout).Select(float.IsNaN).ToArray();
 
-    /// <summary>The top surface's height at each sample, NaN where no sub-zone covers it.</summary>
+    /// <summary>The top surface's height at each sample (the ground, and Guerrilla's roads and paving), NaN where no sub-zone covers it.</summary>
     public static float[] Cover(IEnumerable<TerrainSubzone> subzones, Vector2 corner, GroundLayout? layout = null)
     {
         layout ??= GroundLayout.Quarter;
@@ -127,27 +176,35 @@ public static class GuerrillaGround
         var heights = new float[samples * samples];
         Array.Fill(heights, float.NaN);
         foreach (TerrainSubzone s in subzones.Where(s => s.HasGround))
-            for (int t = 0; t < s.Triangles.Length; t += 3)
-            {
-                Vector3 a = s.Positions[s.Triangles[t]], b = s.Positions[s.Triangles[t + 1]], c = s.Positions[s.Triangles[t + 2]];
-                float area = (b.X - a.X) * (c.Z - a.Z) - (c.X - a.X) * (b.Z - a.Z);
-                if (MathF.Abs(area) < 1e-9f) continue;
-                int x1 = Math.Max(0, (int)MathF.Floor(MathF.Min(a.X, MathF.Min(b.X, c.X)) - corner.X)), x2 = Math.Min(samples - 1, (int)MathF.Ceiling(MathF.Max(a.X, MathF.Max(b.X, c.X)) - corner.X));
-                int z1 = Math.Max(0, (int)MathF.Floor(MathF.Min(a.Z, MathF.Min(b.Z, c.Z)) - corner.Y)), z2 = Math.Min(samples - 1, (int)MathF.Ceiling(MathF.Max(a.Z, MathF.Max(b.Z, c.Z)) - corner.Y));
-                for (int z = z1; z <= z2; z++)
-                    for (int x = x1; x <= x2; x++)
-                    {
-                        float px = corner.X + layout.SampleAt(x), pz = corner.Y + layout.SampleAt(z);
-                        float wa = ((b.X - px) * (c.Z - pz) - (c.X - px) * (b.Z - pz)) / area;
-                        float wb = ((c.X - px) * (a.Z - pz) - (a.X - px) * (c.Z - pz)) / area;
-                        float wc = 1 - wa - wb;
-                        if (wa < -1e-4f || wb < -1e-4f || wc < -1e-4f) continue;
-                        float h = wa * a.Y + wb * b.Y + wc * c.Y;
-                        int i = z * samples + x;
-                        if (float.IsNaN(heights[i]) || h > heights[i]) heights[i] = h;
-                    }
-            }
+        {
+            for (int t = 0; t < s.Triangles.Length; t += 3) Lay(heights, s.Positions[s.Triangles[t]], s.Positions[s.Triangles[t + 1]], s.Positions[s.Triangles[t + 2]], corner, layout);
+            for (int t = 0; t + 2 < s.Paving.Length; t += 3) Lay(heights, s.Paving[t], s.Paving[t + 1], s.Paving[t + 2], corner, layout);
+        }
         return heights;
+    }
+
+    /// <summary>A triangle laid on the samples it covers: each keeps the highest surface over it.</summary>
+    static void Lay(float[] heights, Vector3 a, Vector3 b, Vector3 c, Vector2 corner, GroundLayout layout) =>
+        Visit(a, b, c, corner, layout, (i, h) => { if (float.IsNaN(heights[i]) || h > heights[i]) heights[i] = h; });
+
+    /// <summary>Each sample a triangle covers, with the triangle's height there.</summary>
+    static void Visit(Vector3 a, Vector3 b, Vector3 c, Vector2 corner, GroundLayout layout, Action<int, float> visit)
+    {
+        int samples = layout.Samples;
+        float area = (b.X - a.X) * (c.Z - a.Z) - (c.X - a.X) * (b.Z - a.Z);
+        if (MathF.Abs(area) < 1e-9f) return;
+        int x1 = Math.Max(0, (int)MathF.Floor(MathF.Min(a.X, MathF.Min(b.X, c.X)) - corner.X)), x2 = Math.Min(samples - 1, (int)MathF.Ceiling(MathF.Max(a.X, MathF.Max(b.X, c.X)) - corner.X));
+        int z1 = Math.Max(0, (int)MathF.Floor(MathF.Min(a.Z, MathF.Min(b.Z, c.Z)) - corner.Y)), z2 = Math.Min(samples - 1, (int)MathF.Ceiling(MathF.Max(a.Z, MathF.Max(b.Z, c.Z)) - corner.Y));
+        for (int z = z1; z <= z2; z++)
+            for (int x = x1; x <= x2; x++)
+            {
+                float px = corner.X + layout.SampleAt(x), pz = corner.Y + layout.SampleAt(z);
+                float wa = ((b.X - px) * (c.Z - pz) - (c.X - px) * (b.Z - pz)) / area;
+                float wb = ((c.X - px) * (a.Z - pz) - (a.X - px) * (c.Z - pz)) / area;
+                float wc = 1 - wa - wb;
+                if (wa < -1e-4f || wb < -1e-4f || wc < -1e-4f) continue;
+                visit(z * samples + x, wa * a.Y + wb * b.Y + wc * c.Y);
+            }
     }
 
     /// <summary>

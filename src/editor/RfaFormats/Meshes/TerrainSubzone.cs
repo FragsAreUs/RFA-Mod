@@ -33,6 +33,16 @@ namespace RfaFormats.Meshes;
 /// vertex offset +0x20, index count +0x24, index offset +0x28, index size, topology and render
 /// block count +0x2C), with 44-byte submeshes (one run-time word instead of two). Vertices are
 /// packed the same (format 14), but Guerrilla's zones are 511 m wide, so a grid step is 1 m.
+///
+/// Guerrilla cuts its roads and paved places out of the ground and lays them in as more
+/// version-6 blocks later in the c-file (each block's g-data after the one before, from a multiple
+/// of 16): the roads (under a "_Road" name; 16-byte vertices, format 0: position as 3 floats, 4
+/// more bytes) on the ground's 1 m grid, and the paving around them (24-byte vertices, format 25,
+/// position first; with a ground material that has a road texture as a fifth layer). Their
+/// positions are metres from the zone's centre (the records before the blocks say so). They meet
+/// the ground exactly at the cut's edges and never overlap it; with them, what is still uncovered
+/// is where Guerrilla's rocks (stitch pieces) close the ground themselves. Read into
+/// <see cref="Paving"/>.
 /// </summary>
 public sealed class TerrainSubzone
 {
@@ -62,6 +72,9 @@ public sealed class TerrainSubzone
 
     /// <summary>The triangles of each patch (its submesh), in the patches' order.</summary>
     public IReadOnlyList<int[]> PatchTriangles { get; }
+
+    /// <summary>Guerrilla's roads and paving in the sub-zone, three corners a triangle, in the world (empty for Armageddon's).</summary>
+    public Vector3[] Paving { get; } = [];
 
     TerrainSubzone(byte[] header, byte[] data)
     {
@@ -139,6 +152,44 @@ public sealed class TerrainSubzone
         }
         PatchTriangles = patches;
         Triangles = [.. patches.SelectMany(p => p)];
+        if (guerrilla) Paving = GuerrillaPaving(header, data, at);
+    }
+
+    /// <summary>The road and paving blocks after the ground's (at <paramref name="groundAt"/>): their triangles' corners in the world.</summary>
+    Vector3[] GuerrillaPaving(byte[] header, byte[] data, int groundAt)
+    {
+        // The zone's centre: the middle of the 511 m square around the sub-zone.
+        const float zoneWidth = 511;
+        Vector3 middle = (BoundsMin + BoundsMax) / 2;
+        var centre = new Vector3(MathF.Floor(middle.X / zoneWidth) * zoneWidth + zoneWidth / 2, 0, MathF.Floor(middle.Z / zoneWidth) * zoneWidth + zoneWidth / 2);
+        var corners = new List<Vector3>();
+        int dataAt = 0;
+        for (int at = groundAt; at + 0x30 <= header.Length; at += 4)
+        {
+            // A block is taken only where its checksum also starts the next g-data.
+            if (!IsGuerrillaMeshBlock(header, at) || dataAt + 4 > data.Length || U32(data, dataAt) != U32(header, at + 4)) continue;
+            int start = dataAt;
+            dataAt = (dataAt + (int)U32(header, at + 0x0C) + 15) & ~15;
+            int vertexSize = header[at + 0x1C], format = header[at + 0x1D];
+            if (at == groundAt || !(vertexSize == 16 && format == 0 || vertexSize == 24 && format == 25) || header[at + 0x2C] != 2 || header[at + 0x2D] != 0) continue;
+            int submeshes = (int)U32(header, at + 0x10), table = at + (int)U32(header, at + 0x14), vertexCount = (int)U32(header, at + 0x18);
+            int vertexOffset = start + (int)U32(header, at + 0x20), indexCount = (int)U32(header, at + 0x24), indexOffset = start + (int)U32(header, at + 0x28);
+            var positions = new Vector3[vertexCount];
+            for (int v = 0; v < vertexCount; v++)
+            {
+                int p = vertexOffset + v * vertexSize;
+                positions[v] = centre + new Vector3(F32(data, p), F32(data, p + 4), F32(data, p + 8));
+            }
+            var indices = new int[indexCount];
+            for (int i = 0; i < indexCount; i++) indices[i] = BitConverter.ToUInt16(data, indexOffset + i * 2);
+            // Each submesh has the next of the render blocks (20 bytes: a word, first index, count, ...), as many as its first word says.
+            int blockTable = table + submeshes * 44;
+            for (int s = 0, b = 0; s < submeshes; s++)
+                for (int end = b + (int)U32(header, table + s * 44); b < end; b++)
+                    foreach (int corner in ModelFile.StripToTriangles(indices, (int)U32(header, blockTable + b * 20 + 4), (int)U32(header, blockTable + b * 20 + 8)))
+                        corners.Add(positions[corner]);
+        }
+        return [.. corners];
     }
 
     public static TerrainSubzone Read(byte[] header, byte[] data) => new(header, data);
