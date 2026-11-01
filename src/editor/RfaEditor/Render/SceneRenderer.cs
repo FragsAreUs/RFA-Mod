@@ -645,8 +645,8 @@ sealed class SceneRenderer : IDisposable
 
     /// <summary>
     /// One of the game's textures on the card as stored: DXT1, DXT3 and DXT5 (BC1 to BC3) and 32-bit
-    /// colour as they are, with each of the game's smaller copies; other formats (and compressed
-    /// ones not a whole number of 4-pixel blocks across) decoded first.
+    /// colour as they are, with each of the game's smaller copies (those its data file holds);
+    /// other formats (and compressed ones not a whole number of 4-pixel blocks across) decoded first.
     /// </summary>
     GpuTexture Upload(PegFile peg, PegTexture texture)
     {
@@ -662,7 +662,7 @@ sealed class SceneRenderer : IDisposable
         if (format == null || (blocks && (texture.Width % 4 != 0 || texture.Height % 4 != 0)))
             return Upload(Bitmaps.FromRgba(peg.Decode(texture), alpha: true));
 
-        byte[] data = peg.TextureData(texture);
+        byte[] data = peg.TextureDataThere(texture);
         var levels = new List<(int Offset, int Pitch)>();
         int at = 0;
         for (int level = 0; level < Math.Max(1, texture.MipLevels); level++)

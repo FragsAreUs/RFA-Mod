@@ -228,11 +228,21 @@ public static class GuerrillaWorld
             looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000));
         }
         static string Alias(string texture) => "rfg_" + NameHashes.PropertyHash(texture).ToString("x8");
-        // A Guerrilla texture's header made again under its new name: its size, format, levels and flags as Guerrilla's.
+        // A Guerrilla texture's header made again under its new name: its size, format and flags as
+        // Guerrilla's, and its mip levels, but a compressed one's only down to 4 x 4. Guerrilla sizes
+        // the levels smaller than a 4-pixel block by their pixels (a 2 x 2 DXT5 level 4 bytes, not a
+        // block's 16), so Armageddon would look for them in the wrong place, and past the end of a
+        // file that Guerrilla's sizes fill (a 256 x 256 DXT5's 87,392 bytes, against 87,408).
         static byte[] Repacked(byte[] header, byte[] data, string name)
         {
             var t = PegFile.Read(header, data).Textures[0];
-            return PegFile.SingleHeader(name + ".tga", t.Width, t.Height, t.Format, t.MipLevels, t.Flags);
+            int levels = t.MipLevels;
+            if (t.Format.IsBlockCompressed())
+            {
+                levels = 1;
+                while (levels < t.MipLevels && Math.Min(t.Width >> levels, t.Height >> levels) >= 4) levels++;
+            }
+            return PegFile.SingleHeader(name + ".tga", t.Width, t.Height, t.Format, levels, t.Flags);
         }
         var layerFiles = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var ((col, row), look) in looks)

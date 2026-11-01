@@ -138,6 +138,16 @@ public sealed class PegFile
     public byte[] TextureData(PegTexture texture) => data.AsSpan(texture.DataOffset, texture.DataSize).ToArray();
 
     /// <summary>
+    /// As much of one texture's mip levels as the data file holds: all of them, unless the file is
+    /// shorter than its header says.
+    /// </summary>
+    public byte[] TextureDataThere(PegTexture texture)
+    {
+        int from = Math.Min(texture.DataOffset, data.Length);
+        return data.AsSpan(from, Math.Min(texture.DataSize, data.Length - from)).ToArray();
+    }
+
+    /// <summary>
     /// The first mip level no bigger than <paramref name="maxSize"/> on either side (or the
     /// smallest there is) as plain pixels: for previews, where full size isn't needed.
     /// </summary>
