@@ -284,6 +284,18 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
   sun's light along its path over the day, by night the moon's, from the time of day's light
   colour (times `Sun=`). Both are read again when `rfa_mods.ini` is saved. The clouds are lit from
   the same direction.
+- **The sun's shine**: a surface's shine comes from the light buffer's alpha, which only lamps
+  write, so Guerrilla's specular maps showed nothing. The mod's sun writes it as Armageddon's
+  lamps do: the sun reflected off the surface toward the eye, to the power of the surface's
+  sharpness (kept with its normal), times how much it faces the sun. Guerrilla's sharpness is a
+  half-way-vector exponent and Armageddon's a reflection one (× 5.12), about a quarter of it for
+  the same highlight, so the world builder writes Guerrilla's `Specular_Power` / 20.48. The ground's
+  shader ignores the shine.
+- **The colour correction**: Guerrilla multiplies its whole picture by its time of day's tint
+  (`color_correct_tint`, divided by its brightest channel); its light is pink and the tint bluish,
+  so its colours need both. Armageddon doesn't colour its picture by that tint, so the mod
+  multiplies the light it adds, the sky, the clouds and the far mountains by it
+  (`ColourCorrection=`).
 - **The zone size**: the ported world keeps Guerrilla's 511 m zones (`ZoneSize=`), so the game's
   16 × 16 grid of zones is Guerrilla's whole 8 km map. The game already knows that size (it gives
   it to worlds whose names start `mpl_`, left over from Guerrilla's multiplayer maps); the mod
@@ -330,6 +342,26 @@ converts:
   world's own (below).
 - The zone files go into `zonescript_rfg.vpp_pc`, stored compressed file by file as the game's own
   zone archive is: the game reads that archive whole into a 20 MB pool when a level loads.
+- **The districts and their time of day**: Guerrilla gives each of its eight districts (Parker,
+  Dust, Badlands, Oasis, Eos, Manufacturing, End Game, Tutorial) its own time of day and blends
+  those of the zone you are in and its neighbours by where you stand. Armageddon still works the
+  same way: at start-up it reads the territories in `territories.xtbl` (each district with its
+  zones), and a level loads `<world>_<district>.dtodx` for each district of the territory named
+  like the world (nine sets at most). So the builder adds Guerrilla's districts to Armageddon's
+  table as the territory `rfg` (`GuerrillaTerritory`; an override in
+  `overrides\build\pc\cache\table.vpp_pc\`) and writes a set for each district and the default
+  (`GuerrillaTimeOfDay`): Armageddon's own curves where the games' scales differ, the district's
+  sky, clouds, light, ambient, fog colour and colour correction. The districts are named by two
+  letters (`Eo` for Eos, `rfg_eo.dtodx`, ...): Armageddon keeps district names in 32 bytes, and
+  Guerrilla's full names stopped the game at start-up ("Length of string pool exceeded").
+- **Room for the world's textures**: the game names every texture it loads by a slot in its
+  texture name table (`misc.vpp_pc\bitmaps_pc`). Its own textures' names come with the table;
+  any other texture takes one of 200 spare slots, never given back while the game runs. When
+  they're gone, textures draw as the game's stand-in (a grid) or white. The Guerrilla world has
+  about 2,000 textures of its own, so the second level loaded ran out. The builder writes the
+  game's table again with that many more empty slots (`GuerrillaBitmaps`; an override in
+  `overrides\build\pc\cache\misc.vpp_pc\`); the game makes room for their names from the slot
+  count.
 
 ### guerrilla_hud
 

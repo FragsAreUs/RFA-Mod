@@ -100,7 +100,8 @@ Things to know:
 - `guerrilla_world` widens the game's physics for every world, the campaign included. Set
   `ZoneSize=0` under `[GuerrillaWorld]` if you don't use the Guerrilla world.
 - To take the world away, remove the HUD first (`--remove`), then delete `rfg_*`,
-  `zonescript_rfg.vpp_pc`, `rfg.gtodx` and `rfg_default.dtodx` from `overrides\build\pc\cache\`.
+  `zonescript_rfg.vpp_pc`, `rfg.gtodx`, `table.vpp_pc\territories.xtbl` and
+  `misc.vpp_pc\bitmaps_pc` from `overrides\build\pc\cache\`.
 
 ## The editor
 

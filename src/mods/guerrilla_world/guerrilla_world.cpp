@@ -56,8 +56,11 @@
 // into the light buffer the lamps light (after the game's light pass): the sky's light, the time of
 // day's ambient light from above and from below blended by which way a surface faces, times
 // [GuerrillaWorld] Ambient=; and the light of the sun (or by night, the moon) along its path over
-// the day, tod_light_color times Sun= (both read again whenever rfa_mods.ini is saved). The clouds
-// are lit from the same direction.
+// the day, tod_light_color times Sun= (both read again whenever rfa_mods.ini is saved), with its
+// shine on the surfaces that have specular maps, as Armageddon's lamps give theirs. The clouds
+// are lit from the same direction. That light, the sky, the clouds and the backdrop are multiplied
+// by Guerrilla's colour correction (color_correct_tint, ColourCorrection=), which Guerrilla applies
+// to its whole picture and Armageddon to none of it.
 //
 // And it leaves out the game's "invalid mission info hash" report for our worlds' zones, which
 // carry no mission (one line a zone at every load).
@@ -194,6 +197,14 @@ constexpr size_t kReportErrorPrologue = 9;  // push ebp / mov ebp,esp / sub esp,
 constexpr DWORD kMissionHashFormat = 0xF82734;
 using ReportErrorFn = void(__cdecl*)(int level, int flag, const char* format, va_list arguments);
 ReportErrorFn g_reportError;
+
+// The game's debug print (0xCA9F10: a format and its arguments, written out with
+// OutputDebugString). What it says while loading (an archive it couldn't mount, ...) reaches
+// nowhere a player sees, so in our worlds the mod writes it to the log as well (the first 500).
+constexpr DWORD kDebugPrint = 0xCA9F10;
+constexpr size_t kDebugPrintPrologue = 6;  // push ebp / mov ebp,esp / sub esp,8
+using DebugPrintFn = void(__cdecl*)(const char* format, ...);
+DebugPrintFn g_debugPrint;
 
 // The area a level's start zone is in, for its precache (0x6B4710: column, row and the grid's size
 // in, the area's 64-byte name out). Its one caller, the level's streaming set-up (0x6B43ED, after
@@ -335,7 +346,40 @@ void ReadSun() {
     g_sun = sun >= 0 ? sun : 1.0f;
 }
 
-// Once a second: if rfa_mods.ini was saved since, read the brightness, ambient light, sun and clock speed again.
+// Guerrilla's colour correction, the time of day's color_correct_tint: Guerrilla multiplies its whole
+// picture by it, divided by its brightest channel (TOD_tint_primary_color), and ignores its fourth
+// number. Its light is pink and the tint cyan, so only the two together give its colours. Armageddon
+// doesn't colour its picture by the time of day's tint (its own sets all carry the same grey), so in
+// our worlds the mod multiplies what it draws by it: the light it adds, the sky, the clouds and the
+// backdrop. ColourCorrection=0 leaves it out (read again whenever rfa_mods.ini is saved).
+constexpr size_t kColourCorrection = 0x47A0;
+bool g_colourCorrection = true;
+
+void ReadColourCorrection() {
+    g_colourCorrection = _wtoi(rfa::IniString(L"GuerrillaWorld", L"ColourCorrection", L"1").c_str()) != 0;
+}
+
+// The colour correction now: every loaded set's tint at the time of day times the set's weight,
+// added up, divided by its brightest channel; white when it is off.
+void ColourCorrection(float (&out)[3]) {
+    out[0] = out[1] = out[2] = 1;
+    if (!g_colourCorrection) return;
+    float tint[3] = {0, 0, 0};
+    for (int set = 0; set < 4; ++set) {
+        if (!g_todSets[set] || g_todWeights[set] == 0) continue;
+        float value[4] = {0, 0, 0, 0};
+        ColourAt(g_todSets[set] + kColourCorrection, nullptr, value, g_timeOfDay);
+        for (int i = 0; i < 3; ++i) tint[i] += value[i] * g_todWeights[set];
+    }
+    float brightest = tint[0];
+    if (tint[1] > brightest) brightest = tint[1];
+    if (tint[2] > brightest) brightest = tint[2];
+    if (brightest <= 0) return;
+    for (int i = 0; i < 3; ++i) out[i] = tint[i] / brightest;
+}
+
+// Once a second: if rfa_mods.ini was saved since, read the brightness, ambient light, sun, colour
+// correction and clock speed again.
 void CheckSettings() {
     const ULONGLONG now = GetTickCount64();
     if (now - g_lastIniCheck < 1000) return;
@@ -363,6 +407,12 @@ void CheckSettings() {
     if (g_sun != sunBefore) {
         rfa::Log("Ground: sunlight times %.3g (was %.3g)", g_sun, sunBefore);
         g_tellAmbient = true;
+    }
+    const bool correctionBefore = g_colourCorrection;
+    ReadColourCorrection();
+    if (g_colourCorrection != correctionBefore) {
+        rfa::Log("Colour correction (Guerrilla's tint) %s", g_colourCorrection ? "on" : "off");
+        g_tellAmbient = g_tellColours = true;
     }
     const float clockBefore = g_clockSpeed;
     ReadClockSpeed();
@@ -436,12 +486,14 @@ void __cdecl SetBackAmbient(const float* colour) {
 void TellAmbient() {
     if (!g_tellAmbient) return;
     g_tellAmbient = false;
-    float toward[3], sun[3];
+    float toward[3], sun[3], tint[3];
     DirectLight(toward, sun);
+    ColourCorrection(tint);
     rfa::Log("Ground at %.2f h: sky light from above %.3f %.3f %.3f, from below %.3f %.3f %.3f (Ambient=%.3g); "
-             "%s toward %.2f %.2f %.2f, light %.3f %.3f %.3f (Sun=%.3g)",
+             "%s toward %.2f %.2f %.2f, light %.3f %.3f %.3f (Sun=%.3g); colour correction %.3f %.3f %.3f",
              g_timeOfDay, g_worldAmbient[0], g_worldAmbient[1], g_worldAmbient[2], g_worldBackAmbient[0], g_worldBackAmbient[1],
-             g_worldBackAmbient[2], g_ambient, SunUp() ? "sun" : "moon", toward[0], toward[1], toward[2], sun[0], sun[1], sun[2], g_sun);
+             g_worldBackAmbient[2], g_ambient, SunUp() ? "sun" : "moon", toward[0], toward[1], toward[2], sun[0], sun[1], sun[2], g_sun,
+             tint[0], tint[1], tint[2]);
 }
 
 // Each frame: in our worlds the game clock runs at ClockSpeed; in any other, at the speed it had.
@@ -556,6 +608,7 @@ bool OurZone(const char* zone) {
 
 // Replaces the game's error reports: all go through, but the invalid mission hash of our zones.
 int g_missionHashReports = 0;
+int g_reportsLogged = 0;  // the game's other reports in our worlds, also written to the log (the first 200)
 
 void __cdecl ReportError(int level, int flag, const char* format, va_list arguments) {
     if (reinterpret_cast<DWORD>(format) == kMissionHashFormat) {
@@ -569,7 +622,39 @@ void __cdecl ReportError(int level, int flag, const char* format, va_list argume
             return;
         }
     }
+    // What the game reports in our worlds (a file it couldn't load, a pool that ran out, ...) only
+    // flashes on the screen; the log keeps it.
+    if (format && g_reportsLogged < 200 && InOurWorld()) {
+        char text[512];
+        va_list copy;
+        va_copy(copy, arguments);
+        vsnprintf(text, sizeof(text), format, copy);
+        va_end(copy);
+        size_t length = strlen(text);
+        while (length > 0 && (text[length - 1] == '\n' || text[length - 1] == '\r')) text[--length] = '\0';
+        if (++g_reportsLogged == 200) rfa::Log("Game report (level %d): %s (the last one logged)", level, text);
+        else rfa::Log("Game report (level %d): %s", level, text);
+    }
     g_reportError(level, flag, format, arguments);
+}
+
+int g_debugPrintsLogged = 0;
+
+void __cdecl DebugPrint(const char* format, ...) {
+    char text[1024];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(text, sizeof(text), format ? format : "", arguments);
+    va_end(arguments);
+    if (g_debugPrintsLogged < 500 && InOurWorld()) {
+        char shown[1024];
+        strcpy_s(shown, text);
+        size_t length = strlen(shown);
+        while (length > 0 && (shown[length - 1] == '\n' || shown[length - 1] == '\r')) shown[--length] = '\0';
+        if (++g_debugPrintsLogged == 500) rfa::Log("Game debug print: %s (the last one logged)", shown);
+        else rfa::Log("Game debug print: %s", shown);
+    }
+    g_debugPrint("%s", text);
 }
 
 // Replaces the area lookup: in our worlds the area is the world itself, so its own precache is mounted
@@ -712,7 +797,11 @@ float4 BackdropPixel(CloudPoint p) : SV_Target
 // reads its surface's normal from the G-buffer (in the camera's space, as the game's ambient light
 // shader decodes it: 0-1 to -1-1, the top half of z a flag) and gets the sky's light from above to
 // below by how much it faces up (as ir_light_ambient blends them), plus the sun's light by how much
-// it faces the sun.
+// it faces the sun. And the sun's shine, in the buffer's alpha as the game's lamps write theirs
+// (ir_light_point): the sun reflected off the surface, how squarely toward the eye to the power of
+// the surface's sharpness (the G-buffer normals' alpha: the square root of its Specular_Power / 50,
+// the top half a flag; the power × 5.12), times how much it faces the sun and the sun's brightness.
+// A surface's own shader takes that times its specular map and Specular_Color; the ground's ignores it.
 constexpr char kLightShader[] = R"(
 cbuffer Light : register(b0)
 {
@@ -721,7 +810,7 @@ cbuffer Light : register(b0)
     float4 SunColour;   // the sun's light on a surface facing it (0 while it is down)
     float4 SunToward;   // toward the sun, in the camera's space
     float4 UpToward;    // straight up, in the camera's space
-    float4 TargetSize;  // the light buffer's width and height
+    float4 TargetSize;  // the light buffer's width and height, and the tangents of half the field of view across and up
 };
 
 Texture2D Normals : register(t0);
@@ -735,14 +824,24 @@ float4 LightVertex(uint id : SV_VertexID) : SV_Position
 
 float4 LightPixel(float4 position : SV_Position) : SV_Target
 {
-    float3 n = Normals.Sample(Nearest, position.xy / TargetSize.xy).xyz;
+    float2 at = position.xy / TargetSize.xy;
+    float4 stored = Normals.Sample(Nearest, at);
+    float3 n = stored.xyz;
     if (n.z >= 0.501961) n.z -= 0.5;
     n = n * 2 - 1;
     float length2 = dot(n, n);
     n = length2 > 0.000001 ? n * rsqrt(length2) : UpToward.xyz;
     float3 sky = lerp(FromBelow.rgb, FromAbove.rgb, dot(n, UpToward.xyz) * 0.5 + 0.5);
-    float3 sun = SunColour.rgb * saturate(dot(n, SunToward.xyz));
-    return float4(sky + sun, 0);
+    float facing = dot(n, SunToward.xyz);
+    float3 sun = SunColour.rgb * saturate(facing);
+
+    float sharpness = (stored.w >= 0.501961 ? stored.w - 0.501961 : stored.w) * 14.166667;
+    sharpness = sharpness * sharpness * 5.12;
+    float3 eye = normalize(float3((at * float2(2, -2) + float2(-1, 1)) * TargetSize.zw, 1));  // from the camera to the surface
+    float3 reflection = 2 * facing * n - SunToward.xyz;
+    float toEye = max(saturate(dot(reflection, -eye)), 0.000001);
+    float shine = saturate(facing) * pow(toEye, sharpness) * dot(SunColour.rgb, float3(0.3, 0.59, 0.11));
+    return float4(sky + sun, shine);
 }
 )";
 
@@ -1101,10 +1200,12 @@ void MakeCloudObjects() {
 }
 
 void SkyColours(float (&hemisphere)[10][4]) {
+    float tint[3];
+    ColourCorrection(tint);
     for (int c = 0; c < 10; ++c) {
         float colour[3];
         TodColour(kSkyCurves[c], colour);
-        for (int i = 0; i < 3; ++i) hemisphere[c][i] = colour[i] * g_brightness;
+        for (int i = 0; i < 3; ++i) hemisphere[c][i] = colour[i] * g_brightness * tint[i];
         hemisphere[c][3] = 1;
     }
 }
@@ -1152,13 +1253,15 @@ void DrawClouds(const SkyConstants& sky) {
     g_context->OMSetBlendState(g_cloudBlend, noFactor, 0xFFFFFFFF);
     g_context->RSSetState(g_cloudRaster);
     // In the model's order: the overhead clouds, the ones along the horizon, then the backdrop in front of them.
+    float tint[3];
+    ColourCorrection(tint);
     for (const CloudPart& part : g_cloudParts) {
         float colour[3];
         if (part.kind == 2) {
             TodColour(kMountainFront, colour);
-            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness;
+            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness * tint[i];
             TodColour(kMountainBack, colour);
-            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness;
+            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness * tint[i];
             TodColour(kMountainFog, colour);  // mixed into the picture before it is lit
             for (int i = 0; i < 3; ++i) constants.strengths[i] = colour[i];
             constants.strengths[3] = TodNumber(kMountainFogDensity);
@@ -1168,9 +1271,9 @@ void DrawClouds(const SkyConstants& sky) {
                          constants.strengths[0], constants.strengths[1], constants.strengths[2], constants.strengths[3]);
         } else {
             TodColour(kCloudFront[part.kind], colour);
-            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness;
+            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness * tint[i];
             TodColour(kCloudRear[part.kind], colour);
-            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness;
+            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness * tint[i];
             for (int i = 0; i < 4; ++i) constants.strengths[i] = TodNumber(kCloudLayers[part.kind][i]);
             constants.shape[0] = part.fade;
             constants.shape[1] = part.full > part.fade ? part.full : part.fade + 0.01f;
@@ -1361,12 +1464,13 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
     }
 
     LightConstants constants = {};
-    float toward[3], sun[3];
+    float toward[3], sun[3], tint[3];
     DirectLight(toward, sun);
+    ColourCorrection(tint);
     for (int i = 0; i < 3; ++i) {
-        constants.fromAbove[i] = g_worldAmbient[i];
-        constants.fromBelow[i] = g_worldBackAmbient[i];
-        constants.sunColour[i] = sun[i];
+        constants.fromAbove[i] = g_worldAmbient[i] * tint[i];
+        constants.fromBelow[i] = g_worldBackAmbient[i] * tint[i];
+        constants.sunColour[i] = sun[i] * tint[i];
     }
     // The camera's space: x along its right, y its up, z its forward (its rows in the world).
     const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};
@@ -1376,6 +1480,8 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
     }
     constants.targetSize[0] = static_cast<float>(desc.Width);
     constants.targetSize[1] = static_cast<float>(desc.Height);
+    constants.targetSize[3] = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    constants.targetSize[2] = constants.targetSize[3] * desc.Width / desc.Height;
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (FAILED(g_context->Map(g_lightConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
     memcpy(mapped.pData, &constants, sizeof(constants));
@@ -1532,6 +1638,7 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     ReadStreamRadius();
     ReadAmbient();
     ReadSun();
+    ReadColourCorrection();
     // Our worlds' zone size (and a physics world wide enough for them), and the streaming radii held
     // to what the game can track.
     if (g_zoneWidth > 0) {
@@ -1551,6 +1658,8 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     if (!g_setAmbient || !g_setBackAmbient) rfa::Log("Could not hook the time of day's ambient light; Ambient= does nothing");
     g_reportError = reinterpret_cast<ReportErrorFn>(rfa::HookFunction(kReportError, kReportErrorPrologue, reinterpret_cast<void*>(&ReportError)));
     if (!g_reportError) rfa::Log("Could not hook the game's error reports; the invalid mission hash lines stay");
+    g_debugPrint = reinterpret_cast<DebugPrintFn>(rfa::HookFunction(kDebugPrint, kDebugPrintPrologue, reinterpret_cast<void*>(&DebugPrint)));
+    if (!g_debugPrint) rfa::Log("Could not hook the game's debug print; what it says while loading our worlds isn't logged");
     g_precacheArea = reinterpret_cast<PrecacheAreaFn>(rfa::HookFunction(kPrecacheArea, kPrecacheAreaPrologue, reinterpret_cast<void*>(&PrecacheArea)));
     if (!g_precacheArea) rfa::Log("Could not hook the game's precache areas; our worlds' shared files won't be found");
     if (!g_skyOn && !g_lightOn && g_clockSpeed <= 0) {

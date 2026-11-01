@@ -29,7 +29,7 @@ public static class GuerrillaMovers
     const uint None = 0xFFFFFFFF;
 
     /// <summary>The movers as Armageddon's objects (handles not in <paramref name="taken"/>, which gains theirs), and the extra block's links for them.</summary>
-    /// <param name="placed">The movers to place, in the zone's order.</param>
+    /// <param name="placed">The movers to place, in the zone's order (written in it, but each parent before its children).</param>
     /// <param name="all">Every object of their Guerrilla zone, by handle (to follow attachments through).</param>
     /// <param name="templates">Armageddon's mover to lay each class out as, by class hash.</param>
     /// <param name="isProps">Whether Armageddon's level_objects table has a Props name.</param>
@@ -99,8 +99,24 @@ public static class GuerrillaMovers
         foreach (var kids in childrenOf.Values)
             for (int i = 0; i + 1 < kids.Count; i++) nextSibling[kids[i]] = kids[i + 1];
 
+        // Written each parent before its children. Armageddon makes a zone's objects about 500 at a
+        // time and ties each one to its parent as it adds it, finding the parent only among those
+        // made so far; Guerrilla's files mostly list children first, and its general_movers late, so
+        // pipes on a substation or reactor core lost their parent ("Invalidating parent handle ...").
+        var indexOf = new Dictionary<uint, int>();
+        for (int i = 0; i < placed.Count; i++) indexOf.TryAdd(placed[i].Handle, i);
+        var order = new List<GuerrillaZoneObject>();
+        var visited = new HashSet<int>();
+        void Visit(int i)
+        {
+            if (!visited.Add(i)) return;
+            if (ParentOf(placed[i]) is var parent && parent != None && indexOf.TryGetValue(parent, out int p)) Visit(p);
+            order.Add(placed[i]);
+        }
+        for (int i = 0; i < placed.Count; i++) Visit(i);
+
         var objects = new List<ZoneObject>();
-        foreach (var o in placed)
+        foreach (var o in order)
         {
             var template = templates[o.ClassHash];
             byte[] header = template.Snapshot()[..HeaderSize];
@@ -130,6 +146,10 @@ public static class GuerrillaMovers
                     "gameplay_props" => o.Text("gameplay_props") is { } g && isGameplayProps(g) ? Text(g) : t.Value,
                     "world_anchors" => anchors,
                     "anchor_data" => anchors == null ? null : new byte[8],
+                    // Armageddon's fade-out class (lod_properties.xtbl): Guerrilla's objects have none and
+                    // don't fade by size; the cardboard box template's 2_clutter_small faded every crate
+                    // and prop out from 25 m.
+                    "lod_props" => Text("None"),
                     "dynamic_links" => null,  // written below
                     _ => t.Value,
                 };
@@ -183,6 +203,7 @@ public static class GuerrillaMovers
     static readonly Dictionary<uint, string> Names = new[]
     {
         "chunk_name", "dest_checksum", "uid", "oP", "mtype", "gm_flags", "Props", "gameplay_props", "world_anchors", "anchor_data", "dynamic_links",
+        "lod_props",
     }.ToDictionary(NameHashes.PropertyHash, n => n);
 
     static string? Name(uint hash) => Names.GetValueOrDefault(hash);

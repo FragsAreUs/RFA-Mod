@@ -36,9 +36,13 @@ namespace RfaFormats.Guerrilla;
 /// containers, archives, stitch lists and asset lists are written from nothing.
 ///
 /// Out: rfg_l0.vpp_pc (the sub-zones' containers and the asset list), rfg_l1.vpp_pc (the zones'),
-/// zonescript_rfg.vpp_pc, rfg.gtodx and rfg_Default.dtodx, all new files for the loader's overrides
-/// (build\pc\cache\), and the mod's cloud files. Guerrilla's files are only read, and what is made
-/// from them stays on your machine.
+/// rfg_precache.vpp_pc, zonescript_rfg.vpp_pc, rfg.gtodx and a time of day for each district
+/// (rfg_default.dtodx, rfg_eos.dtodx, ...), all new files for the loader's overrides
+/// (build\pc\cache\); Armageddon's territories.xtbl with Guerrilla's districts added (an override in
+/// build\pc\cache\table.vpp_pc\; see <see cref="GuerrillaTerritory"/>); Armageddon's texture name table
+/// with room for the world's textures (an override in build\pc\cache\misc.vpp_pc\; see
+/// <see cref="GuerrillaBitmaps"/>); and the mod's cloud files.
+/// Guerrilla's files are only read, and what is made from them stays on your machine.
 /// </summary>
 public static class GuerrillaWorld
 {
@@ -132,6 +136,12 @@ public static class GuerrillaWorld
                     if (Container(archive, n) is { } c && c.Find(file) is { } e && e.Size >= minSize) return c.Read(e);
             return rfgPrecache.Find(file) is { } p && p.Size >= minSize ? rfgPrecache.Read(p) : null;
         }
+        // A destructible object's files: beside the zone, else in Guerrilla's chunks.vpp_pc, which keeps
+        // some (EDFbarricade_vehicle_a, that zones place too) in a container of their own with their textures.
+        var rfgChunks = Packfile.Open(Path.Combine(rfgCache, "chunks.vpp_pc"));
+        byte[]? ChunkFile(int col, int row, string chunk, string file, int minSize = 2) =>
+            RfgFile(col, row, file, minSize)
+            ?? (Container(rfgChunks, chunk + ".rfgchunkx") is { } c && c.Find(file) is { } e && e.Size >= minSize ? c.Read(e) : null);
 
         // ---- Guerrilla's rocks where its zones place them, in the list of the sub-zone each stands in.
         var rockPieces = new Dictionary<string, GuerrillaRocks.Piece>(StringComparer.OrdinalIgnoreCase);
@@ -330,7 +340,7 @@ public static class GuerrillaWorld
                     if (!allProps && !propNames.Contains(name)) continue;
                     if (!chunkFiles.ContainsKey(name))
                     {
-                        if (RfgFile(col, row, name + ".cchk_pc") is not { } c || RfgFile(col, row, name + ".gchk_pc", 1) is not { } g)
+                        if (ChunkFile(col, row, name, name + ".cchk_pc") is not { } c || ChunkFile(col, row, name, name + ".gchk_pc", 1) is not { } g)
                         {
                             missing.Add(name);
                             continue;
@@ -350,9 +360,9 @@ public static class GuerrillaWorld
                                 chunkTextures[texture] = [(texture + ".cvbm_pc", Pre(texture + ".cvbm_pc")), (texture + ".gvbm_pc", Pre(texture + ".gvbm_pc"))];
                                 continue;
                             }
-                            // A texture that isn't there (some name Guerrilla's built-in "missing") is drawn white.
-                            if (RfgFile(col, row, texture + ".cvbm_pc") is not { } th ||
-                                (RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? RfgFile(col, row, texture + ".gvbm_pc", 1)) is not { } tg)
+                            // A texture that isn't there is drawn white.
+                            if (ChunkFile(col, row, name, texture + ".cvbm_pc") is not { } th ||
+                                (ChunkFile(col, row, name, texture + ".gvbm_pc", 1000) ?? ChunkFile(col, row, name, texture + ".gvbm_pc", 1)) is not { } tg)
                             {
                                 missingTextures.Add(texture);
                                 chunkTextures[texture] = GuerrillaBuiltIns.Files(GuerrillaMaterials.White, Alias(texture))!;
@@ -530,19 +540,32 @@ public static class GuerrillaWorld
             // The chunk files go where Armageddon keeps them, in the container of the sub-zone each object
             // stands in (its third of the zone each way), each container's share kept within ChunkBudget;
             // what doesn't fit goes into the zone's container, which loads with the whole zone, and if
-            // that is full too, into the nearest of the zone's other sub-zones with room.
+            // that is full too, into the nearest of the zone's other sub-zones with room. A general_mover
+            // that others are attached to (Guerrilla's substations, its reactor core) goes in the zone's
+            // container first: one whose chunk isn't loaded yet isn't made, and the objects attached to
+            // it, made when the zone streams in, lose it ("Invalidating parent handle ...").
             var chunksIn = Enumerable.Range(0, 9).Select(_ => new List<string>()).ToArray();
             var zoneChunks = new List<string>();
             {
+                var placedHere = propsIn[(col, row)];
+                var parentHandles = placedHere.Select(p => p.Parent).ToHashSet();
+                var parentChunks = placedHere.Where(p => p.ClassHash == generalMover && parentHandles.Contains(p.Handle))
+                    .Select(p => Path.GetFileNameWithoutExtension(p.Text("chunk_name")!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var wanted = Enumerable.Range(0, 9).Select(_ => new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ToArray();
-                foreach (var p in propsIn[(col, row)])
+                foreach (var p in placedHere)
                 {
                     byte[] placement = p.Value("oP")!;
                     float x = BitConverter.ToSingle(placement, 0) - corner.X, z = BitConverter.ToSingle(placement, 8) - corner.Y;
-                    wanted[Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2)].Add(Path.GetFileNameWithoutExtension(p.Text("chunk_name")!));
+                    string chunk = Path.GetFileNameWithoutExtension(p.Text("chunk_name")!);
+                    if (!parentChunks.Contains(chunk)) wanted[Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2)].Add(chunk);
                 }
                 long Cost(string name) => chunkFiles[name].Header.Length + (long)chunkFiles[name].Data.Length;
                 long zoneCost = 0;
+                foreach (string name in parentChunks)
+                {
+                    zoneChunks.Add(name);
+                    zoneCost += Cost(name);
+                }
                 var partCost = new long[9];
                 foreach (int n in Enumerable.Range(0, 9).OrderByDescending(n => wanted[n].Sum(Cost)))
                     foreach (string name in wanted[n].OrderByDescending(Cost))
@@ -726,9 +749,31 @@ public static class GuerrillaWorld
         Packfile.Write(Path.Combine(output, World + "_precache.vpp_pc"), precacheFiles.Select(f => (f.Key, f.Value)).ToList());
         Packfile.Write(Path.Combine(output, World + "_l1.vpp_pc"), layer1);
         Packfile.Write(Path.Combine(output, "zonescript_" + World + ".vpp_pc"), zonescript, compressed: true);
-        var (orbitals, set) = GuerrillaTimeOfDay.Build(Packfile.Open(Path.Combine(cache, "misc.vpp_pc")), Packfile.Open(Path.Combine(rfgCache, "misc.vpp_pc")));
+        // Guerrilla's districts (the territory, an override of Armageddon's table) and a time of day for each.
+        var rfgMisc = Packfile.Open(Path.Combine(rfgCache, "misc.vpp_pc"));
+        var (territories, districts) = GuerrillaTerritory.Build(Packfile.Open(Path.Combine(cache, "table.vpp_pc")), rfgMisc, World);
+        string tables = Path.Combine(output, "table.vpp_pc");
+        Directory.CreateDirectory(tables);
+        File.WriteAllBytes(Path.Combine(tables, "territories.xtbl"), territories);
+        var (orbitals, sets) = GuerrillaTimeOfDay.Build(Packfile.Open(Path.Combine(cache, "misc.vpp_pc")), rfgMisc, districts);
         File.WriteAllBytes(Path.Combine(output, World + ".gtodx"), orbitals);
-        File.WriteAllBytes(Path.Combine(output, World + "_default.dtodx"), set);
+        foreach (var (name, set) in sets) File.WriteAllBytes(Path.Combine(output, $"{World}_{name.Replace(' ', '_').ToLowerInvariant()}.dtodx"), set);
+        log($"Districts: {string.Join(", ", districts.Select(d => $"{d.Guerrilla} ({d.Name})"))}, each with Guerrilla's time of day ({World}_<name>.dtodx), " +
+            $"in the territory {World} (table.vpp_pc\\territories.xtbl)");
+        // Room for the world's textures in the game's texture name table (see GuerrillaBitmaps): a slot
+        // for every texture file the world has, and some to spare (the HUD's, other mods').
+        var textureFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var container in pending)
+            foreach (var file in container.Files.Where(f => f.Name.EndsWith(".cvbm_pc", StringComparison.OrdinalIgnoreCase))) textureFiles.Add(file.Name);
+        foreach (string name in precacheFiles.Keys.Where(n => n.EndsWith(".cvbm_pc", StringComparison.OrdinalIgnoreCase))) textureFiles.Add(name);
+        int extraSlots = (textureFiles.Count + SpareTextureSlots + 499) / 500 * 500;
+        var gameMisc = Packfile.Open(Path.Combine(cache, "misc.vpp_pc"));
+        byte[] bitmaps = gameMisc.Read(gameMisc.Find("bitmaps_pc") ?? throw new InvalidDataException("no bitmaps_pc in misc.vpp_pc"));
+        string miscFolder = Path.Combine(output, "misc.vpp_pc");
+        Directory.CreateDirectory(miscFolder);
+        File.WriteAllBytes(Path.Combine(miscFolder, "bitmaps_pc"), GuerrillaBitmaps.WithRoom(bitmaps, extraSlots));
+        log($"Textures: {textureFiles.Count:N0} texture files; the game's texture name table gets {extraSlots:N0} more slots " +
+            $"({GuerrillaBitmaps.Capacity(bitmaps):N0} → {GuerrillaBitmaps.Capacity(bitmaps) + extraSlots:N0}; misc.vpp_pc\\bitmaps_pc)");
         log($"World {World}: {zones.Count} zones, start {World}_{start.Col:00}_{start.Row:00}; written into {output}");
         GuerrillaSky.Write(cache, rfgCache, modFolder, log);
     }
@@ -870,6 +915,12 @@ public static class GuerrillaWorld
 
     /// <summary>The most the precache's directory and file names may take (bytes): see the precache in <see cref="Build"/>.</summary>
     const int PrecacheDirectoryBudget = 150_000;
+
+    /// <summary>
+    /// Texture name slots added past the world's own texture files (see <see cref="GuerrillaBitmaps"/>):
+    /// for Guerrilla's HUD and other mods. Each slot costs the game about 36 bytes of its start-up pool.
+    /// </summary>
+    const int SpareTextureSlots = 1_000;
 
     /// <summary>Whether a file is one the asset list names as a primitive (a header file; its data file goes with it).</summary>
     static bool IsHeader(string name)

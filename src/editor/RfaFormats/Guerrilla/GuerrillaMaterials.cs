@@ -32,11 +32,15 @@ namespace RfaFormats.Guerrilla;
 /// Armageddon's Decal1_Map and Decal2_Map, its constants named longer (Diffuse_Map_TilingU for
 /// Diffuse_TilingU, Normal_Map_Height for Normal_Height, Decal_Map_1_Opacity for Decal1_Opacity).
 /// A slot the chosen shader has and the material hasn't is filled with a built-in texture (see
-/// <see cref="GuerrillaBuiltIns"/>): flat normals, no specular, white.
+/// <see cref="GuerrillaBuiltIns"/>): flat normals, no specular, white. A slot whose texture Guerrilla
+/// names "missing" counts as one the material hasn't (see <see cref="IsEmpty"/>).
 ///
-/// Values: Guerrilla's specular powers run 0–3,000 (median 100), Armageddon's 0–100 (median 10), so
-/// they are taken a tenth; Guerrilla's Specular_Alpha scales its specular colour (Armageddon's goes
-/// past 1). Constants Guerrilla has no counterpart for are given Armageddon's commonest values.
+/// Values: Guerrilla's shine is the half-way vector's (N · H)^Specular_Power (0–3,000, median 100),
+/// Armageddon's the reflection's (R · V)^(Specular_Power × 5.12) (its power capped at 50). The
+/// reflection's angle is about twice the half-way vector's, so an exponent of Guerrilla's is about four
+/// times Armageddon's for the same highlight: its powers are taken / (4 × 5.12). Guerrilla's
+/// Specular_Alpha scales its specular colour (Armageddon's goes past 1). Constants Guerrilla has no
+/// counterpart for are given Armageddon's commonest values.
 /// </summary>
 public static class GuerrillaMaterials
 {
@@ -92,6 +96,7 @@ public static class GuerrillaMaterials
         {
             int e = at + 0x20 + t * 12;
             uint slot = BitConverter.ToUInt32(file, e + 4);
+            if (IsEmpty(names.At(BitConverter.ToInt32(file, e)))) continue;
             textures.TryAdd(slot == GuerrillaDecal1 ? Decal1Map : slot == GuerrillaDecal2 ? Decal2Map : slot, BitConverter.ToInt32(file, e));
         }
         var constants = new Dictionary<uint, Vector4>();
@@ -138,6 +143,15 @@ public static class GuerrillaMaterials
         return block;
     }
 
+    /// <summary>
+    /// Whether a slot's texture is Guerrilla's name for none: "missing" (in 3,363 world chunk
+    /// materials, 196 decal slots, 101 specular maps and 9 environment maps; never a colour or normal
+    /// map, and no file has the name). Such a slot is left out, as if the material hadn't it: filled
+    /// with white it painted white decals over objects and made their metal shine pale.
+    /// </summary>
+    static bool IsEmpty(string texture) =>
+        string.Equals(texture, "missing", StringComparison.OrdinalIgnoreCase) || string.Equals(texture, "missing.tga", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>An Armageddon constant's value from the Guerrilla material's constants.</summary>
     static Vector4 Value(string constant, Dictionary<uint, Vector4> from, bool glass)
     {
@@ -149,7 +163,7 @@ public static class GuerrillaMaterials
             "Diffuse_TilingU" => Get("Diffuse_Map_TilingU") ?? X(1),
             "Diffuse_TilingV" => Get("Diffuse_Map_TilingV") ?? X(1),
             "Normal_Height" => Get("Normal_Map_Height") ?? X(1),
-            "Specular_Power" => X(Math.Clamp((Get("Specular_Power")?.X ?? 100) / 10, 0, 100)),
+            "Specular_Power" => X(Math.Clamp((Get("Specular_Power")?.X ?? 100) / (4 * 5.12f), 0, 50)),
             "Specular_Color" => (Get("Specular_Color") ?? Vector4.One) * (Get("Specular_Alpha")?.X ?? 1),
             "Decal1_TilingU" => Get("Decal_Map_1_TilingU") ?? X(1),
             "Decal1_TilingV" => Get("Decal_map_1_TilingV") ?? X(1),
