@@ -250,38 +250,87 @@ public sealed class Packfile
         return header;
     }
 
+    /// <summary>
+    /// Writes a new packfile straight into a file: for archives too big to hold as one array (past
+    /// 2 GB; the game's world_l0.vpp_pc is 3 GB). The format's sizes and offsets are 32-bit, so at
+    /// most 4 GB. Uncompressed it is the same as <see cref="Create(IReadOnlyList{ValueTuple{string, byte[]}})"/>
+    /// makes. <paramref name="compressed"/> writes it compressed file by file, as the game's
+    /// zonescript_world.vpp_pc is (flags 0x4801): each file its own zlib stream, flushed but not
+    /// finished, the streams one after another on 2 KB boundaries; the directory keeps each file's
+    /// uncompressed offset (on 2 KB boundaries) and gives its stream's size. The game reads such an
+    /// archive's stored bytes through a 20 MB pool, so its zone files must be stored compressed.
+    /// </summary>
+    public static void Write(string path, IReadOnlyList<(string Name, byte[] Data)> files, bool compressed = false)
+    {
+        using var output = File.Create(path);
+        Write(output, NewHeader(compressed ? PackfileFlags.Compressed | (PackfileFlags)0x4800 : PackfileFlags.None), files, compressed);
+    }
+
     static byte[] Create(byte[] header, IReadOnlyList<(string Name, byte[] Data)> files)
     {
+        var output = new MemoryStream();
+        Write(output, header, files, false);
+        return output.ToArray();
+    }
+
+    /// <summary>One file's zlib stream as the game's archives store it: flushed, without an end marker.</summary>
+    static byte[] Deflate(byte[] data)
+    {
+        var output = new MemoryStream();
+        var zlib = new ZLibStream(output, CompressionLevel.SmallestSize, leaveOpen: true);
+        zlib.Write(data);
+        zlib.Flush();
+        byte[] stream = output.ToArray();  // taken before the stream is closed, which would add the end marker
+        zlib.Dispose();
+        return stream;
+    }
+
+    static void Write(Stream output, byte[] header, IReadOnlyList<(string Name, byte[] Data)> files, bool compressed)
+    {
+        byte[][] streams = compressed ? files.Select(f => Deflate(f.Data)).ToArray() : [];
         var names = new MemoryStream();
         var directory = new MemoryStream();
-        var data = new MemoryStream();
-        foreach (var (name, bytes) in files)
+        long dataLength = 0, storedLength = 0;
+        for (int i = 0; i < files.Count; i++)
         {
-            while (data.Length % 0x800 != 0) data.WriteByte(0);
+            var (name, bytes) = files[i];
+            dataLength = Align(dataLength, 0x800);
             directory.Write(BitConverter.GetBytes((uint)names.Length));
             directory.Write(BitConverter.GetBytes(0u));
-            directory.Write(BitConverter.GetBytes((uint)data.Length));
+            directory.Write(BitConverter.GetBytes((uint)dataLength));
             directory.Write(BitConverter.GetBytes((uint)bytes.Length));
-            directory.Write(BitConverter.GetBytes(0xFFFFFFFFu));
+            directory.Write(BitConverter.GetBytes(compressed ? (uint)streams[i].Length : 0xFFFFFFFFu));
             directory.Write(BitConverter.GetBytes(0u));
             names.Write(Encoding.Latin1.GetBytes(name));
             names.WriteByte(0);
-            data.Write(bytes);
+            dataLength += bytes.Length;
+            if (compressed) storedLength = Align(storedLength, 0x800) + streams[i].Length;
         }
+        if (!compressed) storedLength = dataLength;
         long namesStart = HeaderSize + Align(directory.Length, 0x800), dataStart = namesStart + Align(names.Length, 0x800);
-        var packfile = new byte[dataStart + data.Length];
-        header.CopyTo(packfile, 0);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x14C), (uint)PackfileFlags.None);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x154), (uint)files.Count);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x158), (uint)packfile.Length);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x15C), (uint)directory.Length);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x160), (uint)names.Length);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x164), (uint)data.Length);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x168), 0xFFFFFFFFu);
-        directory.ToArray().CopyTo(packfile, HeaderSize);
-        names.ToArray().CopyTo(packfile, namesStart);
-        data.ToArray().CopyTo(packfile, dataStart);
-        return packfile;
+        if (dataStart + Math.Max(dataLength, storedLength) > uint.MaxValue) throw new IOException($"a packfile can hold at most 4 GB; these files need {(dataStart + dataLength) / (1 << 20):N0} MB");
+        byte[] head = (byte[])header.Clone();
+        if (!compressed) BitConverter.TryWriteBytes(head.AsSpan(0x14C), (uint)PackfileFlags.None);
+        BitConverter.TryWriteBytes(head.AsSpan(0x154), (uint)files.Count);
+        BitConverter.TryWriteBytes(head.AsSpan(0x158), (uint)(dataStart + storedLength));
+        BitConverter.TryWriteBytes(head.AsSpan(0x15C), (uint)directory.Length);
+        BitConverter.TryWriteBytes(head.AsSpan(0x160), (uint)names.Length);
+        BitConverter.TryWriteBytes(head.AsSpan(0x164), (uint)dataLength);
+        BitConverter.TryWriteBytes(head.AsSpan(0x168), compressed ? (uint)storedLength : 0xFFFFFFFFu);
+        output.Write(head);
+        output.Write(directory.ToArray());
+        output.Write(new byte[namesStart - HeaderSize - directory.Length]);
+        output.Write(names.ToArray());
+        output.Write(new byte[dataStart - namesStart - names.Length]);
+        long at = 0;
+        for (int i = 0; i < files.Count; i++)
+        {
+            byte[] bytes = compressed ? streams[i] : files[i].Data;
+            output.Write(new byte[Align(at, 0x800) - at]);
+            at = Align(at, 0x800);
+            output.Write(bytes);
+            at += bytes.Length;
+        }
     }
 
     /// <summary>

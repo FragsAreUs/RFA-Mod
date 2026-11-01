@@ -1,4 +1,4 @@
-// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | <chunk files>] [--props-in <columns>,<rows>]
+// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | none | <chunk files>] [--props-in <columns>,<rows>]
 //
 // Builds the world "rfg", Red Faction: Guerrilla's open world, from your own copy of Guerrilla (which
 // is only read): see RfaFormats.Guerrilla.GuerrillaWorld. What it makes stays on your machine. It
@@ -11,10 +11,11 @@
 //     ...\Red Faction Guerrilla; Re-MARS-tered's newer files aren't read yet).
 // It writes the world into overrides\build\pc\cache\ in the mod folder and the clouds into
 // mods\guerrilla_world\. --zones picks which of Guerrilla's zones to build: all of them (the
-// default), or a block of columns and rows, such as 11-12,10-11. --props places Guerrilla's
-// destructible objects (its buildings, walls and props) made from the chunk files named, such as
-// con_cardboard_a,con_crate02_a, or all of them; none by default while they are being tried;
-// --props-in only in a block of zones. In the game: level rfg_12_11 in the developer console.
+// default), or a block of columns and rows, such as 11-12,10-11. --props picks which of Guerrilla's
+// destructible objects (its buildings, walls and props) to place: all of them (the default), none,
+// or those made from the chunk files named, such as con_cardboard_a,con_crate02_a; --props-in places
+// them only in a block of zones. In the game: level rfg_12_11 in the developer console (or any
+// zone's name: each has a player start).
 using RfaFormats;
 using RfaFormats.Guerrilla;
 
@@ -25,14 +26,21 @@ string ini = Path.Combine(modFolder, "rfa_mods.ini");
 
 string? guerrillaArgument = null, zonesArgument = null, propsInArgument = null;
 var props = new List<string>();
+bool propsGiven = false;
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--zones" && i + 1 < args.Length) zonesArgument = args[++i];
-    else if (args[i] == "--props" && i + 1 < args.Length) props.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    else if (args[i] == "--props" && i + 1 < args.Length)
+    {
+        propsGiven = true;
+        props.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                .Where(p => !p.Equals("none", StringComparison.OrdinalIgnoreCase)));
+    }
     else if (args[i] == "--props-in" && i + 1 < args.Length) propsInArgument = args[++i];
-    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | <chunk files>] [--props-in <columns>,<rows>]");
+    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | none | <chunk files>] [--props-in <columns>,<rows>]");
     else guerrillaArgument = args[i];
 }
+if (!propsGiven) props.Add("all");
 
 string? gameDir = IniValue(ini, "Launcher", "GameDir")?.TrimEnd('\\');
 string? game = GameFolder.IsGameFolder(gameDir) ? gameDir : GameFolder.IsGameFolder(modFolder) ? modFolder : null;

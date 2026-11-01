@@ -53,6 +53,11 @@ public static class GuerrillaWorld
     const float BoxBottom = -500, BoxTop = 1500;   // the environment boxes' heights
     const float FloorDepth = -150;                 // the buried floor piece's height
     const string FloorPiece = "dlib_floor_flat";
+    // The most chunk files (c- and g-files) one container is given. The game reads a container's
+    // CPU-side files through a 20 MB pool ("Pregame_split_pool"), asking a little more than their
+    // sizes; its own containers hold at most 19 MB of them. Guerrilla's busiest zone, all in one
+    // container, asked for 26 MB and stopped the game.
+    const long ChunkBudget = 14L << 20;
     static readonly GroundLayout Layout = GroundLayout.Whole;
 
     static Vector2 Corner(int col, int row) => new((col - 8) * ZoneWidth, (7 - row) * ZoneWidth);
@@ -408,7 +413,8 @@ public static class GuerrillaWorld
             {
                 var taken = new HashSet<uint>(zoneFile.Objects.Select(o => o.Handle));
                 (var movers, links) = GuerrillaMovers.Convert(propsIn[(col, row)], guerrillaObjects[(col, row)], moverTemplates,
-                                                               levelObjects.Contains, gameplayProperties.Contains, taken);
+                                                               levelObjects.Contains, gameplayProperties.Contains,
+                                                               chunk => BitConverter.ToUInt32(chunkFiles[chunk].Header, 0x24), taken);
                 foreach (var mover in movers) zoneFile.Insert(zoneFile.Objects.Count, mover);
             }
             var environment = copies.Single(o => o.Handle == (prefix | (templateBox & 0xFFFFFF)));
@@ -443,6 +449,60 @@ public static class GuerrillaWorld
                 boxes.Add(StitchList.PlacedBox(rockPieces[r.Name].CollisionMin, rockPieces[r.Name].CollisionMax, r.Rotation, r.Position));
             byte[] stitch = StitchList.Write([floor, .. rocks], zoneMiddle, boxes);
 
+            // The chunk files go where Armageddon keeps them, in the container of the sub-zone each object
+            // stands in (its third of the zone each way), each container's share kept within ChunkBudget;
+            // what doesn't fit goes into the zone's container, which loads with the whole zone, and if
+            // that is full too, into the nearest of the zone's other sub-zones with room.
+            var chunksIn = Enumerable.Range(0, 9).Select(_ => new List<string>()).ToArray();
+            var zoneChunks = new List<string>();
+            {
+                var wanted = Enumerable.Range(0, 9).Select(_ => new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ToArray();
+                foreach (var p in propsIn[(col, row)])
+                {
+                    byte[] placement = p.Value("oP")!;
+                    float x = BitConverter.ToSingle(placement, 0) - corner.X, z = BitConverter.ToSingle(placement, 8) - corner.Y;
+                    wanted[Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2)].Add(Path.GetFileNameWithoutExtension(p.Text("chunk_name")!));
+                }
+                long Cost(string name) => chunkFiles[name].Header.Length + (long)chunkFiles[name].Data.Length;
+                long zoneCost = 0;
+                var partCost = new long[9];
+                foreach (int n in Enumerable.Range(0, 9).OrderByDescending(n => wanted[n].Sum(Cost)))
+                    foreach (string name in wanted[n].OrderByDescending(Cost))
+                    {
+                        if (zoneChunks.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                        int to = n;
+                        if (partCost[n] + Cost(name) > ChunkBudget)
+                        {
+                            if (zoneCost + Cost(name) <= ChunkBudget)
+                            {
+                                zoneChunks.Add(name);
+                                zoneCost += Cost(name);
+                                continue;
+                            }
+                            int nearest = Enumerable.Range(0, 9).Where(m => m != n && partCost[m] + Cost(name) <= ChunkBudget)
+                                .OrderBy(m => Math.Abs(m % 3 - n % 3) + Math.Abs(m / 3 - n / 3)).ThenBy(m => partCost[m]).DefaultIfEmpty(n).First();
+                            if (nearest != n) log($"  {zone}: {name} (for sub-zone {n}) put in sub-zone {nearest}, the nearest with room");
+                            to = nearest;
+                        }
+                        if (chunksIn[to].Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                        chunksIn[to].Add(name);
+                        partCost[to] += Cost(name);
+                    }
+                for (int n = 0; n < 9; n++)
+                    if (partCost[n] > ChunkBudget)
+                        log($"  {zone}: sub-zone {n} holds {partCost[n] / (1 << 20):0} MB of chunk files, more than the {ChunkBudget >> 20} MB a container is given; it may not load");
+            }
+            void AddChunks(List<(string Name, byte[] Data)> to, IEnumerable<string> names)
+            {
+                foreach (string name in names)
+                {
+                    var chunk = chunkFiles[name];
+                    to.Add((name + ".cchk_pc", chunk.Header));
+                    to.Add((name + ".gchk_pc", chunk.Data));
+                    foreach (string texture in chunk.Textures) to.AddRange(chunkTextures[texture]);
+                }
+            }
+
             // Its containers and asset list entries.
             var files = new List<(string Name, byte[] Data)>(shared);
             foreach (string texture in look.Textures.Take(8).Distinct(StringComparer.OrdinalIgnoreCase)) files.AddRange(layerFiles[texture]);
@@ -455,13 +515,7 @@ public static class GuerrillaWorld
                     files.AddRange(rockTextures[texture]);
             }
             if (rocks.Count > 0) files.AddRange(whiteFiles);
-            foreach (string name in propsIn[(col, row)].Select(p => Path.GetFileNameWithoutExtension(p.Text("chunk_name")!)).Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                var chunk = chunkFiles[name];
-                files.Add((name + ".cchk_pc", chunk.Header));
-                files.Add((name + ".gchk_pc", chunk.Data));
-                foreach (string texture in chunk.Textures) files.AddRange(chunkTextures[texture]);
-            }
+            AddChunks(files, zoneChunks);
             files = files.DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
             files.AddRange(new (string Name, byte[] Data)[]
             {
@@ -482,6 +536,8 @@ public static class GuerrillaWorld
             {
                 string part = $"0h_c{col * 3 + n % 3:00}{(15 - row) * 3 + n / 3:00}";
                 var partFiles = new List<(string Name, byte[] Data)> { ($"{zone}_{n}.ctmesh_pc", subzones[n].Header), ($"{zone}_{n}.gtmesh_pc", subzones[n].Data) };
+                AddChunks(partFiles, chunksIn[n]);
+                partFiles = partFiles.DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
                 byte[] bytes = Packfile.CreateContainer(partFiles);
                 asm.Containers.Add(ContainerEntry(part, bytes, partFiles));
                 layer.Add((part + ".str2_pc", bytes));
@@ -512,9 +568,12 @@ public static class GuerrillaWorld
 
         string output = Path.Combine(overrides, "build", "pc", "cache");
         Directory.CreateDirectory(output);
-        File.WriteAllBytes(Path.Combine(output, World + "_l0.vpp_pc"), Packfile.Create(layer));
-        File.WriteAllBytes(Path.Combine(output, World + "_l1.vpp_pc"), Packfile.Create(layer1));
-        File.WriteAllBytes(Path.Combine(output, "zonescript_" + World + ".vpp_pc"), Packfile.Create(zonescript));
+        // Written straight into their files: with Guerrilla's buildings the layers pass 2 GB. The zone
+        // files are stored compressed, as the game's own zonescript_world.vpp_pc is: the game reads the
+        // archive's stored bytes through a 20 MB pool, and with Guerrilla's objects they come to 26 MB.
+        Packfile.Write(Path.Combine(output, World + "_l0.vpp_pc"), layer);
+        Packfile.Write(Path.Combine(output, World + "_l1.vpp_pc"), layer1);
+        Packfile.Write(Path.Combine(output, "zonescript_" + World + ".vpp_pc"), zonescript, compressed: true);
         var (orbitals, set) = GuerrillaTimeOfDay.Build(Packfile.Open(Path.Combine(cache, "misc.vpp_pc")), Packfile.Open(Path.Combine(rfgCache, "misc.vpp_pc")));
         File.WriteAllBytes(Path.Combine(output, World + ".gtodx"), orbitals);
         File.WriteAllBytes(Path.Combine(output, World + "_default.dtodx"), set);

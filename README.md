@@ -77,15 +77,16 @@ single-player.
 ## Try the Guerrilla world (beta)
 
 1. Install **Red Faction: Guerrilla Steam Edition** (Re-MARS-tered's files aren't read yet). You
-   need about 750 MB free where RFA-Mod is.
+   need about 3 GB free where RFA-Mod is.
 2. In `rfa_mods.ini`, under `[Launcher]`, set `GuerrillaDir=` to Guerrilla's folder (for example
    `D:\Games\Red Faction Guerrilla`). Or give the folder to each tool as its argument.
-3. Run `editor\GuerrillaWorld.exe` (about a minute). It writes the world `rfg` into `overrides\`
-   and its sky into `mods\guerrilla_world\`. `--zones 11-12,10-11` builds only that block of
-   zones (columns, then rows).
+3. Run `editor\GuerrillaWorld.exe` (two or three minutes). It writes the world `rfg` into
+   `overrides\`, with Guerrilla's ground, rocks, buildings and props (which break, and which the
+   Nano Forge rebuilds), and its sky into `mods\guerrilla_world\`. `--props none` leaves out the
+   buildings and props; `--zones 11-12,10-11` builds only that block of zones (columns, then rows).
 4. Run `editor\GuerrillaHud.exe` for Guerrilla's HUD (a few seconds).
 5. Start the game, open the console with the `` ` `` key (from the main menu is fine) and type
-   `level rfg_12_11`.
+   `level rfg_12_11`, or any zone's name, `rfg_<column>_<row>` (such as `rfg_04_10`, a town).
 
 Things to know:
 - Run both tools again after updating RFA-Mod, and `GuerrillaHud.exe` again after changing its

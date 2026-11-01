@@ -8,11 +8,13 @@ namespace RfaFormats.Guerrilla;
 /// pieces; general_mover: loose props) as Armageddon's zone objects, attached to one another and
 /// linked as in Guerrilla's zone. Each is laid out as one of Armageddon's own movers of its class (a
 /// template: its header and properties), with Guerrilla's chunk file (always the .cchk_pc name; a few
-/// of Guerrilla's say .rfgchunk_pc), uid, destruction checksum, placement (oP), mtype or gm_flags,
+/// of Guerrilla's say .rfgchunk_pc), uid, placement (oP), mtype or gm_flags,
 /// box, number, handle (already starting with the zone's place), and world_anchors (the pieces held to
 /// the ground: the same list of u16 piece numbers in both games; Armageddon has an 8-byte anchor_data,
 /// zeros, beside every one); Guerrilla's Props and gameplay_props names where Armageddon's tables have
-/// them (they hold most of Guerrilla's), else the template's.
+/// them (they hold most of Guerrilla's), else the template's. The destruction checksum is the chunk
+/// file's own (its header's 0x24), as in all of Armageddon's zones: Guerrilla's zones have it too,
+/// but for two smokestacks (campaign targets) an older one than their files.
 ///
 /// The destruction links differ in where they are kept. Guerrilla's are in the objects:
 /// "dynamic_links" holds each link that names the object, 20 bytes a link (two u16 piece numbers,
@@ -32,8 +34,9 @@ public static class GuerrillaMovers
     /// <param name="templates">Armageddon's mover to lay each class out as, by class hash.</param>
     /// <param name="isProps">Whether Armageddon's level_objects table has a Props name.</param>
     /// <param name="isGameplayProps">Whether Armageddon's gameplay_properties table has a name.</param>
+    /// <param name="checksumOf">A chunk file's destruction checksum (its header's 0x24), by its name without extension.</param>
     public static (List<ZoneObject> Objects, byte[] Links) Convert(IReadOnlyList<GuerrillaZoneObject> placed, IReadOnlyDictionary<uint, GuerrillaZoneObject> all,
-        IReadOnlyDictionary<uint, ZoneObject> templates, Func<string, bool> isProps, Func<string, bool> isGameplayProps, ISet<uint> taken)
+        IReadOnlyDictionary<uint, ZoneObject> templates, Func<string, bool> isProps, Func<string, bool> isGameplayProps, Func<string, uint> checksumOf, ISet<uint> taken)
     {
         // Handles: Guerrilla's, unless taken.
         var handleOf = new Dictionary<uint, uint>();
@@ -121,7 +124,8 @@ public static class GuerrillaMovers
                 byte[]? value = name switch
                 {
                     "chunk_name" => Text(chunk + ".cchk_pc"),
-                    "dest_checksum" or "uid" or "oP" or "mtype" or "gm_flags" => o.Value(name) is { } v && v.Length == t.Size ? v : t.Value,
+                    "dest_checksum" => BitConverter.GetBytes(checksumOf(chunk)),
+                    "uid" or "oP" or "mtype" or "gm_flags" => o.Value(name) is { } v && v.Length == t.Size ? v : t.Value,
                     "Props" => Text(o.Text("Props") is { } props && isProps(props) ? props : "Default"),
                     "gameplay_props" => o.Text("gameplay_props") is { } g && isGameplayProps(g) ? Text(g) : t.Value,
                     "world_anchors" => anchors,

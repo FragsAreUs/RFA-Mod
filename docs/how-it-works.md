@@ -243,7 +243,22 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
 
 The world itself is built by `editor\GuerrillaWorld.exe` (code in `src\editor\GuerrillaWorld\` and
 `src\editor\RfaFormats\Guerrilla\`), from the player's own copy of Guerrilla. It writes the world
-`rfg` into `overrides\build\pc\cache\` and the sky's files into `mods\guerrilla_world\`.
+`rfg` into `overrides\build\pc\cache\` and the sky's files into `mods\guerrilla_world\`. What it
+converts:
+- **The ground** of each of Guerrilla's 102 zones, sampled whole, with its own textures and cliff
+  material, far-away meshes, and a starting point in the middle of every zone.
+- **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
+  (Havok MOPP code, written from scratch) over each zone's pieces.
+- **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file
+  (`.cchk_pc`, Guerrilla's version 55) is rewritten as Armageddon's version 62 (`GuerrillaChunks`):
+  the mesh block, the materials moved onto Armageddon's shaders (`GuerrillaMaterials`), the
+  destruction data, the Havok 5.5 collision written as 2010 (`ChunkCollision`), the object ids.
+  The zone objects are laid out as Armageddon's own movers, with Guerrilla's links between pieces
+  (kept in the objects in Guerrilla, in the zone's extra block in Armageddon) and ground anchors
+  (`GuerrillaMovers`). Each chunk file goes into the container of the sub-zone its object stands
+  in, as Armageddon keeps them.
+- The zone files go into `zonescript_rfg.vpp_pc`, stored compressed file by file as the game's own
+  zone archive is: the game reads that archive whole into a 20 MB pool when a level loads.
 
 ### guerrilla_hud
 
