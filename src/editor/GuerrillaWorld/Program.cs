@@ -1,4 +1,4 @@
-// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props <chunk files>]
+// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | <chunk files>] [--props-in <columns>,<rows>]
 //
 // Builds the world "rfg", Red Faction: Guerrilla's open world, from your own copy of Guerrilla (which
 // is only read): see RfaFormats.Guerrilla.GuerrillaWorld. What it makes stays on your machine. It
@@ -11,9 +11,10 @@
 //     ...\Red Faction Guerrilla; Re-MARS-tered's newer files aren't read yet).
 // It writes the world into overrides\build\pc\cache\ in the mod folder and the clouds into
 // mods\guerrilla_world\. --zones picks which of Guerrilla's zones to build: all of them (the
-// default), or a block of columns and rows, such as 11-12,10-11. --props places Guerrilla's props (its
-// general movers) made from the chunk files named, such as con_cardboard_a,con_crate02_a; none by
-// default while they are being tried. In the game: level rfg_12_11 in the developer console.
+// default), or a block of columns and rows, such as 11-12,10-11. --props places Guerrilla's
+// destructible objects (its buildings, walls and props) made from the chunk files named, such as
+// con_cardboard_a,con_crate02_a, or all of them; none by default while they are being tried;
+// --props-in only in a block of zones. In the game: level rfg_12_11 in the developer console.
 using RfaFormats;
 using RfaFormats.Guerrilla;
 
@@ -22,13 +23,14 @@ string? parent = Path.GetDirectoryName(here);
 string modFolder = parent != null && File.Exists(Path.Combine(parent, "rfa_mods.ini")) ? parent : here;
 string ini = Path.Combine(modFolder, "rfa_mods.ini");
 
-string? guerrillaArgument = null, zonesArgument = null;
+string? guerrillaArgument = null, zonesArgument = null, propsInArgument = null;
 var props = new List<string>();
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--zones" && i + 1 < args.Length) zonesArgument = args[++i];
     else if (args[i] == "--props" && i + 1 < args.Length) props.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props <chunk files>]");
+    else if (args[i] == "--props-in" && i + 1 < args.Length) propsInArgument = args[++i];
+    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props all | <chunk files>] [--props-in <columns>,<rows>]");
     else guerrillaArgument = args[i];
 }
 
@@ -60,9 +62,16 @@ try
         zones = zones.Where(z => z.Col >= cols.From && z.Col <= cols.To && z.Row >= rows.From && z.Row <= rows.To).ToList();
         if (zones.Count == 0) return Fail($"Guerrilla has no zones in columns {cols.From}-{cols.To}, rows {rows.From}-{rows.To}.");
     }
+    List<(int Col, int Row)>? propZones = null;
+    if (propsInArgument != null)
+    {
+        if (ParseBlock(propsInArgument) is not { } propBlock) return Fail($"--props-in {propsInArgument}: give columns and rows as from-to,from-to (such as 12,10).");
+        var (cols, rows) = propBlock;
+        propZones = zones.Where(z => z.Col >= cols.From && z.Col <= cols.To && z.Row >= rows.From && z.Row <= rows.To).ToList();
+    }
     Console.WriteLine($"Building {zones.Count} of Guerrilla's zones (this takes a while for many)...");
     GuerrillaWorld.Build(guerrilla, game, Path.Combine(modFolder, "overrides"), Path.Combine(modFolder, "mods", "guerrilla_world"), zones,
-                         GuerrillaWorld.DefaultStart, Console.WriteLine, props);
+                         GuerrillaWorld.DefaultStart, Console.WriteLine, props, propZones);
 }
 catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
 {

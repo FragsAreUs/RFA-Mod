@@ -9,9 +9,9 @@ namespace RfaFormats.Guerrilla;
 /// zonescript_terr01.vpp_pc). Laid out as Armageddon's (version 46) but for the header: "ZONE", the
 /// version, the object count, the handle count, a word, flags (1: no relation table), then a handle
 /// each, the relation table (87,368 bytes, unless flags say none), and the objects. An object is the
-/// same as Armageddon's: class name hash, handle, box (6 floats), flags, size, ..., property count at
-/// +52, properties from +56 (type, value size, name hash, value, padding to 4), named and hashed the
-/// same way.
+/// same as Armageddon's: class name hash, handle, box (6 floats), flags, size, parent, sibling, child,
+/// number, property count at +52, properties from +56 (type, value size, name hash, value, padding to
+/// 4), named and hashed the same way.
 /// </summary>
 public static class GuerrillaZones
 {
@@ -41,15 +41,21 @@ public static class GuerrillaZones
                 p = (p + 8 + valueSize + 3) & ~3;
             }
             Vector3 V(int o) => new(BitConverter.ToSingle(zone, o), BitConverter.ToSingle(zone, o + 4), BitConverter.ToSingle(zone, o + 8));
-            objects.Add(new GuerrillaZoneObject(BitConverter.ToUInt32(zone, at), BitConverter.ToUInt32(zone, at + 4), V(at + 8), V(at + 20), properties));
+            uint U(int o) => BitConverter.ToUInt32(zone, at + o);
+            objects.Add(new GuerrillaZoneObject(U(0), U(4), V(at + 8), V(at + 20), U(36), U(40), U(44), U(48), properties));
             at += size;
         }
         return objects;
     }
 }
 
-/// <summary>An object in one of Guerrilla's zones: its class (hashed as Armageddon's), handle, box (world coordinates) and properties by name hash.</summary>
-public sealed record GuerrillaZoneObject(uint ClassHash, uint Handle, Vector3 BoundsMin, Vector3 BoundsMax, IReadOnlyDictionary<uint, (int Type, byte[] Value)> Properties)
+/// <summary>
+/// An object in one of Guerrilla's zones: its class (hashed as Armageddon's), handle, box (world
+/// coordinates), the objects it is attached to (parent, the next sibling, its first child: 0xFFFFFFFF
+/// for none), its number in Volition's editor, and its properties by name hash.
+/// </summary>
+public sealed record GuerrillaZoneObject(uint ClassHash, uint Handle, Vector3 BoundsMin, Vector3 BoundsMax, uint Parent, uint Sibling, uint Child, uint Number,
+                                        IReadOnlyDictionary<uint, (int Type, byte[] Value)> Properties)
 {
     /// <summary>A property's value, or null.</summary>
     public byte[]? Value(string name) => Properties.TryGetValue(NameHashes.PropertyHash(name), out var p) ? p.Value : null;

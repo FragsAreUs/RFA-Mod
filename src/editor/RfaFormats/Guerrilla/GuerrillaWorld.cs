@@ -1,5 +1,6 @@
 using System.Numerics;
 using RfaFormats.Meshes;
+using RfaFormats.Tables;
 using RfaFormats.Textures;
 using RfaFormats.Zones;
 
@@ -17,9 +18,10 @@ namespace RfaFormats.Guerrilla;
 /// all zones together (so shared edges stay equal); its nine sub-zones and the height field written
 /// from that; its far-away meshes; its ground material from Guerrilla's (its four layers' textures at
 /// Guerrilla's own scale and tints, its blend and colour maps, the cliff material from its layers 0
-/// and 3); Guerrilla's rocks where its zone places them (see <see cref="GuerrillaRocks"/>); the props
-/// asked for (Guerrilla's general movers: crates, boxes, ...) where its zone places them, each chunk
-/// file converted (see <see cref="GuerrillaChunks"/>); a buried
+/// and 3); Guerrilla's rocks where its zone places them (see <see cref="GuerrillaRocks"/>); the
+/// destructible objects asked for (its rfg_movers: buildings, walls, pipes; and general_movers: crates,
+/// boxes) where its zone places them, attached and linked as there (see <see cref="GuerrillaMovers"/>),
+/// each chunk file converted (see <see cref="GuerrillaChunks"/>); a buried
 /// floor piece and its collision tree (every zone with ground needs a stitch list; the rocks have no
 /// collision yet); an environment box over the whole zone; ruin01's navigation data moved and scaled
 /// to it. And the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the
@@ -27,7 +29,8 @@ namespace RfaFormats.Guerrilla;
 ///
 /// What still comes from Armageddon's files, written over: the terrain file (ruin01's: its Havok
 /// height field, material slots and unknown sections), the zone files' few objects (ruin01's marker,
-/// environment box and player start; the props are copies of world_08_03's cardboard box mover),
+/// environment box and player start; the destructible objects are laid out as world_08_03's
+/// cardboard box and barricade),
 /// the floor piece (dlib_floor_flat, from world_l0's 1h_c0810),
 /// the rocks' template (ter_sur_blder) and the navigation data (ruin01's). Sub-zones, textures,
 /// containers, archives, stitch lists and asset lists are written from nothing.
@@ -78,10 +81,12 @@ public static class GuerrillaWorld
     /// Builds the world from Guerrilla's <paramref name="zones"/> into <paramref name="overrides"/>
     /// (the loader's overrides folder: the world's files go in build\pc\cache\) and the clouds into
     /// <paramref name="modFolder"/> (mods\guerrilla_world\). <paramref name="props"/> names the chunk
-    /// files (such as con_cardboard_a) whose general movers to place; none if null.
+    /// files (such as con_cardboard_a) whose destructible objects to place, or "all"; none if null;
+    /// <paramref name="propZones"/>, if given, the zones to place them in.
     /// </summary>
     public static void Build(string guerrilla, string game, string overrides, string modFolder, IReadOnlyList<(int Col, int Row)> zones,
-                             (int Col, int Row) start, Action<string> log, IReadOnlyCollection<string>? props = null)
+                             (int Col, int Row) start, Action<string> log, IReadOnlyCollection<string>? props = null,
+                             IReadOnlyCollection<(int Col, int Row)>? propZones = null)
     {
         if (zones.Count == 0) throw new ArgumentException("no zones to build");
         if (!zones.Contains(start)) start = zones[0];
@@ -222,25 +227,32 @@ public static class GuerrillaWorld
         }
         log($"Rocks: {rocksIn.Values.Sum(r => r.Count)} placed, {rockPieces.Count} pieces, {rockTextures.Count} textures");
 
-        // ---- Guerrilla's props: the general movers its zones place whose chunk files are asked for,
-        // each file converted, its textures under new names (as the ground's and rocks').
+        // ---- Guerrilla's destructible objects: the rfg_movers and general_movers its zones place whose
+        // chunk files are asked for, each file converted, its textures under new names (as the
+        // ground's and rocks').
         var propNames = new HashSet<string>(props ?? [], StringComparer.OrdinalIgnoreCase);
+        bool allProps = propNames.Contains("all");
         var chunkFiles = new Dictionary<string, (byte[] Header, byte[] Data, IReadOnlyList<string> Textures)>(StringComparer.OrdinalIgnoreCase);
         var chunkTextures = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
         var propsIn = zones.ToDictionary(z => z, _ => new List<GuerrillaZoneObject>());
+        var guerrillaObjects = new Dictionary<(int, int), Dictionary<uint, GuerrillaZoneObject>>();
+        uint rfgMover = NameHashes.ClassHash("rfg_mover"), generalMover = NameHashes.ClassHash("general_mover");
         if (propNames.Count > 0)
         {
             var rfgZones = Packfile.Open(Path.Combine(rfgCache, "zonescript_terr01.vpp_pc"));
-            uint generalMover = NameHashes.ClassHash("general_mover");
             var missing = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            var missingTextures = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var (col, row) in zones)
             {
+                if (propZones != null && !propZones.Contains((col, row))) continue;
                 if (rfgZones.Find($"terr01_{col:00}_{row:00}.rfgzone_pc") is not { } entry) continue;
-                foreach (var o in GuerrillaZones.Objects(rfgZones.Read(entry)))
+                var objects = GuerrillaZones.Objects(rfgZones.Read(entry));
+                guerrillaObjects[(col, row)] = objects.GroupBy(o => o.Handle).ToDictionary(g => g.Key, g => g.First());
+                foreach (var o in objects)
                 {
-                    if (o.ClassHash != generalMover || o.Text("chunk_name") is not { } file) continue;
+                    if (o.ClassHash != generalMover && o.ClassHash != rfgMover || o.Text("chunk_name") is not { } file) continue;
                     string name = Path.GetFileNameWithoutExtension(file);
-                    if (!propNames.Contains(name)) continue;
+                    if (!allProps && !propNames.Contains(name)) continue;
                     if (!chunkFiles.ContainsKey(name))
                     {
                         if (RfgFile(col, row, name + ".cchk_pc") is not { } c || RfgFile(col, row, name + ".gchk_pc", 1) is not { } g)
@@ -257,8 +269,14 @@ public static class GuerrillaWorld
                                 chunkTextures[texture] = builtIn;
                                 continue;
                             }
-                            byte[] th = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc for {name}");
-                            byte[] tg = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? RfgFile(col, row, texture + ".gvbm_pc", 1) ?? throw new InvalidDataException($"no {texture}.gvbm_pc for {name}");
+                            // A texture that isn't there (some name Guerrilla's built-in "missing") is drawn white.
+                            if (RfgFile(col, row, texture + ".cvbm_pc") is not { } th ||
+                                (RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? RfgFile(col, row, texture + ".gvbm_pc", 1)) is not { } tg)
+                            {
+                                missingTextures.Add(texture);
+                                chunkTextures[texture] = GuerrillaBuiltIns.Files(GuerrillaMaterials.White, Alias(texture))!;
+                                continue;
+                            }
                             chunkTextures[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(th, tg, Alias(texture))), (Alias(texture) + ".gvbm_pc", tg)];
                         }
                     }
@@ -266,14 +284,25 @@ public static class GuerrillaWorld
                 }
             }
             missing.ExceptWith(chunkFiles.Keys);
-            log($"Props: {propsIn.Values.Sum(p => p.Count)} placed, {chunkFiles.Count} chunk files, {chunkTextures.Count} textures" +
-                (missing.Count > 0 ? $"; not found next to the zones that place them: {string.Join(", ", missing)}" : ""));
+            log($"Destructible objects: {propsIn.Values.Sum(p => p.Count(o => o.ClassHash == rfgMover))} rfg_movers and {propsIn.Values.Sum(p => p.Count(o => o.ClassHash == generalMover))} general_movers placed, {chunkFiles.Count} chunk files, {chunkTextures.Count} textures" +
+                (missing.Count > 0 ? $"; not found next to the zones that place them: {string.Join(", ", missing)}" : "") +
+                (missingTextures.Count > 0 ? $"; textures not found, drawn white: {string.Join(", ", missingTextures)}" : ""));
         }
-        // What each prop is made from: Armageddon's own cardboard box mover by the first mission's start.
+        // What they are laid out as: Armageddon's own movers by the first mission's start, a cardboard
+        // box (general_mover) and a barricade (rfg_mover); and the names Armageddon's tables have.
         var firstMission = Packfile.FromBytes("1h_c0812.str2_pc", worldL0.Read(worldL0.Find("1h_c0812.str2_pc") ?? throw new InvalidDataException("no 1h_c0812 in world_l0.vpp_pc")));
-        var moverTemplate = ZoneFile.Read(firstMission.Read(firstMission.Find("world_08_03.rfgzone_pc") ?? throw new InvalidDataException("no world_08_03.rfgzone_pc in world_l0's 1h_c0812")))
-            .Objects.FirstOrDefault(o => o.ClassHash == NameHashes.ClassHash("general_mover") && o.Property("chunk_name")?.Text == "s_cm_cont_cardboard_box.cchk_pc")
-            ?? throw new InvalidDataException("no cardboard box general_mover in world_08_03");
+        var firstZone = ZoneFile.Read(firstMission.Read(firstMission.Find("world_08_03.rfgzone_pc") ?? throw new InvalidDataException("no world_08_03.rfgzone_pc in world_l0's 1h_c0812")));
+        ZoneObject Template(uint cls, string chunk) => firstZone.Objects.FirstOrDefault(o => o.ClassHash == cls && o.Property("chunk_name")?.Text == chunk)
+            ?? throw new InvalidDataException($"no {chunk} mover in world_08_03");
+        var moverTemplates = new Dictionary<uint, ZoneObject>
+        {
+            [generalMover] = Template(generalMover, "s_cm_cont_cardboard_box.cchk_pc"),
+            [rfgMover] = Template(rfgMover, "s_cm_cont_barricade.cchk_pc"),
+        };
+        var misc = Packfile.Open(Path.Combine(cache, "misc.vpp_pc"));
+        HashSet<string> TableNames(string table) => new(XtblFile.FromBytes(misc.Read(misc.Find(table) ?? throw new InvalidDataException($"no {table} in misc.vpp_pc"))).Entries.Select(XtblFile.EntryName), StringComparer.OrdinalIgnoreCase);
+        var levelObjects = TableNames("level_objects.xtbl");
+        var gameplayProperties = TableNames("gameplay_properties.xtbl");
 
         // ---- What every zone carries: the foliage meshes the terrain template names (it grows none:
         // see below), and the buried floor piece with its textures.
@@ -357,14 +386,15 @@ public static class GuerrillaWorld
             int colourLevels = (int)Math.Log2(Math.Min(look.Colour.Width, look.Colour.Height)) - 1;
             byte[] colourData = TextureCodec.EncodeWithMips(TextureFormat.Dxt1, look.Colour, colourLevels);
 
-            // Objects: the marker and the environment box (over the whole zone, every height), and in
-            // the start zone the player start, from ruin01's zone.
+            // Objects: the marker, the environment box (over the whole zone, every height) and a player
+            // start in the middle of the zone (so "level rfg_CC_RR" starts on the ground in any zone, as
+            // each of Armageddon's world zones has one), and in the start zone the multiplayer marker,
+            // from ruin01's zone.
             var zoneFile = ZoneFile.Read(zoneTemplate);
             var originals = zoneFile.Objects.ToList();
             var kept = originals.Where(o => o.ClassHash == Class("obj_zone") || o.Handle == templateBox).ToList();
-            if (isStart)
-                foreach (string kind in new[] { "player_start", "multi_object_marker" })
-                    if (originals.FirstOrDefault(o => o.ClassHash == Class(kind)) is { } first) kept.Add(first);
+            foreach (string kind in isStart ? new[] { "player_start", "multi_object_marker" } : ["player_start"])
+                if (originals.FirstOrDefault(o => o.ClassHash == Class(kind)) is { } first) kept.Add(first);
             var copies = kept.Select(o => ZoneFile.Copy(o, prefix | (o.Handle & 0xFFFFFF))).ToList();
             zoneFile.Remove(originals);
             for (int k = 0; k < copies.Count; k++) zoneFile.Insert(k, copies[k]);
@@ -372,33 +402,25 @@ public static class GuerrillaWorld
             foreach (var (o, copy) in kept.Zip(copies))
                 copy.MoveTo(copy.ClassHash == Class("player_start") ? startAt : o.Placement.Position + (zoneMiddle - templateMiddle));
             copies.Single(o => o.ClassHash == Class("obj_zone")).Property("terrain_file_name")!.SetText(zone);
-            // The props: Guerrilla's chunk file, object, checksum, placement and box (its handle too,
-            // which already starts with the zone's place), the rest Armageddon's cardboard box's.
-            var taken = new HashSet<uint>(zoneFile.Objects.Select(o => o.Handle));
-            foreach (var p in propsIn[(col, row)])
+            // The destructible objects, attached and linked as in Guerrilla's zone.
+            byte[] links = [];
+            if (propsIn[(col, row)].Count > 0)
             {
-                uint handle = p.Handle;
-                while (!taken.Add(handle)) handle = (handle & 0xFFFF0000) | ((handle + 1) & 0xFFFF);
-                var mover = ZoneFile.Copy(moverTemplate, handle);
-                mover.Property("chunk_name")!.SetText(p.Text("chunk_name")!);
-                foreach (string name in new[] { "uid", "dest_checksum", "oP", "gm_flags" })
-                    if (p.Value(name) is { } v && mover.Property(name) is { } property && property.Size == v.Length) property.SetValue(v);
-                byte[] bytes = mover.Snapshot();
-                float[] bounds = [p.BoundsMin.X, p.BoundsMin.Y, p.BoundsMin.Z, p.BoundsMax.X, p.BoundsMax.Y, p.BoundsMax.Z];
-                for (int k = 0; k < 6; k++) BitConverter.TryWriteBytes(bytes.AsSpan(8 + k * 4), bounds[k]);
-                mover.Restore(bytes);
-                zoneFile.Insert(zoneFile.Objects.Count, mover);
+                var taken = new HashSet<uint>(zoneFile.Objects.Select(o => o.Handle));
+                (var movers, links) = GuerrillaMovers.Convert(propsIn[(col, row)], guerrillaObjects[(col, row)], moverTemplates,
+                                                               levelObjects.Contains, gameplayProperties.Contains, taken);
+                foreach (var mover in movers) zoneFile.Insert(zoneFile.Objects.Count, mover);
             }
             var environment = copies.Single(o => o.Handle == (prefix | (templateBox & 0xFFFFFF)));
             environment.Property("cam_effect_1")!.SetText("none");
             environment.Property("affects_coloration")!.SetValue([0]);
             float half = ZoneWidth / 2 + 0.5f;
             environment.Property("Bb")!.SetValue([.. new[] { -half, BoxBottom, -half, half, BoxTop, half }.SelectMany(BitConverter.GetBytes)]);
-            byte[] zoneBytes = zoneFile.ToBytes();
+            byte[] zoneBytes = GuerrillaMovers.WithLinks(zoneFile.ToBytes(), links);
             var persistent = ZoneFile.Read(persistentTemplate);
             var persistentOriginals = persistent.Objects.ToList();
             var persistentCopies = new List<ZoneObject>();
-            if (isStart && persistentOriginals.FirstOrDefault(o => o.ClassHash == Class("player_start")) is { } persistentStart)
+            if (persistentOriginals.FirstOrDefault(o => o.ClassHash == Class("player_start")) is { } persistentStart)
             {
                 var playerStart = ZoneFile.Copy(persistentStart, prefix | 0x000004);
                 playerStart.MoveTo(startAt);
@@ -464,7 +486,7 @@ public static class GuerrillaWorld
                 asm.Containers.Add(ContainerEntry(part, bytes, partFiles));
                 layer.Add((part + ".str2_pc", bytes));
             }
-            log($"{zone}{(isStart ? " (start)" : "")}: ground {h.Min():0} to {h.Max():0} m, {rocks.Count} rocks, {propsIn[(col, row)].Count} props, {zoneContainerBytes.Length / 1024:N0} KB");
+            log($"{zone}{(isStart ? " (start)" : "")}: ground {h.Min():0} to {h.Max():0} m, {rocks.Count} rocks, {propsIn[(col, row)].Count} destructible objects ({links.Length / ZoneFile.DestructionLinkSize} links), {zoneContainerBytes.Length / 1024:N0} KB");
         }
         asm.Containers.Add(worldAsm.Containers.Single(c => c.Name == FloorPiece + ".rfgstitchx"));
         foreach (var (name, piece) in rockPieces)
