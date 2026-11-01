@@ -171,11 +171,62 @@ game's registry code never runs for these settings, and nothing in the mod calls
 
 ### console
 
-- *Mouse wheel*: while the console is open the wheel scrolls its output, 3 lines per notch, and
-  stops once the oldest line is at the top. The wheel doesn't reach the game then, so it no longer
-  switches weapons behind the console. The mod wraps the game's mouse message handler (`0xCDF220`)
-  and moves the console's own scroll position (`0x28FBA40`), the one Page Up / Page Down use. The
-  console keeps its last 256 output lines in a ring buffer.
+- *Drawing*: the mod replaces the game's console drawing (`0xC7B890`, called each frame from
+  `0xC7D540`) with its own, made of the same calls: the rectangle and text functions the console
+  was set up with (`0xA44640`, and the renderer's text method `0xD18A80`, which takes a scale the
+  game always passes as 1), in the console's font (`ug-debug`, `0x110AAF0`). It draws a dark panel
+  (the console's background colour, `0x290767C`, which `console_set_bg_color` sets; the mod only
+  darkens the game's default 50% grey), a lighter strip with the typed line (`0x28FB640`) and a
+  caret at its position (`0x28FF1D0`, blinking on the game's own 300 ms timer), a scroll bar, and
+  the output lines, wrapped to the screen's width. The layout follows Quake 3's console
+  (`code/client/cl_console.c` in id Software's GPL source; nothing of it is copied): a line along
+  the edge, the version along the bottom right, a row of `^` marks while scrolled back, and a slide
+  that takes a sixth of a second (the game's took about half a second, at 1000 pixels a second).
+  Text sizes are `[Console]` `TextScale` and `InputScale`, times the screen's height ÷ 1080 on
+  screens taller than that.
+- *Build stamp*: a thin row just above the typed line, made once at startup from the exe itself: the
+  game's version text (`v1.01`, as the pause menu shows it, at `0xF9A4F8`), the Steam build the
+  publicbeta exe is (1932726), the exe's name in its debug information (`RF4_pc_release_dx11`, from
+  its CodeView record) and its link time (the header's time stamp, in UTC, as C's `asctime` writes
+  it); then RFA-Mod's version from a release's `version.txt`, or, in a build of your own, the day
+  `console.dll` was compiled. It is also written to `logs\rfa_mods.log`.
+- *Notify lines*: with `Notify=1` the mod also keeps what the console prints while it is shut (the
+  game keeps nothing then), and shows the newest lines printed in the last 3 seconds, 4 at most, at
+  the top left with a shadow, as Quake 3 does.
+- *History*: the game keeps the last 256 lines in a ring buffer (`0x28FF1F8`), each cut at 126
+  characters, and only while the console is open. The mod wraps its print function (`0xC7C310`)
+  and, when the game keeps a line, keeps it too, whole, in a list of its own (`HistoryLines`,
+  10000 by default), and also writes it to `logs\console.log`. The echo of a typed command,
+  `] <command>`, comes from `0xC7D140`, which the mod also wraps, so it can draw commands in their
+  own colour. Lines with "error", "unknown command", "invalid" or "failed" in them are drawn red.
+  The same line printed again straight after itself is counted rather than added, and shown once
+  with `(x<count>)`.
+- *Scrolling*: while the console is open the wheel scrolls its output, 3 lines per notch, and
+  doesn't reach the game, so it no longer switches weapons behind the console (the mod wraps the
+  game's mouse message handler, `0xCDF220`). The console's key handling (`0xC7C580`) reads keys
+  from the game's queue (`0xCADA40`; a key is its scan code, plus `0x1000` with Shift, `0x2000`
+  Alt, `0x4000` Ctrl, `0x8000` while `` ` `` is held). While it runs, the mod takes Page Up / Page
+  Down (a page; with Shift, a line), Ctrl+Home and Ctrl+End out of the queue first, and End while
+  scrolled back; everything else, Home and End included, goes on to the game.
+- *The mouse*: while the console is open the game stops putting the cursor back in the middle of
+  the screen (`0x4E4070`), but it hides Windows' cursor (`ShowCursor`), so the mod draws an arrow of
+  its own over the console, where Windows says the cursor is (scaled from the window to the size
+  the game draws at). The game's mouse message handler (`0xCDF220`, which the mod already wraps for
+  the wheel) gets the button messages; the mod takes the presses on the console (and their
+  releases), so neither the game nor a menu behind the console sees them. A press on the scroll
+  bar drags it (on the track, the thumb first jumps there); a middle press starts autoscrolling,
+  `0.2 × d + 0.002 × d²` lines a second for `d` pixels from where it was pressed (beyond the first
+  10), ending when the button is let go after a move, or with the next press after a quick click;
+  a press on the typed line moves the caret (`0x28FF1D0`). The thumb also lets go when the button
+  is found up (released outside the window sends no message).
+- *The render debug panel* (`` ` `` + X, debug display mode 4): the panel reads the mouse's
+  position on screen, which the game keeps locked in the middle while you play and frees only
+  while the console is open (`0x4E4070`), so it is used with the console open. The panel is drawn
+  (`0x76EA00`) during the world's draw, before the 2D pass that draws the console (`0x5227C0`),
+  so the console used to cover it. While the panel is up (`0x19742BC`) the mod draws the console
+  just before the panel instead, so the panel is on top, and moves the console to the bottom of
+  the screen, below the lowest of the panel's windows (the children of its root, `0x19750F8`, each
+  with its rectangle on screen).
 - *`console.ini`*: `[Startup]` is applied once when the game has finished starting (right after
   the game's own `gamestart.txt`); `[Gameplay]` every time gameplay starts after loading a level,
   save or checkpoint (right after the game's own per-level scripts, `0x540840`). The mod looks each

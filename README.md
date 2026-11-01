@@ -14,8 +14,10 @@ single-player.
   vehicles and in exo-suits; cutscenes keep their framing.
 - **Video settings that stick** (`video_settings`): the game forgot its resolution and quality
   settings every launch. Now they're kept in `video_settings.cfg`.
-- **A better developer console** (`console`): scroll it with the mouse wheel, and apply console
-  settings automatically from `console.ini`.
+- **A better developer console** (`console`): easy to read, with a dark backing, bigger text and
+  a clear caret; it keeps all its output (not just the last 256 lines) for you to scroll back
+  through, and it gets out of the way of the render debug panel. Console settings apply
+  automatically from `console.ini`.
 - **Red Faction: Guerrilla's world, a first look** (`guerrilla_world`, beta): Guerrilla's whole map
   as a new world, with its sky, clouds, day and night, and a longer view. You build it from your
   own copy of Guerrilla.
@@ -66,7 +68,8 @@ single-player.
   - `[Launcher]`: where your games are (`GameDir=`, and `GuerrillaDir=` for the Guerrilla tools);
   - `[Loader]`: crash reports and overrides;
   - `[Mods]`: set a mod to `0` to turn it off;
-  - one section for each mod: `[Borderless]`, `[FOV]`, `[GuerrillaWorld]` and `[GuerrillaHud]`.
+  - one section for each mod: `[Borderless]`, `[FOV]`, `[Console]`, `[GuerrillaWorld]` and
+    `[GuerrillaHud]`.
 - **`console.ini`**: console settings applied for you, as `<console name>=<value>`. `[Startup]`
   runs once when the game starts, and `[Gameplay]` each time a level, save or checkpoint loads. By
   default it hides the beta's performance text.
@@ -116,10 +119,27 @@ Things to know:
 ## The developer console
 
 - Press `` ` `` / `~` (left of 1) to open or close it; it toggles when you let go of the key.
-- Scroll with the mouse wheel or Page Up / Page Down. End jumps to the newest output, and Up /
-  Down recall earlier commands.
-- `search <text>` finds commands, and `print_to_file` writes all of them to
-  `console_commands.txt`.
+- It's laid out like Quake 3's console. What you type is the big line at the bottom, with an
+  amber caret. Commands you ran show in amber, errors in red, long lines wrap, and a line printed
+  many times in a row shows once with a count.
+- Just above the line you type is the build stamp: the game's version, Steam build, internal name
+  and the day it was built, and the RFA-Mod version you have.
+- While it's shut, the last few lines it printed show at the top left for 3 seconds.
+- Scroll back with the mouse wheel or Page Up / Page Down (hold Shift for one line at a time),
+  Ctrl+Home for the oldest line, and End to come back to the newest. Up / Down recall earlier
+  commands.
+- The mouse works while it's open: drag the scroll bar on the right (or click its track to jump
+  there), or hold the middle button and move up or down to scroll, faster the further you go (a
+  quick middle click keeps it scrolling until your next click). Clicking the line you type moves
+  the caret there.
+- It keeps 10000 lines, so long lists such as `search <text>` (finds commands) can be read in
+  full. Everything it prints is also in `logs\console.log`, and `print_to_file` writes every
+  command to `console_commands.txt`.
+- Its height, text sizes, darkness, history length, the notify lines and the build stamp are
+  under `[Console]` in `rfa_mods.ini`.
+- The render debug panel (`` ` `` + X) takes the mouse while the console is open. While the panel
+  is up, the console moves to the bottom of the screen, below the panel, so you can click its
+  options and still type commands.
 - `script <file>` runs a text file of commands, and `cam_fov <degrees>` sets the camera FOV.
 - `slew_mode` (or `` ` `` + S) frees the camera. Q then picks what it looks at and shows its
   details (class, handle, model, position), the same handles the level editor shows.

@@ -1,12 +1,35 @@
 // Improvements to the developer console of the publicbeta build (opened with the ` key).
 //
-// Mouse wheel: scrolls the console's output while it is open, 3 lines per notch, the same way
-// Page Up / Page Down do. While the console is open the wheel doesn't reach the game, so it no
-// longer switches weapons behind it.
+// The mod draws the console itself, in place of the game's drawing function (0xC7B890), with the
+// game's own rectangle and text functions, laid out like Quake 3's console:
+//   - a dark panel behind it (console_set_bg_color still changes its colour), a lighter strip for
+//     the line you type, and a coloured line along its edge;
+//   - bigger text (the console's font, scaled), the line you type bigger still, and a bright caret
+//     where you type;
+//   - the commands you typed in amber and errors in red, so they stand out from the rest;
+//   - long lines wrapped onto the next line (the game cut them at 126 characters), and the same
+//     line printed again and again shown once, with how many times;
+//   - a scroll bar, and a row of ^ marks while scrolled back;
+//   - the build stamp just above the typed line, on the right: the game's version, Steam build,
+//     internal name and link time, and RFA-Mod's version;
+//   - it slides open and shut in a sixth of a second.
 //
-// The console keeps its last 256 output lines in a ring buffer. While you scroll back it draws the
-// lines upward from a chosen bottom line and shows "[in scroll mode - press END to leave scroll
-// mode]" underneath; End (or scrolling all the way down) returns to the newest output.
+// Notify lines: while the console is shut, the last 4 lines it printed show at the top left of the
+// screen for 3 seconds. The game itself keeps nothing it prints while the console is shut.
+//
+// History: the game keeps only its last 256 lines. The mod keeps its own copy of every line the
+// console prints (10000 by default) and also writes them to logs\console.log. Scroll with the
+// mouse wheel (3 lines a notch), Page Up / Page Down (a page; with Shift, a line), Ctrl+Home (the
+// oldest line) and End or Ctrl+End (back to the newest). While the console is open the wheel
+// doesn't reach the game, so it no longer switches weapons behind it. The mouse works on it too
+// (see "The mouse" below): drag the scroll bar, or hold or click the middle button to autoscroll.
+//
+// The render debug panel (` + X): it takes the mouse only while the console is open (the game frees
+// the mouse for the console). While the panel is up, the console moves to the bottom of the screen,
+// below the panel's windows, and is drawn under them, so its text no longer covers them.
+//
+// [Console] in rfa_mods.ini: its height, text sizes, darkness, history length, the log file, the
+// notify lines and the build stamp.
 //
 // console.ini: console settings this mod applies for you, as <console name>=<value>:
 //   [Startup]   once, when the game has finished starting (right after its own gamestart.txt)
@@ -24,77 +47,928 @@
 #define RFA_MOD_NAME "console"
 #include "rfa_mod.h"
 #include "rfa_game.h"
+#include <algorithm>
+#include <climits>
+#include <ctime>
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace {
 
-constexpr int kConsoleLines = 256;
-constexpr int kLinesPerNotch = 3;
-constexpr int kLineHeight = 15;  // the console font's line spacing in pixels
+using rfa::game::At;
 
-struct ConsoleLine {
-    char text[0x84];
+// ---------------------------------------------------------------------------------------------
+// Settings: [Console] in rfa_mods.ini
+
+struct Settings {
+    float height = 0.5f;          // how much of the screen the console covers (the game's own: 0.4)
+    float textScale = 1.25f;      // the output's size, times the console font's
+    float inputScale = 1.5f;      // the typed line's
+    int opacity = 85;             // how dark the panel behind it is, in percent
+    size_t historyLines = 10000;  // lines kept for scrolling back
+    bool logToFile = true;        // also write them to logs\console.log
+    bool notify = true;           // keep what it prints while shut, and show the newest lines for a moment
+    bool buildStamp = true;       // the build stamp in its corner
+};
+Settings g_settings;
+
+float IniFloat(const wchar_t* key, const wchar_t* fallback) {
+    return static_cast<float>(_wtof(rfa::IniString(L"Console", key, fallback).c_str()));
+}
+
+void ReadSettings() {
+    g_settings.height = std::clamp(rfa::IniInt(L"Console", L"Height", 50), 20, 100) / 100.0f;
+    g_settings.textScale = std::clamp(IniFloat(L"TextScale", L"1.25"), 0.5f, 4.0f);
+    g_settings.inputScale = std::clamp(IniFloat(L"InputScale", L"1.5"), 0.5f, 4.0f);
+    g_settings.opacity = std::clamp(rfa::IniInt(L"Console", L"Opacity", 85), 0, 100);
+    g_settings.historyLines = static_cast<size_t>(std::clamp(rfa::IniInt(L"Console", L"HistoryLines", 10000), 256, 200000));
+    g_settings.logToFile = rfa::IniInt(L"Console", L"LogToFile", 1) != 0;
+    g_settings.notify = rfa::IniInt(L"Console", L"Notify", 1) != 0;
+    g_settings.buildStamp = rfa::IniInt(L"Console", L"BuildStamp", 1) != 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The game's console and 2D drawing, in the publicbeta exe
+
+struct Colour {
+    BYTE r, g, b, a;
 };
 
-// The console's state in the publicbeta exe.
-auto& g_lines = *reinterpret_cast<ConsoleLine(*)[kConsoleLines]>(0x28FF1F8);
-auto& g_nextLine = *reinterpret_cast<int*>(0x28FBA44);    // where the next output line will be written
-auto& g_scrollLine = *reinterpret_cast<int*>(0x28FBA40);  // bottom line while scrolled back; -1 = newest output
+auto& g_consoleReady = *reinterpret_cast<BYTE*>(0x28FF1C8);    // console_init (0xC7DCD0) has run
+auto& g_consoleSliding = *reinterpret_cast<BYTE*>(0x28FF1C9);  // sliding open or shut
 auto& g_consoleOpen = *reinterpret_cast<BYTE*>(0x28FF1CA);
+auto& g_textMode = *reinterpret_cast<BYTE*>(0x11212E0);        // output goes to the text window instead (not on PC)
+auto& g_drawRectangle = *reinterpret_cast<void**>(0x28FF1DC);  // what console_init was given to draw with:
+auto& g_drawText = *reinterpret_cast<void**>(0x28FF1E0);       //   0xA44640 and 0xA446C0
+auto& g_screenLeft = *reinterpret_cast<int*>(0x28FF1E4);       // where text starts (0xD04A90), plus
+auto& g_offsetX = *reinterpret_cast<int*>(0x11212FC);          //   console_offset_x
+auto& g_screenWidth = *reinterpret_cast<int*>(0x28FF1E8);
 auto& g_screenHeight = *reinterpret_cast<int*>(0x28FF1EC);
-auto& g_consoleScreenShare = *reinterpret_cast<double*>(0xF784D0);  // 0.4: the console covers 40% of the screen
+auto& g_background = *reinterpret_cast<Colour*>(0x290767C);    // console_set_bg_color sets it
+auto& g_typed = *reinterpret_cast<const char(*)[0x400]>(0x28FB640);  // the line being typed (up to 124 characters)
+auto& g_prompted = *reinterpret_cast<const char(*)[0x80]>(0x29075F8);  // "] " and that line: what Enter echoes
+auto& g_caret = *reinterpret_cast<int*>(0x28FF1D0);            // where in the typed line the caret is
+auto& g_caretShown = *reinterpret_cast<BYTE*>(0x28F723D);      // blinks every 300 ms
+auto& g_caretTimer = *reinterpret_cast<int*>(0x28FF1F4);       // a timer of the game's: when to blink next
+auto& g_scrollLine = *reinterpret_cast<int*>(0x28FBA40);       // the game's own scrolling: kept at -1 (not scrolled)
+auto& g_frameSeconds = *reinterpret_cast<float*>(0x11217CC);   // how long the last frame took
+auto& g_consoleFont = *reinterpret_cast<int*>(0x110AAF0);      // the font "ug-debug"
+
+constexpr Colour kGameBackground = {16, 16, 16, 128};  // the game's own, half see-through grey
+constexpr float kSlidesPerSecond = 6;                  // open or shut in a sixth of a second, as in Quake 3
+
+// The game's timer methods (the timer in ECX, called as __fastcall with EDX unused): has it run
+// out (0xC8B550), and run out in so many milliseconds from now (0xC8B4B0).
+auto const TimerDone = reinterpret_cast<bool(__fastcall*)(int* timer, void* unused)>(0xC8B550);
+auto const TimerStart = reinterpret_cast<void(__fastcall*)(int* timer, void* unused, int milliseconds)>(0xC8B4B0);
+
+// 2D drawing. 0x2DD7B30 is the drawing mode the console, the debug text and the menus all use; the
+// renderer takes its own form of it, which 0xD05C40 makes (as 0xD06300, the game's text call, does).
+struct RenderMode {
+    int value;
+};
+constexpr DWORD kMode2D = 0x2DD7B30;
+using DrawRectangleFn = void(__cdecl*)(int x, int y, int width, int height, const Colour* colour);
+auto const SetColour = At<void(__cdecl*)(const Colour*)>(0xD04E20);
+auto const ToRenderMode = At<void(__cdecl*)(RenderMode*, const void* mode)>(0xD05C40);
+auto const Renderer = At<void*(__cdecl*)()>(0x4FD5C0);
+// How big text is at scale 1: width and height in pixels of its first `length` characters (-1 = all).
+auto const MeasureText = At<void(__cdecl*)(int* width, int* height, const char* text, int length, int font)>(0xD061F0);
+// The renderer's text method (the renderer in ECX), which takes a scale; the game always passes 1.
+using DrawTextScaledFn = void(__fastcall*)(void* renderer, void* unused, float x, float y, const char* text, float scale,
+                                           bool centred, int font, const RenderMode* mode);
+auto const DrawTextScaled = reinterpret_cast<DrawTextScaledFn>(0xD18A80);
+
+void DrawRectangle(int x, int y, int width, int height, Colour colour) {
+    if (width > 0 && height > 0) reinterpret_cast<DrawRectangleFn>(g_drawRectangle)(x, y, width, height, &colour);
+}
+
+void DrawString(float x, float y, const char* text, float scale, Colour colour) {
+    if (!*text || !colour.a) return;
+    SetColour(&colour);
+    RenderMode mode{-1};
+    ToRenderMode(&mode, reinterpret_cast<const void*>(kMode2D));
+    DrawTextScaled(Renderer(), nullptr, x, y, text, scale, false, g_consoleFont, &mode);
+}
+
+// The width of the first `length` characters at scale 1.
+int TextWidth(const char* text, int length = -1) {
+    int width = 0, height = 0;
+    MeasureText(&width, &height, text, length, g_consoleFont);
+    return width;
+}
+
+int FontHeight() {
+    int width = 0, height = 0;
+    MeasureText(&width, &height, "", -1, g_consoleFont);  // as the game measures its line height
+    return height > 0 ? height : 15;
+}
+
+Colour Brighter(Colour colour, int amount, BYTE minimumAlpha) {
+    auto add = [amount](BYTE value) { return static_cast<BYTE>(std::min(255, value + amount)); };
+    return {add(colour.r), add(colour.g), add(colour.b), std::max(colour.a, minimumAlpha)};
+}
+
+// ---------------------------------------------------------------------------------------------
+// The history: every line the console printed, and how far back the view is scrolled
+
+enum class Kind : BYTE { Output, Command, Error };
+
+struct Line {
+    std::string text;
+    Kind kind;
+    int repeats;       // printed this many times in a row
+    ULONGLONG printed; // when it was last printed (GetTickCount64), for the notify lines
+};
+
+constexpr Colour kOutputColour = {225, 225, 225, 255};
+constexpr Colour kCommandColour = {255, 196, 80, 255};  // what you typed, as Enter echoes it
+constexpr Colour kErrorColour = {255, 112, 96, 255};
+constexpr Colour kTypedColour = {255, 255, 255, 255};
+constexpr Colour kAccentColour = {90, 170, 255, 255};  // the prompt, the edge line and the scroll bar
+constexpr Colour kDimColour = {160, 160, 160, 255};
+constexpr Colour kCaretColour = {255, 196, 80, 255};
+
+Colour LineColour(Kind kind) {
+    return kind == Kind::Command ? kCommandColour : kind == Kind::Error ? kErrorColour : kOutputColour;
+}
+
+// The game prints from other threads too (loading), so the history is only touched under this lock.
+std::mutex g_historyLock;
+std::deque<Line> g_history;
+int g_back = 0;      // how many lines the bottom of the view is above the newest (0 = following new output)
+int g_maxBack = 0;   // the most it can be: the oldest line at the top (worked out as the console is drawn)
+int g_pageLines = 1; // lines on screen, for Page Up / Page Down
+bool g_drawsConsole = false;  // the mod draws the console, so the keys and the wheel move its history
+
+bool LooksLikeError(const std::string& text) {
+    std::string lower = text;
+    for (char& c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    for (const char* word : {"error", "unknown command", "invalid", "failed"})
+        if (lower.find(word) != std::string::npos) return true;
+    return false;
+}
+
+void WriteToLog(const std::string& text) {
+    static HANDLE file = [] {
+        if (!g_settings.logToFile) return INVALID_HANDLE_VALUE;
+        CreateDirectoryW((rfa::RootDir() + L"\\logs").c_str(), nullptr);
+        return CreateFileW((rfa::RootDir() + L"\\logs\\console.log").c_str(), GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    }();
+    if (file == INVALID_HANDLE_VALUE) return;
+    const std::string line = text + "\r\n";
+    DWORD written;
+    WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+}
+
+void AddLine(std::string text, Kind kind) {
+    std::string clean;  // the font draws no tabs or other control characters
+    for (char c : text) {
+        if (c == '\t') clean += "    ";
+        else if (static_cast<unsigned char>(c) >= 0x20) clean += c;
+    }
+    if (kind == Kind::Output && LooksLikeError(clean)) kind = Kind::Error;
+    std::lock_guard<std::mutex> lock(g_historyLock);
+    if (!clean.empty() && !g_history.empty() && g_history.back().text == clean && g_history.back().kind == kind) {
+        ++g_history.back().repeats;  // the same line again: counted, not added
+        g_history.back().printed = GetTickCount64();
+        return;
+    }
+    WriteToLog(clean);
+    g_history.push_back({std::move(clean), kind, 1, GetTickCount64()});
+    if (g_back > 0) ++g_back;  // while scrolled back, the view stays on the same lines
+    while (g_history.size() > g_settings.historyLines) g_history.pop_front();
+    g_back = std::min(g_back, static_cast<int>(g_history.size()) - 1);
+}
+
+// Text the game printed: one line per '\n', as the game splits it (so "" is an empty line).
+void AddOutput(const char* text) {
+    const char* end = text + strlen(text);
+    do {
+        const char* newline = strchr(text, '\n');
+        if (!newline) newline = end;
+        AddLine(std::string(text, newline), Kind::Output);
+        text = newline + 1;
+    } while (text < end);
+}
+
+// Positive: further back. Stops at the oldest line and at the newest.
+void Scroll(int lines) {
+    std::lock_guard<std::mutex> lock(g_historyLock);
+    g_back = std::clamp(g_back + lines, 0, g_maxBack);
+}
+
+bool ScrolledBack() {
+    std::lock_guard<std::mutex> lock(g_historyLock);
+    return g_back > 0;
+}
+
+// The game's console print (0xC7C310): cdecl (text, flags). It keeps lines only while the console
+// is open (and not in text mode), 126 characters at most; the mod keeps the same lines, whole, and
+// with notify lines on, those it prints while shut too.
+constexpr DWORD kConsolePrint = 0xC7C310;
+constexpr size_t kConsolePrintPrologue = 6;  // push ebp / mov ebp,esp / sub esp,1Ch
+using ConsolePrintFn = void(__cdecl*)(const char*, int);
+ConsolePrintFn g_consolePrint;
+
+void __cdecl ConsolePrint(const char* text, int flags) {
+    g_consolePrint(text, flags);
+    if (text && !g_textMode && (g_consoleOpen || g_settings.notify)) AddOutput(text);
+}
+
+// Adds a character to the console's composed line (0xC7D140): cdecl (char). Enter sends '\n',
+// which puts "] <command>" into the game's lines before the command runs.
+constexpr DWORD kConsoleEcho = 0xC7D140;
+constexpr size_t kConsoleEchoPrologue = 8;  // push ebp / mov ebp,esp / push ecx / movsx eax,byte ptr [ebp+8]
+using ConsoleEchoFn = void(__cdecl*)(char);
+ConsoleEchoFn g_consoleEcho;
+
+void __cdecl ConsoleEcho(char c) {
+    if (c == '\n') AddLine(std::string(g_prompted, strnlen(g_prompted, sizeof(g_prompted))), Kind::Command);
+    g_consoleEcho(c);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Keys and the mouse wheel
+
+// The console's key handling (0xC7C580), each frame while it is open: it takes keys from the
+// game's queue (0xCADA40) until there are none. A key is its DirectInput scan code, plus 0x1000
+// with Shift held, 0x2000 with Alt, 0x4000 with Ctrl and 0x8000 while ` is held.
+constexpr DWORD kConsoleKeys = 0xC7C580;
+constexpr size_t kConsoleKeysPrologue = 6;  // push ebp / mov ebp,esp / sub esp,60h
+constexpr DWORD kNextKey = 0xCADA40;        // int(): the next key pressed, 0 when there are none
+constexpr size_t kNextKeyPrologue = 8;      // push ebp / mov ebp,esp / mov al,byte ptr [0293AC0Ch]
+constexpr int kShift = 0x1000, kCtrl = 0x4000, kGraveHeld = 0x8000;
+constexpr int kHome = 0xC7, kPageUp = 0xC9, kEnd = 0xCF, kPageDown = 0xD1;
+constexpr int kLinesPerNotch = 3;
+
+using VoidFn = void(__cdecl*)();
+using NextKeyFn = int(__cdecl*)();
+VoidFn g_consoleKeys;
+NextKeyFn g_nextKey;
+bool g_readingConsoleKeys = false;
+
+int PageLines() { return std::max(1, g_pageLines - 1); }
+
+// The keys that move through the history. Home and End without Ctrl still move the caret, except
+// that End first comes back from scrolling. Returns whether the key was used.
+bool ScrollKey(int key) {
+    switch (key) {
+    case kPageUp: Scroll(PageLines()); return true;
+    case kPageUp | kShift: Scroll(1); return true;
+    case kPageDown: Scroll(-PageLines()); return true;
+    case kPageDown | kShift: Scroll(-1); return true;
+    case kHome | kCtrl: Scroll(INT_MAX / 2); return true;
+    case kEnd | kCtrl: Scroll(-INT_MAX / 2); return true;
+    case kEnd:
+        if (!ScrolledBack()) return false;
+        Scroll(-INT_MAX / 2);
+        return true;
+    }
+    return false;
+}
+
+void __cdecl ConsoleKeys() {
+    g_readingConsoleKeys = true;
+    g_consoleKeys();
+    g_readingConsoleKeys = false;
+    g_scrollLine = -1;
+}
+
+int __cdecl NextKey() {
+    for (;;) {
+        const int key = g_nextKey();
+        if (!key || !g_drawsConsole || !g_readingConsoleKeys || !g_consoleOpen || !ScrollKey(key & ~kGraveHeld))
+            return key;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The render debug panel (` + X)
+//
+// ` + X (0x4D4F40) switches the debug display to mode 4, whose update (0x76E7C0) hands the panel
+// the mouse (0x56F660); its draw (0x76EA00) runs from the world's draw (0x768BA0), before the 2D
+// pass that draws the console (0x5227C0). The panel's windows are the children of its root: a
+// ring through each window's `next`, from the root's `firstChild`.
+
+constexpr DWORD kPanelDraw = 0x76EA00;
+constexpr size_t kPanelDrawPrologue = 10;  // push ebp / mov ebp,esp / movzx eax,byte ptr [019742BCh]
+auto& g_panelShown = *reinterpret_cast<BYTE*>(0x19742BC);
+
+struct PanelWindow {
+    void* functions;
+    float left, top, right, bottom;  // on screen, in pixels
+    BYTE unknown14[4];
+    const PanelWindow* next;
+    const PanelWindow* previous;
+    BYTE unknown20[4];
+    const PanelWindow* firstChild;
+};
+static_assert(offsetof(PanelWindow, next) == 0x18 && offsetof(PanelWindow, firstChild) == 0x24, "the game's layout");
+auto& g_panelRoot = *reinterpret_cast<const PanelWindow*>(0x19750F8);
+
+// The windows are objects in the exe's data sections; anything else isn't one.
+bool InGameData(const void* pointer) {
+    const auto address = reinterpret_cast<uintptr_t>(pointer);
+    return address >= 0x10F4000 && address < 0x3711000 && address % 4 == 0;
+}
+
+// How far down the screen the panel's windows reach (0 if it has none).
+float PanelBottom() {
+    float bottom = 0;
+    const PanelWindow* first = g_panelRoot.firstChild;
+    const PanelWindow* window = first;
+    for (int i = 0; i < 32 && InGameData(window); ++i) {
+        if (window->top < window->bottom && window->bottom > 0 && window->bottom < g_screenHeight * 2.0f)
+            bottom = std::max(bottom, window->bottom);
+        window = window->next;
+        if (window == first) break;
+    }
+    return bottom;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The build stamp: what the game and the mod are, like a development build's stamp, e.g.
+//   Red Faction: Armageddon v1.01 build 1932726 RF4_pc_release_dx11 Fri Jun 30 16:42:00 2017 pc | RFA-Mod v0.4.1-beta
+
+constexpr DWORD kGameVersionText = 0xF9A4F8;  // "v1.01", the version the pause menu shows
+constexpr int kSteamBuild = 1932726;          // the publicbeta exe, the only one the mod changes
+
+std::string g_buildStamp;
+
+// The name the exe has in its debug information (its CodeView record: "RSDS", GUID, age, path).
+std::string ExeDebugName() {
+    auto base = reinterpret_cast<const BYTE*>(GetModuleHandleW(nullptr));
+    auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    auto entry = reinterpret_cast<const IMAGE_DEBUG_DIRECTORY*>(base + directory.VirtualAddress);
+    for (DWORD i = 0; directory.VirtualAddress && i < directory.Size / sizeof(IMAGE_DEBUG_DIRECTORY); ++i, ++entry) {
+        if (entry->Type != IMAGE_DEBUG_TYPE_CODEVIEW || !entry->AddressOfRawData || entry->SizeOfData < 25) continue;
+        auto record = reinterpret_cast<const char*>(base + entry->AddressOfRawData);
+        if (memcmp(record, "RSDS", 4) != 0) continue;
+        std::string name(record + 24, strnlen(record + 24, entry->SizeOfData - 24));
+        name = name.substr(name.find_last_of("\\/") + 1);
+        return name.substr(0, name.find_last_of('.'));
+    }
+    return "";
+}
+
+// When the exe was linked (its header's time stamp), as C's asctime writes a time, in UTC.
+std::string ExeLinkTime() {
+    const time_t linked = static_cast<time_t>(rfa::game::ExeTimestamp());
+    tm utc;
+    char text[64] = "";
+    if (gmtime_s(&utc, &linked) == 0) strftime(text, sizeof(text), "%a %b %d %H:%M:%S %Y", &utc);
+    return text;
+}
+
+// A release's version.txt (next to rfa_mods.ini) starts "RFA-Mod v0.4.1-beta, built from ...";
+// without one (a build of your own), the day this mod was compiled.
+std::string ModVersion() {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, (rfa::RootDir() + L"\\version.txt").c_str(), L"r") == 0 && file) {
+        char line[256] = "";
+        const bool read = fgets(line, sizeof(line), file) != nullptr;
+        fclose(file);
+        std::string text = read ? line : "";
+        text = text.substr(0, text.find_first_of(",\r\n"));
+        if (text.rfind("RFA-Mod ", 0) == 0) return text;
+    }
+    std::string date = __DATE__;  // "Nov  1 2026": one space is enough
+    for (size_t at; (at = date.find("  ")) != std::string::npos;) date.erase(at, 1);
+    return std::string("RFA-Mod dev build ") + date + " " + __TIME__;
+}
+
+void MakeBuildStamp() {
+    char stamp[256];
+    snprintf(stamp, sizeof(stamp), "Red Faction: Armageddon %s build %d %s %s pc | %s",
+             reinterpret_cast<const char*>(kGameVersionText), kSteamBuild, ExeDebugName().c_str(), ExeLinkTime().c_str(),
+             ModVersion().c_str());
+    g_buildStamp = stamp;
+    for (size_t at; (at = g_buildStamp.find("  ")) != std::string::npos;) g_buildStamp.erase(at, 1);  // a part left empty
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drawing the console
+
+constexpr DWORD kConsoleDraw = 0xC7B890;  // void(): the game's console drawing, each frame from 0xC7D540
+
+float g_shown = 0;  // how far it has slid open, 0 to 1
+bool g_backgroundSet = false;
+bool g_drawnUnderPanel = false;
+
+constexpr Colour kStampColour = {125, 145, 170, 255};
+constexpr Colour kShadowColour = {0, 0, 0, 200};
+constexpr int kNotifyLines = 4;                  // as in Quake 3
+constexpr ULONGLONG kNotifyMilliseconds = 3000;
+
+// Slides it open or shut; false while it is shut.
+bool Slide() {
+    if (g_consoleSliding) {
+        const float step = g_frameSeconds * kSlidesPerSecond;
+        g_shown += g_consoleOpen ? step : -step;
+        if (g_shown >= 1 || g_shown <= 0) {
+            g_shown = std::clamp(g_shown, 0.0f, 1.0f);
+            g_consoleSliding = 0;
+        }
+    } else {
+        g_shown = g_consoleOpen ? 1.0f : 0.0f;
+    }
+    return g_shown > 0;
+}
+
+// A line as it is shown: with how many times it was printed in a row, if more than once.
+std::string Shown(const Line& line) {
+    return line.repeats > 1 ? line.text + "  (x" + std::to_string(line.repeats) + ")" : line.text;
+}
+
+// The longest start of `text` (at least one character) that fits in `width` at scale 1.
+int CharactersThatFit(const char* text, int length, float width) {
+    if (TextWidth(text, length) <= width) return length;
+    int low = 1, high = length;
+    while (low < high) {
+        const int middle = (low + high + 1) / 2;
+        if (TextWidth(text, middle) <= width) low = middle;
+        else high = middle - 1;
+    }
+    return low;
+}
+
+// A line cut into the rows it takes up, breaking after a space where there is one.
+std::vector<std::string> Wrap(const std::string& text, float width) {
+    std::vector<std::string> rows;
+    size_t start = 0;
+    do {
+        const char* rest = text.c_str() + start;
+        const int left = static_cast<int>(text.size() - start);
+        int fits = CharactersThatFit(rest, left, width);
+        if (fits < left) {
+            int space = fits - 1;
+            while (space > 0 && rest[space] != ' ') --space;
+            if (space >= fits / 2) fits = space + 1;
+        }
+        rows.emplace_back(rest, fits);
+        start += fits;
+    } while (start < text.size());
+    return rows;
+}
+
+// Sizes and places that depend on the screen and the settings.
+struct Metrics {
+    float screenScale, textScale, inputScale;
+    int fontHeight, rowHeight, typedHeight, padding, inputHeight, edge, left, scrollBarWidth;
+    float textWidth;  // how wide output rows may be, at scale 1
+};
+
+Metrics Measure() {
+    Metrics m;
+    m.screenScale = std::max(1.0f, g_screenHeight / 1080.0f);  // bigger screens get bigger text
+    m.textScale = g_settings.textScale * m.screenScale;
+    m.inputScale = g_settings.inputScale * m.screenScale;
+    m.fontHeight = FontHeight();
+    m.rowHeight = static_cast<int>(m.fontHeight * m.textScale + 0.5f) + 2;
+    m.typedHeight = static_cast<int>(m.fontHeight * m.inputScale + 0.5f);
+    m.padding = static_cast<int>(4 * m.screenScale);
+    m.inputHeight = m.typedHeight + 2 * m.padding;
+    m.edge = std::max(2, static_cast<int>(2 * m.screenScale));
+    m.left = g_screenLeft + g_offsetX + 2 * m.padding;
+    m.scrollBarWidth = std::max(8, static_cast<int>(8 * m.screenScale));
+    m.textWidth = static_cast<float>(g_screenWidth - m.left - 3 * m.scrollBarWidth) / m.textScale;
+    return m;
+}
+
+// Notify lines, while the console is shut: the newest lines printed in the last 3 seconds, at
+// most 4, at the top left of the screen with a shadow (there is no panel behind them).
+void DrawNotify(const Metrics& m) {
+    std::vector<Line> recent;
+    {
+        std::lock_guard<std::mutex> lock(g_historyLock);
+        const ULONGLONG now = GetTickCount64();
+        for (auto line = g_history.rbegin(); line != g_history.rend() && recent.size() < kNotifyLines; ++line) {
+            if (now - line->printed > kNotifyMilliseconds) break;
+            recent.push_back(*line);
+        }
+    }
+    int y = 2 * m.padding;
+    int rowsLeft = 2 * kNotifyLines;  // long lines wrap, but not without end
+    for (auto line = recent.rbegin(); line != recent.rend(); ++line) {
+        for (const std::string& row : Wrap(Shown(*line), m.textWidth)) {
+            if (rowsLeft-- <= 0) return;
+            DrawString(static_cast<float>(m.left + 1), static_cast<float>(y + 1), row.c_str(), m.textScale, kShadowColour);
+            DrawString(static_cast<float>(m.left), static_cast<float>(y), row.c_str(), m.textScale, LineColour(line->kind));
+            y += m.rowHeight;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The mouse
+//
+// While the console is open the game stops keeping the mouse in the middle of the screen
+// (0x4E4070), but it hides Windows' cursor (0xCB13C0, 0xCB1820), so the mod draws its own over the
+// console. On the console:
+//   - the scroll bar: drag its thumb, or press on its track to jump there and drag from there;
+//   - the middle button: scrolls by how far the mouse is above or below where it was pressed,
+//     faster the further away, as Windows' autoscroll does. Hold it while moving, or click it and
+//     move; another click ends it;
+//   - a click on the typed line puts the caret there.
+// Clicks on the console don't reach the game (or the menu behind it); clicks elsewhere do.
+
+auto& g_gameWindow = *reinterpret_cast<HWND*>(0x293A880);  // what 0xCB1D10 returns
+
+// What was drawn last frame, for finding what the mouse is on.
+struct Drawn {
+    bool shown;
+    int top, bottom;  // the console, on screen
+    bool scrollBar;
+    int barX, barWidth, trackTop, trackBottom, thumbTop, thumbBottom, maxBack;
+    int inputTop, inputBottom, typedX, first;  // the typed line, and its first character shown
+    float inputScale;
+};
+Drawn g_drawn = {};
+
+bool g_dragging = false;  // the scroll bar's thumb, held
+int g_grab = 0;           // where on the thumb it is held
+bool g_autoScroll = false;
+bool g_autoHeld = false;  // the middle button is still down since it began
+POINT g_anchor = {};
+ULONGLONG g_autoBegan = 0, g_autoTick = 0;
+float g_autoLines = 0;    // lines scrolled but not yet whole
+bool g_swallowUp[3] = {};  // a press the console took, so the game doesn't get its release either: left, middle, right
+
+// Window pixels to the size the game draws at (the same, unless the picture is scaled).
+bool ToDrawn(POINT& point) {
+    RECT client;
+    if (!g_gameWindow || !GetClientRect(g_gameWindow, &client) || client.right <= 0 || client.bottom <= 0) return false;
+    if (point.x < 0 || point.y < 0 || point.x >= client.right || point.y >= client.bottom) return false;
+    point.x = MulDiv(point.x, g_screenWidth, client.right);
+    point.y = MulDiv(point.y, g_screenHeight, client.bottom);
+    return true;
+}
+
+bool MouseNow(POINT& point) {
+    return GetCursorPos(&point) && ScreenToClient(g_gameWindow, &point) && ToDrawn(point);
+}
+
+// Whether a button is held right now, even if let go outside the window (no message then).
+// Windows reads the physical buttons here, so swapped buttons are swapped back.
+bool ButtonHeld(bool left) {
+    const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+    const int key = left ? (swapped ? VK_RBUTTON : VK_LBUTTON) : VK_MBUTTON;
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
+bool OnConsole(const POINT& point) { return g_drawn.shown && point.y >= g_drawn.top && point.y < g_drawn.bottom; }
+
+bool OnScrollBar(const POINT& point) {
+    return g_drawn.scrollBar && point.x >= g_drawn.barX - 2 * g_drawn.barWidth && point.y >= g_drawn.trackTop &&
+           point.y < g_drawn.trackBottom;
+}
+
+// Scrolls so that the thumb's top is at `thumbTop`.
+void ThumbTo(int thumbTop) {
+    const int thumb = g_drawn.thumbBottom - g_drawn.thumbTop;
+    const int travel = g_drawn.trackBottom - g_drawn.trackTop - thumb;
+    if (travel <= 0 || g_drawn.maxBack <= 0) return;
+    const int fromBottom = std::clamp(g_drawn.trackBottom - thumbTop - thumb, 0, travel);
+    std::lock_guard<std::mutex> lock(g_historyLock);
+    g_back = std::clamp((fromBottom * g_drawn.maxBack + travel / 2) / travel, 0, g_maxBack);
+}
+
+// The caret to the character nearest `x` on the typed line.
+void CaretTo(int x) {
+    const char* typed = g_typed;
+    const int length = static_cast<int>(strnlen(typed, sizeof(g_typed)));
+    const int first = std::min(g_drawn.first, length);
+    int best = first, nearest = INT_MAX;
+    for (int i = first; i <= length; ++i) {
+        const int at = g_drawn.typedX + static_cast<int>(TextWidth(typed + first, i - first) * g_drawn.inputScale);
+        if (abs(at - x) < nearest) {
+            nearest = abs(at - x);
+            best = i;
+        }
+        if (at > x) break;
+    }
+    g_caret = best;
+    g_caretShown = 1;  // shown straight away, as when typing
+    TimerStart(&g_caretTimer, nullptr, 300);
+}
+
+// A button pressed or let go, where the mouse is on the drawn screen (null: outside the window);
+// true when the console took it.
+bool ConsoleButton(int button, bool down, const POINT* at) {
+    if (!down) {
+        const bool swallow = g_swallowUp[button];
+        g_swallowUp[button] = false;
+        if (button == 0) g_dragging = false;
+        if (button == 1 && g_autoScroll && g_autoHeld) {
+            g_autoHeld = false;  // held and moved, or held a while: it ends; a quick click keeps it going
+            const bool moved = !at || abs(at->y - g_anchor.y) > 12 || abs(at->x - g_anchor.x) > 12;
+            if (moved || GetTickCount64() - g_autoBegan > 350) g_autoScroll = false;
+        }
+        return swallow;
+    }
+    g_swallowUp[button] = false;
+    if (g_autoScroll) {  // any press ends autoscrolling
+        g_autoScroll = false;
+        g_swallowUp[button] = true;
+        return true;
+    }
+    if (!at || !OnConsole(*at)) return false;
+    const POINT point = *at;
+    g_swallowUp[button] = true;
+    if (button == 0 && OnScrollBar(point)) {
+        const bool onThumb = point.y >= g_drawn.thumbTop && point.y < g_drawn.thumbBottom;
+        g_grab = onThumb ? point.y - g_drawn.thumbTop : (g_drawn.thumbBottom - g_drawn.thumbTop) / 2;
+        g_dragging = true;
+        ThumbTo(point.y - g_grab);
+    } else if (button == 0 && point.y >= g_drawn.inputTop && point.y < g_drawn.inputBottom) {
+        CaretTo(point.x);
+    } else if (button == 1) {
+        g_autoScroll = g_autoHeld = true;
+        g_anchor = point;
+        g_autoBegan = g_autoTick = GetTickCount64();
+        g_autoLines = 0;
+    }
+    return true;
+}
+
+// Each frame while the console is open: follows a held thumb, and scrolls while autoscrolling.
+void FollowMouse(const POINT* mouse, float screenScale) {
+    if (g_dragging) {
+        if (!ButtonHeld(true)) g_dragging = false;
+        else if (mouse) ThumbTo(mouse->y - g_grab);
+    }
+    if (!g_autoScroll) return;
+    if (g_autoHeld && !ButtonHeld(false)) ConsoleButton(1, false, mouse);
+    const ULONGLONG now = GetTickCount64();
+    const float seconds = std::min(0.1f, (now - g_autoTick) / 1000.0f);
+    g_autoTick = now;
+    if (!mouse) return;
+    const float away = static_cast<float>(abs(mouse->y - g_anchor.y)) / screenScale - 10;  // still within 10 pixels
+    if (away > 0) {
+        const float linesPerSecond = away * 0.2f + away * away * 0.002f;  // 50 pixels: 15, 300: 240
+        g_autoLines += (mouse->y < g_anchor.y ? linesPerSecond : -linesPerSecond) * seconds;
+    }
+    const int whole = static_cast<int>(g_autoLines);
+    if (whole) {
+        Scroll(whole);
+        g_autoLines -= whole;
+    }
+}
+
+// The console is shut: nothing held, and the game gets every click again.
+void StopMouse() {
+    g_dragging = g_autoScroll = g_autoHeld = false;
+    for (bool& swallow : g_swallowUp) swallow = false;
+    g_drawn.shown = false;
+}
+
+// An arrow, drawn a pixel row at a time: white with a black edge.
+void DrawCursor(int x, int y, float screenScale) {
+    const int pixel = std::max(1, static_cast<int>(screenScale + 0.5f));
+    constexpr int kRows = 13;
+    for (int row = -1; row <= kRows; ++row) {
+        const int width = std::clamp(row, 0, kRows - 1) * 2 / 3 + 1;
+        DrawRectangle(x - pixel, y + row * pixel, (width + 2) * pixel, pixel, {0, 0, 0, 255});
+        if (row >= 0 && row < kRows) DrawRectangle(x, y + row * pixel, width * pixel, pixel, {255, 255, 255, 255});
+    }
+}
+
+// Where the middle button was pressed: a dot with arrows up and down.
+void DrawAnchor(const Metrics& m) {
+    const int size = std::max(6, static_cast<int>(6 * m.screenScale));
+    DrawRectangle(g_anchor.x - size / 2, g_anchor.y - size / 2, size, size, kAccentColour);
+    const float half = TextWidth("^") * m.textScale / 2;
+    DrawString(g_anchor.x - half, static_cast<float>(g_anchor.y - size / 2 - m.rowHeight), "^", m.textScale, kAccentColour);
+    DrawString(g_anchor.x - half, static_cast<float>(g_anchor.y + size / 2), "v", m.textScale, kAccentColour);
+}
 
 // The game's handler for mouse window messages (buttons, wheel, raw input): cdecl (message,
-// wParam, lParam). It adds wheel movement to a total that weapon switching reads.
+// wParam, lParam). It turns the buttons into the game's button states (0xCB08E0) and adds wheel
+// movement to a total that weapon switching reads.
 constexpr DWORD kMouseMessage = 0xCDF220;
 constexpr size_t kMouseMessagePrologue = 6;  // push ebp / mov ebp,esp / sub esp,0Ch
-
-int Wrap(int line) { return (line % kConsoleLines + kConsoleLines) % kConsoleLines; }
-
-int NewestLine() { return Wrap(g_nextLine - 1); }
-
-// Once the ring buffer is full, the slot the next line goes into still holds the oldest line.
-int StoredLines() { return g_lines[g_nextLine].text[0] ? kConsoleLines : g_nextLine; }
-
-// Output lines that fit above the input line and the scroll-mode notice.
-int VisibleLines() {
-    const int lines = static_cast<int>(g_screenHeight * g_consoleScreenShare) / kLineHeight - 2;
-    return lines > 1 ? lines : 1;
-}
-
-// How many lines the bottom of the view is above the newest line (0 when following new output).
-int LinesScrolledBack() { return g_scrollLine < 0 ? 0 : Wrap(NewestLine() - g_scrollLine); }
-
-void ScrollBack(int lines) {
-    const int furthest = StoredLines() - VisibleLines();  // the oldest line then sits at the top
-    if (furthest <= 0) return;                             // everything fits on screen already
-    int back = LinesScrolledBack() + lines;
-    if (back > furthest) back = furthest;
-    g_scrollLine = Wrap(NewestLine() - back);
-}
-
-void ScrollForward(int lines) {
-    if (g_scrollLine < 0) return;
-    const int back = LinesScrolledBack() - lines;
-    g_scrollLine = back > 0 ? Wrap(NewestLine() - back) : -1;
-}
 
 using MouseMessageFn = void(__cdecl*)(UINT, WPARAM, LPARAM);
 MouseMessageFn g_mouseMessage;
 int g_wheel = 0;  // wheel movement not yet turned into whole notches (high-resolution wheels)
 
 void __cdecl MouseMessage(UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_MOUSEWHEEL && g_consoleOpen) {
-        g_wheel += GET_WHEEL_DELTA_WPARAM(wParam);
-        for (; g_wheel >= WHEEL_DELTA; g_wheel -= WHEEL_DELTA) ScrollBack(kLinesPerNotch);
-        for (; g_wheel <= -WHEEL_DELTA; g_wheel += WHEEL_DELTA) ScrollForward(kLinesPerNotch);
-        RFA_LOG_FIRST(3, "Scrolled the console with the mouse wheel");
-        return;  // the game doesn't see it
+    if (g_consoleOpen && g_drawsConsole) {
+        if (message == WM_MOUSEWHEEL) {
+            g_autoScroll = false;
+            g_wheel += GET_WHEEL_DELTA_WPARAM(wParam);
+            for (; g_wheel >= WHEEL_DELTA; g_wheel -= WHEEL_DELTA) Scroll(kLinesPerNotch);
+            for (; g_wheel <= -WHEEL_DELTA; g_wheel += WHEEL_DELTA) Scroll(-kLinesPerNotch);
+            RFA_LOG_FIRST(3, "Scrolled the console with the mouse wheel");
+            return;  // the game doesn't see it
+        }
+        POINT point = {static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
+        const bool inWindow = ToDrawn(point);
+        int button = -1;
+        bool down = false;
+        switch (message) {
+        case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: button = 0; down = true; break;
+        case WM_LBUTTONUP: button = 0; break;
+        case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: button = 1; down = true; break;
+        case WM_MBUTTONUP: button = 1; break;
+        case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: button = 2; down = true; break;
+        case WM_RBUTTONUP: button = 2; break;
+        }
+        if (button >= 0 && ConsoleButton(button, down, inWindow ? &point : nullptr)) {
+            RFA_LOG_FIRST(3, "The console took a mouse click");
+            return;
+        }
+    } else {
+        g_wheel = 0;
     }
-    if (!g_consoleOpen) g_wheel = 0;
     g_mouseMessage(message, wParam, lParam);
+}
+
+void DrawConsole() {
+    if (!g_drawRectangle || !g_drawText) return;
+    if (!g_backgroundSet) {  // the mod's darker panel, unless console_set_bg_color was used already
+        g_backgroundSet = true;
+        if (memcmp(&g_background, &kGameBackground, sizeof(Colour)) == 0)
+            g_background = {10, 12, 16, static_cast<BYTE>(g_settings.opacity * 255 / 100)};
+    }
+    const Metrics m = Measure();
+    if (!Slide()) {
+        StopMouse();
+        if (g_settings.notify) DrawNotify(m);
+        return;
+    }
+    if (TimerDone(&g_caretTimer, nullptr)) {  // the caret's blink, as the game's drawing did it
+        TimerStart(&g_caretTimer, nullptr, 300);
+        g_caretShown = !g_caretShown;
+    }
+    // The build stamp gets a thin row of its own just above the typed line, at the font's own size.
+    const bool stamped = g_settings.buildStamp && !g_buildStamp.empty();
+    const float stampScale = m.screenScale;
+    const int stampRow = stamped ? static_cast<int>(m.fontHeight * stampScale + 0.5f) + m.padding : 0;
+    const int minimum = m.inputHeight + stampRow + 4 * m.rowHeight + 2 * m.padding;
+    const int width = g_screenWidth, left = m.left, rowHeight = m.rowHeight, padding = m.padding;
+    const float textScale = m.textScale, inputScale = m.inputScale;
+
+    // At the top of the screen, or at the bottom below the render debug panel while it is up.
+    const bool atBottom = g_panelShown != 0;
+    int height = std::max(minimum, static_cast<int>(g_screenHeight * g_settings.height));
+    if (atBottom) height = std::max(minimum, std::min(height, g_screenHeight - static_cast<int>(PanelBottom()) - padding));
+    height = std::min(height, g_screenHeight);
+    const int top = atBottom ? g_screenHeight - static_cast<int>(height * g_shown)
+                             : static_cast<int>(height * g_shown) - height;
+
+    // Top to bottom: the output, the build stamp's row, the typed line, the edge (at the top instead
+    // while at the bottom of the screen).
+    const int inputTop = top + height - (atBottom ? 0 : m.edge) - m.inputHeight;
+    const int stampTop = inputTop - stampRow;
+    DrawRectangle(0, top, width, height, g_background);
+    DrawRectangle(0, inputTop, width, m.inputHeight, Brighter(g_background, 22, 225));
+    DrawRectangle(0, inputTop - 1, width, 1, Brighter(g_background, 60, 255));
+    DrawRectangle(0, atBottom ? top : top + height - m.edge, width, m.edge, kAccentColour);
+
+    // The mouse: where it is, and the scroll bar or autoscroll it moves (from last frame's layout).
+    POINT mouse;
+    const bool mouseIn = g_consoleOpen && MouseNow(mouse);
+    FollowMouse(mouseIn ? &mouse : nullptr, m.screenScale);
+
+    // The output, from the newest line up (or from where it is scrolled back to).
+    const int outputTop = top + (atBottom ? m.edge : 0) + padding;
+    const int outputBottom = stampTop - (stamped ? 0 : padding);
+    const int rows = std::max(1, (outputBottom - outputTop) / rowHeight);
+    std::vector<Line> lines, oldest;
+    int total, back;
+    {
+        std::lock_guard<std::mutex> lock(g_historyLock);
+        total = static_cast<int>(g_history.size());
+        back = std::min(g_back, std::max(0, total - 1));
+        const int bottomLine = total - 1 - back;
+        for (int i = std::max(0, bottomLine - rows + 1); i <= bottomLine; ++i) lines.push_back(g_history[i]);
+        for (int i = 0; i < std::min(total, rows); ++i) oldest.push_back(g_history[i]);
+    }
+    const int outputRows = back > 0 ? rows - 1 : rows;  // scrolled back: the last row says so
+    int y = outputBottom - (rows - outputRows) * rowHeight;
+    int rowsLeft = outputRows;
+    for (auto line = lines.rbegin(); line != lines.rend() && rowsLeft > 0; ++line) {
+        const std::vector<std::string> wrapped = Wrap(Shown(*line), m.textWidth);
+        for (auto row = wrapped.rbegin(); row != wrapped.rend() && rowsLeft > 0; ++row, --rowsLeft) {
+            y -= rowHeight;
+            DrawString(static_cast<float>(left), static_cast<float>(y), row->c_str(), textScale, LineColour(line->kind));
+        }
+    }
+
+    // How far back it can go: until the oldest line is at the top (with the row of ^ marks).
+    int maxBack = 0, rowsUsed = 0;
+    for (int i = 0; i < static_cast<int>(oldest.size()); ++i) {
+        rowsUsed += static_cast<int>(Wrap(Shown(oldest[i]), m.textWidth).size());
+        if (rowsUsed >= rows - 1) {
+            maxBack = total - 1 - i;
+            break;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_historyLock);
+        g_maxBack = maxBack;
+        g_back = std::min(g_back, maxBack);
+        g_pageLines = outputRows;
+    }
+
+    if (back > 0) {  // Quake 3's row of ^ marks under the text, and how far back it is
+        char where[96];
+        snprintf(where, sizeof(where), "%d of %d lines back - End: newest", back, total);
+        const float rowY = static_cast<float>(outputBottom - rowHeight);
+        const int whereX = width - 3 * m.scrollBarWidth - static_cast<int>(TextWidth(where) * textScale);
+        DrawString(static_cast<float>(whereX), rowY, where, textScale, kDimColour);
+        const int step = std::max(8, static_cast<int>(TextWidth("^   ") * textScale));
+        for (int x = left; x + step < whereX; x += step) DrawString(static_cast<float>(x), rowY, "^", textScale, kAccentColour);
+    }
+
+    // The scroll bar: where the view is in the history. Brighter under the mouse and while held.
+    Drawn drawn = {};
+    drawn.shown = true;
+    drawn.top = std::max(0, top);
+    drawn.bottom = top + height;
+    if (maxBack > 0) {
+        const int trackHeight = outputBottom - outputTop;
+        const int thumb = std::max(2 * rowHeight, trackHeight * outputRows / std::max(total, 1));
+        const int thumbBottom = outputBottom - (trackHeight - thumb) * std::min(back, maxBack) / maxBack;
+        const int x = width - 2 * m.scrollBarWidth;
+        drawn.scrollBar = true;
+        drawn.barX = x;
+        drawn.barWidth = m.scrollBarWidth;
+        drawn.trackTop = outputTop;
+        drawn.trackBottom = outputBottom;
+        drawn.thumbTop = thumbBottom - thumb;
+        drawn.thumbBottom = thumbBottom;
+        drawn.maxBack = maxBack;
+        const bool lit = g_dragging || (mouseIn && mouse.x >= x - 2 * m.scrollBarWidth && mouse.y >= outputTop &&
+                                        mouse.y < outputBottom);
+        DrawRectangle(x, outputTop, m.scrollBarWidth, trackHeight, Brighter(g_background, lit ? 45 : 30, 160));
+        DrawRectangle(x, thumbBottom - thumb, m.scrollBarWidth, thumb, lit ? Brighter(kAccentColour, 70, 255) : kAccentColour);
+    }
+
+    if (stamped) {  // right-aligned, as far left as the text if the screen is narrow
+        const int stampWidth = static_cast<int>(TextWidth(g_buildStamp.c_str()) * stampScale);
+        const int x = std::max(left, width - 2 * m.scrollBarWidth - stampWidth);
+        DrawString(static_cast<float>(x), static_cast<float>(stampTop + m.padding / 2), g_buildStamp.c_str(), stampScale,
+                   kStampColour);
+    }
+
+    // The line being typed: "]", then the text, moved left if needed to keep the caret in view.
+    const float typedY = static_cast<float>(inputTop + padding);
+    const int promptWidth = static_cast<int>(TextWidth("] ") * inputScale);
+    DrawString(static_cast<float>(left), typedY, "]", inputScale, kAccentColour);
+    const char* typed = g_typed;
+    const int length = static_cast<int>(strnlen(typed, sizeof(g_typed)));
+    const int caret = std::clamp(g_caret, 0, length);
+    const float room = static_cast<float>(width - left - promptWidth - 3 * m.scrollBarWidth) / inputScale;
+    int first = 0;
+    while (first < caret && TextWidth(typed + first, caret - first) > room) ++first;
+    const int typedX = left + promptWidth;
+    const int fits = CharactersThatFit(typed + first, length - first, room);  // not past the scroll bar
+    DrawString(static_cast<float>(typedX), typedY, std::string(typed + first, fits).c_str(), inputScale, kTypedColour);
+    if (g_caretShown) {
+        const int x = typedX + static_cast<int>(TextWidth(typed + first, caret - first) * inputScale);
+        DrawRectangle(x, static_cast<int>(typedY), std::max(2, static_cast<int>(2 * inputScale)), m.typedHeight, kCaretColour);
+    }
+    drawn.inputTop = inputTop;
+    drawn.inputBottom = inputTop + m.inputHeight;
+    drawn.typedX = typedX;
+    drawn.first = first;
+    drawn.inputScale = inputScale;
+    g_drawn = drawn;
+
+    // The mouse on top of it all, over the console (menus and the render debug panel draw their own).
+    if (g_autoScroll) DrawAnchor(m);
+    if (mouseIn && (OnConsole(mouse) || g_dragging || g_autoScroll)) DrawCursor(mouse.x, mouse.y, m.screenScale);
+}
+
+bool ConsoleCanDraw() { return g_consoleReady && !g_textMode; }  // what 0xC7D540 checks before drawing it
+
+// In place of the game's console drawing (0xC7B890), each frame from 0xC7D540.
+void __cdecl ConsoleDraw() {
+    if (g_drawnUnderPanel) {  // drawn already this frame, under the panel
+        g_drawnUnderPanel = false;
+        return;
+    }
+    DrawConsole();
+}
+
+using PanelDrawFn = void(__cdecl*)();
+PanelDrawFn g_panelDraw;
+
+void __cdecl PanelDraw() {
+    if (g_panelShown && ConsoleCanDraw()) {
+        DrawConsole();
+        g_drawnUnderPanel = true;
+    }
+    g_panelDraw();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -514,10 +1388,34 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
         rfa::Log("Not the publicbeta build (it has no developer console); nothing to do");
         return;
     }
+    ReadSettings();
+    MakeBuildStamp();
+    rfa::Log("Build stamp: %s", g_buildStamp.c_str());
+    g_consolePrint =reinterpret_cast<ConsolePrintFn>(
+        rfa::HookFunction(kConsolePrint, kConsolePrintPrologue, reinterpret_cast<void*>(&ConsolePrint)));
+    g_consoleEcho = reinterpret_cast<ConsoleEchoFn>(
+        rfa::HookFunction(kConsoleEcho, kConsoleEchoPrologue, reinterpret_cast<void*>(&ConsoleEcho)));
+    g_drawsConsole = g_consolePrint && g_consoleEcho && rfa::ReplaceFunction(kConsoleDraw, reinterpret_cast<void*>(&ConsoleDraw));
+    if (g_drawsConsole) {
+        rfa::Log("The mod draws the console: %d%% of the screen, text x%.2f, typed line x%.2f, %u lines kept%s",
+                 static_cast<int>(g_settings.height * 100 + 0.5f), g_settings.textScale, g_settings.inputScale,
+                 static_cast<unsigned>(g_settings.historyLines), g_settings.logToFile ? ", also in logs\\console.log" : "");
+        g_panelDraw = reinterpret_cast<PanelDrawFn>(
+            rfa::HookFunction(kPanelDraw, kPanelDrawPrologue, reinterpret_cast<void*>(&PanelDraw)));
+        if (!g_panelDraw) rfa::Log("Could not hook the render debug panel's drawing; the console stays on top of it");
+    } else {
+        rfa::Log("Could not hook the console's output or drawing; the game draws it as before");
+    }
+
+    g_consoleKeys = reinterpret_cast<VoidFn>(
+        rfa::HookFunction(kConsoleKeys, kConsoleKeysPrologue, reinterpret_cast<void*>(&ConsoleKeys)));
+    g_nextKey = reinterpret_cast<NextKeyFn>(
+        rfa::HookFunction(kNextKey, kNextKeyPrologue, reinterpret_cast<void*>(&NextKey)));
     g_mouseMessage = reinterpret_cast<MouseMessageFn>(
         rfa::HookFunction(kMouseMessage, kMouseMessagePrologue, reinterpret_cast<void*>(&MouseMessage)));
-    rfa::Log(g_mouseMessage ? "Mouse wheel scrolls the console (open it with the ` key)"
-                            : "Could not hook the game's mouse handler; console scrolling is off");
+    rfa::Log(g_consoleKeys && g_nextKey && g_mouseMessage
+                 ? "The mouse wheel, Page Up / Page Down, Ctrl+Home and End scroll the console (open it with the ` key)"
+                 : "Could not hook the game's keys or mouse handler; console scrolling may be off");
 
     g_runScriptFile = reinterpret_cast<RunScriptFileFn>(
         rfa::HookFunction(kRunScriptFile, kRunScriptFilePrologue, reinterpret_cast<void*>(&RunScriptFile)));
