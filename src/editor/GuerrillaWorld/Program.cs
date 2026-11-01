@@ -1,4 +1,4 @@
-// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>]
+// GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props <chunk files>]
 //
 // Builds the world "rfg", Red Faction: Guerrilla's open world, from your own copy of Guerrilla (which
 // is only read): see RfaFormats.Guerrilla.GuerrillaWorld. What it makes stays on your machine. It
@@ -11,8 +11,9 @@
 //     ...\Red Faction Guerrilla; Re-MARS-tered's newer files aren't read yet).
 // It writes the world into overrides\build\pc\cache\ in the mod folder and the clouds into
 // mods\guerrilla_world\. --zones picks which of Guerrilla's zones to build: all of them (the
-// default), or a block of columns and rows, such as 11-12,10-11. In the game: level rfg_12_11 in the
-// developer console.
+// default), or a block of columns and rows, such as 11-12,10-11. --props places Guerrilla's props (its
+// general movers) made from the chunk files named, such as con_cardboard_a,con_crate02_a; none by
+// default while they are being tried. In the game: level rfg_12_11 in the developer console.
 using RfaFormats;
 using RfaFormats.Guerrilla;
 
@@ -22,10 +23,12 @@ string modFolder = parent != null && File.Exists(Path.Combine(parent, "rfa_mods.
 string ini = Path.Combine(modFolder, "rfa_mods.ini");
 
 string? guerrillaArgument = null, zonesArgument = null;
+var props = new List<string>();
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--zones" && i + 1 < args.Length) zonesArgument = args[++i];
-    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>]");
+    else if (args[i] == "--props" && i + 1 < args.Length) props.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    else if (args[i].StartsWith("--")) return Fail($"Unknown option {args[i]}. Use: GuerrillaWorld.exe [<Guerrilla folder>] [--zones all | <columns>,<rows>] [--props <chunk files>]");
     else guerrillaArgument = args[i];
 }
 
@@ -59,7 +62,7 @@ try
     }
     Console.WriteLine($"Building {zones.Count} of Guerrilla's zones (this takes a while for many)...");
     GuerrillaWorld.Build(guerrilla, game, Path.Combine(modFolder, "overrides"), Path.Combine(modFolder, "mods", "guerrilla_world"), zones,
-                         GuerrillaWorld.DefaultStart, Console.WriteLine);
+                         GuerrillaWorld.DefaultStart, Console.WriteLine, props);
 }
 catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
 {

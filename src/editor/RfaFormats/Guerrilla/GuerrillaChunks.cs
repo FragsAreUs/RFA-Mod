@@ -11,7 +11,7 @@ namespace RfaFormats.Guerrilla;
 ///                               0x1B4, Armageddon's at 0x1BC); the sections' offsets and sizes are
 ///                               set to where they land
 ///   mesh block (at 0x200)       version 6 → 9 (<see cref="MeshBlockConversion"/>)
-///   texture names (16)          their size, then the names, with any built-in textures added
+///   texture names (16)          their size, then the names the materials use (renamed if asked)
 ///   materials (16)              a run-time word, the count, a run-time word each; from a multiple of
 ///                               16 a 0 each; from a multiple of 16 the material blocks, each rebuilt
 ///                               for one of Armageddon's shaders (<see cref="GuerrillaMaterials"/>)
@@ -39,12 +39,16 @@ public static class GuerrillaChunks
     const int ScriptPointSize = 116, GuerrillaIdSize = 520, IdSize = 808, IdHeader = 40, SnapPointSize = 48;
     const ushort LinkFlags = 0x10;
 
-    /// <summary>The Armageddon c-file for a Guerrilla one, and the textures its materials name (without ".tga"), built-ins among them.</summary>
-    public static (byte[] CFile, IReadOnlyList<string> Textures) Convert(byte[] file)
+    /// <summary>
+    /// The Armageddon c-file for a Guerrilla one, and the textures its materials name (as Guerrilla
+    /// names them, without ".tga"; built-ins among them). With <paramref name="rename"/>, the file
+    /// names each texture by what it gives for Guerrilla's name instead.
+    /// </summary>
+    public static (byte[] CFile, IReadOnlyList<string> Textures) Convert(byte[] file, Func<string, string>? rename = null)
     {
         try
         {
-            return ConvertFile(file);
+            return ConvertFile(file, rename ?? (name => name));
         }
         catch (ArgumentOutOfRangeException)
         {
@@ -52,7 +56,7 @@ public static class GuerrillaChunks
         }
     }
 
-    static (byte[], IReadOnlyList<string>) ConvertFile(byte[] g)
+    static (byte[], IReadOnlyList<string>) ConvertFile(byte[] g, Func<string, string> rename)
     {
         int I(int at) => BitConverter.ToInt32(g, at);
         if (g.Length < 0x200 || BitConverter.ToUInt32(g, 0) != Signature || I(4) != GuerrillaVersion)
@@ -81,7 +85,18 @@ public static class GuerrillaChunks
             at += I(at);
         }
         int materialsEnd = at;
-        byte[] list = nameList.ToArray();
+        // The name list written again: the names the materials use, renamed.
+        var textures = new List<string>();
+        var finalNames = new TextureNameList([]);
+        foreach (byte[] m in materials)
+            for (int t = 0; t < BitConverter.ToUInt16(m, 0x10); t++)
+            {
+                string name = nameList.At(BitConverter.ToInt32(m, 0x24 + t * 12));
+                name = name.EndsWith(".tga", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+                if (!textures.Contains(name, StringComparer.OrdinalIgnoreCase)) textures.Add(name);
+                BitConverter.TryWriteBytes(m.AsSpan(0x24 + t * 12), finalNames.Add(rename(name) + ".tga"));
+            }
+        byte[] list = finalNames.ToArray();
         o.Align(16);
         o.Add(BitConverter.GetBytes(list.Length));
         o.Add(list);
@@ -91,14 +106,6 @@ public static class GuerrillaChunks
         o.Add(g.AsSpan(zeros, materialCount * 4));
         o.Align(16);
         foreach (byte[] m in materials) o.Add(m);
-        var textures = new List<string>();
-        foreach (byte[] m in materials)
-            for (int t = 0; t < BitConverter.ToUInt16(m, 0x10); t++)
-            {
-                string name = nameList.At(BitConverter.ToInt32(m, 0x24 + t * 12));
-                name = name.EndsWith(".tga", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
-                if (!textures.Contains(name, StringComparer.OrdinalIgnoreCase)) textures.Add(name);
-            }
 
         // The general objects, from the next multiple of 64, and their names, which end where header 0x14 says.
         int generalCount = I(0x158), beforeDestruction = 0x200 + I(0x14);
