@@ -226,7 +226,31 @@ public sealed class Packfile
     /// directory (name offset, 0, data offset, size, 0xFFFFFFFF for no compression, 0), the
     /// NUL-separated names, then the data, each block and each file starting on a 2 KB boundary.
     /// </summary>
-    public static byte[] Create(Packfile templateHeader, IReadOnlyList<(string Name, byte[] Data)> files)
+    public static byte[] Create(Packfile templateHeader, IReadOnlyList<(string Name, byte[] Data)> files) => Create(templateHeader.header, files);
+
+    /// <summary>
+    /// A new uncompressed packfile (version 6) holding these files, as
+    /// <see cref="Create(Packfile, IReadOnlyList{ValueTuple{string, byte[]}})"/> but with its header
+    /// made from nothing (see <see cref="NewHeader"/>).
+    /// </summary>
+    public static byte[] Create(IReadOnlyList<(string Name, byte[] Data)> files) => Create(NewHeader(PackfileFlags.None), files);
+
+    /// <summary>
+    /// A 2 KB packfile header as the game's own are: magic, version 6, the flags at 0x14C, and the
+    /// rest zero but for the counts and sizes from 0x154 (filled in by the writers). (The game's also
+    /// hold two words at 0x16C and 0x170, the same in every archive built in one go and different in
+    /// another: memory addresses left by the tool that built them, which the game sets itself.)
+    /// </summary>
+    static byte[] NewHeader(PackfileFlags flags)
+    {
+        var header = new byte[HeaderSize];
+        BitConverter.TryWriteBytes(header.AsSpan(0), Magic);
+        BitConverter.TryWriteBytes(header.AsSpan(4), Version);
+        BitConverter.TryWriteBytes(header.AsSpan(0x14C), (uint)flags);
+        return header;
+    }
+
+    static byte[] Create(byte[] header, IReadOnlyList<(string Name, byte[] Data)> files)
     {
         var names = new MemoryStream();
         var directory = new MemoryStream();
@@ -246,7 +270,7 @@ public sealed class Packfile
         }
         long namesStart = HeaderSize + Align(directory.Length, 0x800), dataStart = namesStart + Align(names.Length, 0x800);
         var packfile = new byte[dataStart + data.Length];
-        templateHeader.header.CopyTo(packfile, 0);
+        header.CopyTo(packfile, 0);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x14C), (uint)PackfileFlags.None);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x154), (uint)files.Count);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x158), (uint)packfile.Length);
@@ -271,6 +295,19 @@ public sealed class Packfile
     {
         if (template.FormatVersion != Version || (template.IsCompressed && !template.IsCondensed))
             throw new NotSupportedException($"{template.Name} isn't packed as a container");
+        return CreateContainer(template.header, template.IsCompressed, files);
+    }
+
+    /// <summary>
+    /// A new .str2_pc container holding these files, packed as the game's own containers are
+    /// (compressed and condensed, flags 0x4803: one zlib stream for all the files), with its header
+    /// made from nothing (see <see cref="NewHeader"/>).
+    /// </summary>
+    public static byte[] CreateContainer(IReadOnlyList<(string Name, byte[] Data)> files) =>
+        CreateContainer(NewHeader(PackfileFlags.Compressed | PackfileFlags.Condensed | (PackfileFlags)0x4800), true, files);
+
+    static byte[] CreateContainer(byte[] header, bool compressed, IReadOnlyList<(string Name, byte[] Data)> files)
+    {
         var names = new MemoryStream();
         var directory = new MemoryStream();
         var plain = new MemoryStream();
@@ -290,7 +327,7 @@ public sealed class Packfile
         }
         byte[] data = plain.ToArray(), block = data;
         byte[] dir = directory.ToArray();
-        if (template.IsCompressed)
+        if (compressed)
         {
             var output = new MemoryStream();
             var zlib = new ZLibStream(output, CompressionLevel.SmallestSize, leaveOpen: true);
@@ -307,13 +344,13 @@ public sealed class Packfile
         }
         long namesStart = HeaderSize + Align(dir.Length, 0x800), dataStart = namesStart + Align(names.Length, 0x800);
         var packfile = new byte[dataStart + block.Length];
-        template.header.CopyTo(packfile, 0);
+        header.CopyTo(packfile, 0);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x154), (uint)files.Count);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x158), (uint)packfile.Length);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x15C), (uint)dir.Length);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x160), (uint)names.Length);
         BitConverter.TryWriteBytes(packfile.AsSpan(0x164), (uint)data.Length);
-        BitConverter.TryWriteBytes(packfile.AsSpan(0x168), template.IsCompressed ? (uint)block.Length : 0xFFFFFFFFu);
+        BitConverter.TryWriteBytes(packfile.AsSpan(0x168), compressed ? (uint)block.Length : 0xFFFFFFFFu);
         dir.CopyTo(packfile, HeaderSize);
         names.ToArray().CopyTo(packfile, namesStart);
         block.CopyTo(packfile, dataStart);

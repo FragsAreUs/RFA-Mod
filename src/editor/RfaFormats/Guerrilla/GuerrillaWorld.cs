@@ -1,0 +1,564 @@
+using System.Numerics;
+using RfaFormats.Meshes;
+using RfaFormats.Textures;
+using RfaFormats.Zones;
+
+namespace RfaFormats.Guerrilla;
+
+/// <summary>
+/// Builds the world "rfg" from your own copy of Red Faction: Guerrilla: its open world's zones, whole,
+/// each the zone of the same name and place (terr01_12_11 becomes rfg_12_11), in Guerrilla's own
+/// coordinates and heights. The game gives the world Guerrilla's 511 m zones (the guerrilla_world mod
+/// says so, ZoneSize=511; the game itself does for worlds named mpl_*), so its 16 × 16 grid is
+/// Guerrilla's 8 km map.
+///
+/// For each zone: its ground sampled every 1 m from Guerrilla's sub-zones (GroundLayout.Whole), holes
+/// (where Guerrilla cuts its roads) filled smoothly, deep shafts capped and sheer drops limited over
+/// all zones together (so shared edges stay equal); its nine sub-zones and the height field written
+/// from that; its far-away meshes; its ground material from Guerrilla's (its four layers' textures at
+/// Guerrilla's own scale and tints, its blend and colour maps, the cliff material from its layers 0
+/// and 3); Guerrilla's rocks where its zone places them (see <see cref="GuerrillaRocks"/>); a buried
+/// floor piece and its collision tree (every zone with ground needs a stitch list; the rocks have no
+/// collision yet); an environment box over the whole zone; ruin01's navigation data moved and scaled
+/// to it. And the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the
+/// mod (<see cref="GuerrillaSky"/>).
+///
+/// What still comes from Armageddon's files, written over: the terrain file (ruin01's: its Havok
+/// height field, material slots and unknown sections), the zone files' few objects (ruin01's marker,
+/// environment box and player start), the floor piece (dlib_floor_flat, from world_l0's 1h_c0810),
+/// the rocks' template (ter_sur_blder) and the navigation data (ruin01's). Sub-zones, textures,
+/// containers, archives, stitch lists and asset lists are written from nothing.
+///
+/// Out: rfg_l0.vpp_pc (the sub-zones' containers and the asset list), rfg_l1.vpp_pc (the zones'),
+/// zonescript_rfg.vpp_pc, rfg.gtodx and rfg_Default.dtodx, all new files for the loader's overrides
+/// (build\pc\cache\), and the mod's cloud files. Guerrilla's files are only read, and what is made
+/// from them stays on your machine.
+/// </summary>
+public static class GuerrillaWorld
+{
+    public const string World = "rfg";
+    public const float ZoneWidth = 511f;
+
+    /// <summary>The start zone: in a part of the grid no precache group names (so its area is the world's).</summary>
+    public static readonly (int Col, int Row) DefaultStart = (12, 11);
+
+    const float MaxPit = 60;    // no ground more than this below where its hollow spills
+    const float MaxStep = 3f;   // nor more than this below a neighbouring sample, 1 m away (71.6°)
+    const float BoxBottom = -500, BoxTop = 1500;   // the environment boxes' heights
+    const float FloorDepth = -150;                 // the buried floor piece's height
+    const string FloorPiece = "dlib_floor_flat";
+    static readonly GroundLayout Layout = GroundLayout.Whole;
+
+    static Vector2 Corner(int col, int row) => new((col - 8) * ZoneWidth, (7 - row) * ZoneWidth);
+
+    sealed record Look(string[] Textures, Vector4[] Constants, RgbaImage Blend, RgbaImage Colour);
+
+    /// <summary>Guerrilla's zones with ground (terr01_CC_RR.cterrain_pc in its terr01_l0 and _l1 archives): column and row.</summary>
+    public static List<(int Col, int Row)> ZonesIn(string guerrillaCache)
+    {
+        var zones = new SortedSet<(int, int)>();
+        foreach (string archive in new[] { "terr01_l0.vpp_pc", "terr01_l1.vpp_pc" })
+        {
+            var pack = Packfile.Open(Path.Combine(guerrillaCache, archive));
+            foreach (var entry in pack.Entries.Where(e => e.Name.StartsWith("1h_c") && e.Name.EndsWith(".str2_pc")))
+                foreach (var file in Packfile.FromBytes(entry.Name, pack.Read(entry)).Entries)
+                {
+                    var name = Path.GetFileNameWithoutExtension(file.Name).Split('_');
+                    if (file.Name.EndsWith(".cterrain_pc") && name.Length == 3 && name[0] == "terr01" && int.TryParse(name[1], out int col) && int.TryParse(name[2], out int row))
+                        zones.Add((col, row));
+                }
+        }
+        return [.. zones];
+    }
+
+    /// <summary>
+    /// Builds the world from Guerrilla's <paramref name="zones"/> into <paramref name="overrides"/>
+    /// (the loader's overrides folder: the world's files go in build\pc\cache\) and the clouds into
+    /// <paramref name="modFolder"/> (mods\guerrilla_world\).
+    /// </summary>
+    public static void Build(string guerrilla, string game, string overrides, string modFolder, IReadOnlyList<(int Col, int Row)> zones,
+                             (int Col, int Row) start, Action<string> log)
+    {
+        if (zones.Count == 0) throw new ArgumentException("no zones to build");
+        if (!zones.Contains(start)) start = zones[0];
+        string cache = Path.Combine(game, "build", "pc", "cache"), rfgCache = Path.Combine(guerrilla, "build", "pc", "cache");
+        var worldL0 = Packfile.Open(Path.Combine(cache, "world_l0.vpp_pc"));
+        var precache = Packfile.Open(Path.Combine(cache, "dlc01_precache.vpp_pc"));
+        var ruin = Packfile.Open(Path.Combine(cache, "ruin01.vpp_pc"));
+        var floorContainer = Packfile.FromBytes("1h_c0810.str2_pc", worldL0.Read(worldL0.Find("1h_c0810.str2_pc") ?? throw new InvalidDataException("no 1h_c0810 in world_l0.vpp_pc")));
+        var worldAsm = AsmFile.Read(worldL0.Read(worldL0.Find("world_l0.asm_pc")!));
+        byte[] Pre(string name) => precache.Read(precache.Find(name) ?? throw new InvalidDataException($"no {name} in dlc01_precache.vpp_pc"));
+        byte[] Ruin(string name) => ruin.Read(ruin.Find(name) ?? throw new InvalidDataException($"no {name} in ruin01.vpp_pc"));
+        byte[] Floor(string name) => floorContainer.Read(floorContainer.Find(name) ?? throw new InvalidDataException($"no {name} in world_l0.vpp_pc's 1h_c0810"));
+
+        // ---- Guerrilla's files: in a zone's own containers (both layers), else its precache.
+        var rfgL0 = Packfile.Open(Path.Combine(rfgCache, "terr01_l0.vpp_pc"));
+        var rfgL1 = Packfile.Open(Path.Combine(rfgCache, "terr01_l1.vpp_pc"));
+        var rfgPrecache = Packfile.Open(Path.Combine(rfgCache, "terr01_precache.vpp_pc"));
+        var containers = new Dictionary<string, Packfile?>();
+        Packfile? Container(Packfile archive, string name)
+        {
+            string key = archive.Name + "/" + name;
+            if (!containers.TryGetValue(key, out var c))
+                containers[key] = c = archive.Find(name + ".str2_pc") is { } e ? Packfile.FromBytes(name, archive.Read(e)) : null;
+            return c;
+        }
+        byte[]? RfgFile(int col, int row, string file, int minSize = 2)
+        {
+            var names = new List<string> { $"1h_c{col:00}{15 - row:00}" };
+            for (int sz = 0; sz < 3; sz++)
+                for (int sx = 0; sx < 3; sx++) names.Add($"0h_c{col * 3 + sx:00}{(15 - row) * 3 + sz:00}");
+            foreach (var archive in new[] { rfgL0, rfgL1 })
+                foreach (string n in names)
+                    if (Container(archive, n) is { } c && c.Find(file) is { } e && e.Size >= minSize) return c.Read(e);
+            return rfgPrecache.Find(file) is { } p && p.Size >= minSize ? rfgPrecache.Read(p) : null;
+        }
+
+        // ---- The ground, sampled whole from Guerrilla's sub-zones of each zone and those around it.
+        int S = Layout.Samples, last = S - 1;
+        var heights = new Dictionary<(int, int), float[]>();
+        var subzoneCache = new Dictionary<(int, int, int), TerrainSubzone?>();
+        TerrainSubzone? Subzone(int col, int row, int n)
+        {
+            if (subzoneCache.TryGetValue((col, row, n), out var cached)) return cached;
+            string stem = $"terr01_{col:00}_{row:00}_{n}";
+            var read = RfgFile(col, row, stem + ".ctmesh_pc") is { } h && RfgFile(col, row, stem + ".gtmesh_pc", 1) is { } g ? TerrainSubzone.Read(h, g) : null;
+            return subzoneCache[(col, row, n)] = read;
+        }
+        foreach (var (col, row) in zones)
+        {
+            var subzones = new List<TerrainSubzone>();
+            for (int dc = -1; dc <= 1; dc++)
+                for (int dr = -1; dr <= 1; dr++)
+                    for (int n = 0; n < 9; n++)
+                        if (Subzone(col + dc, row + dr, n) is { } s) subzones.Add(s);
+            var corner = Corner(col, row);
+            var over = subzones.Where(s => s.Positions.Length > 0 && s.Positions.Max(p => p.X) >= corner.X - 1 && s.Positions.Min(p => p.X) <= corner.X + ZoneWidth + 1 &&
+                                           s.Positions.Max(p => p.Z) >= corner.Y - 1 && s.Positions.Min(p => p.Z) <= corner.Y + ZoneWidth + 1);
+            heights[(col, row)] = GuerrillaGround.Sample(over, corner, Layout) ?? throw new InvalidDataException($"no Guerrilla ground for terr01_{col:00}_{row:00}");
+        }
+        log($"Ground: {zones.Count} zones sampled, {S} × {S} samples each");
+        // Neighbours sample their shared edge at the same points, but where Guerrilla's ground has holes
+        // each fills them from its own side: a zone's first column (lowest x) is made its west
+        // neighbour's last, its first row (lowest z) its south neighbour's (row + 1) last.
+        foreach (var (col, row) in zones)
+            for (int k = 0; k < S; k++)
+            {
+                if (heights.TryGetValue((col - 1, row), out var west)) heights[(col, row)][k * S] = west[k * S + last];
+                if (heights.TryGetValue((col, row + 1), out var south)) heights[(col, row)][k] = south[last * S + k];
+            }
+        LimitGround(zones, heights, log);
+
+        // ---- Each zone's look: its Guerrilla zone's material (four layers), blend and colour maps.
+        var looks = new Dictionary<(int, int), Look>();
+        foreach (var (col, row) in zones)
+        {
+            string zoneName = $"terr01_{col:00}_{row:00}";
+            byte[] terrain = RfgFile(col, row, zoneName + ".cterrain_pc") ?? throw new InvalidDataException($"no {zoneName}.cterrain_pc");
+            var (textures, constants) = MaterialBlocks.GuerrillaGround(terrain);
+            RgbaImage Map(string stem, int minSize)
+            {
+                var peg = PegFile.Read(RfgFile(col, row, stem + ".cvbm_pc") ?? throw new InvalidDataException($"no {stem}.cvbm_pc"),
+                                       RfgFile(col, row, stem + ".gvbm_pc", minSize) ?? throw new InvalidDataException($"no {stem}.gvbm_pc"));
+                return peg.Decode(peg.Textures[0]);
+            }
+            looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000));
+        }
+        static string Alias(string texture) => "rfg_" + NameHashes.PropertyHash(texture).ToString("x8");
+        // A Guerrilla texture's header made again under its new name: its size, format, levels and flags as Guerrilla's.
+        static byte[] Repacked(byte[] header, byte[] data, string name)
+        {
+            var t = PegFile.Read(header, data).Textures[0];
+            return PegFile.SingleHeader(name + ".tga", t.Width, t.Height, t.Format, t.MipLevels, t.Flags);
+        }
+        var layerFiles = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var ((col, row), look) in looks)
+            foreach (string texture in look.Textures.Take(8).Distinct(StringComparer.OrdinalIgnoreCase).Where(t => !layerFiles.ContainsKey(t)))
+            {
+                if (GuerrillaBuiltIns.Files(texture, Alias(texture)) is { } builtIn)
+                {
+                    layerFiles[texture] = builtIn;
+                    continue;
+                }
+                byte[] header = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc");
+                byte[] data = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? throw new InvalidDataException($"no {texture}.gvbm_pc");
+                layerFiles[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(header, data, Alias(texture))), (Alias(texture) + ".gvbm_pc", data)];
+            }
+
+        // ---- Guerrilla's rocks where its zones place them, in the list of the sub-zone each stands in.
+        var rockPieces = new Dictionary<string, GuerrillaRocks.Piece>(StringComparer.OrdinalIgnoreCase);
+        var rockTextures = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
+        var rocksIn = zones.ToDictionary(z => z, _ => new List<StitchPieceToWrite>());
+        var whiteFiles = GuerrillaRocks.WhiteTextureFiles();
+        byte[] rockHeader = Pre(GuerrillaRocks.TemplatePiece + ".cstch_pc"), rockData = Pre(GuerrillaRocks.TemplatePiece + ".gstch_pc");
+        float third = ZoneWidth / 3;
+        foreach (var (col, row) in zones)
+        {
+            byte[] terrain = RfgFile(col, row, $"terr01_{col:00}_{row:00}.cterrain_pc")!;
+            var corner = Corner(col, row);
+            foreach (var p in GuerrillaRocks.Placements(terrain))
+            {
+                if (!rockPieces.ContainsKey(p.Name))
+                {
+                    byte[] h = RfgFile(col, row, p.Name + ".cstch_pc") ?? throw new InvalidDataException($"no {p.Name}.cstch_pc");
+                    byte[] g = RfgFile(col, row, p.Name + ".gstch_pc", 16) ?? throw new InvalidDataException($"no {p.Name}.gstch_pc");
+                    var piece = GuerrillaRocks.Convert(rockHeader, rockData, h, g, Alias);
+                    rockPieces[p.Name] = piece;
+                    foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(t => !rockTextures.ContainsKey(t)))
+                    {
+                        byte[] th = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc");
+                        byte[] tg = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? throw new InvalidDataException($"no {texture}.gvbm_pc");
+                        rockTextures[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(th, tg, Alias(texture))), (Alias(texture) + ".gvbm_pc", tg)];
+                    }
+                }
+                float x = p.Position.X - corner.X, z = p.Position.Z - corner.Y;
+                int list = Math.Clamp((int)(x / third), 0, 2) + 3 * Math.Clamp((int)(z / third), 0, 2);
+                rocksIn[(col, row)].Add(new StitchPieceToWrite(p.Name, list, p.Position, p.Rotation, 0, p.AreaMin, p.AreaMax));
+            }
+        }
+        log($"Rocks: {rocksIn.Values.Sum(r => r.Count)} placed, {rockPieces.Count} pieces, {rockTextures.Count} textures");
+
+        // ---- What every zone carries: the foliage meshes the terrain template names (it grows none:
+        // see below), and the buried floor piece with its textures.
+        var shared = new List<(string Name, byte[] Data)>();
+        foreach (string texture in new[] { "f_cm_rubble_di", "f_cm_rubble_sp", "f_cm_trash_di", "f_cm_trash_sp" })
+            foreach (string ext in new[] { ".cvbm_pc", ".gvbm_pc" }) shared.Add((texture + ext, Pre(texture + ext)));
+        foreach (string mesh in new[] { "f_cm_rubble_a", "f_cm_rubble_b", "f_cm_trash_a", "f_cm_trash_b", "f_cm_trash_c", "f_cm_trash_d", "f_cm_trash_e", "f_cm_trash_f" })
+            shared.Add((mesh + ".cfmesh_pc", Pre(mesh + ".cfmesh_pc")));
+        foreach (string name in new[] { "ter_dlib_di", "ter_dlib_nm", "ter_dlib_sp" })
+            foreach (string ext in new[] { ".cvbm_pc", ".gvbm_pc" }) shared.Add((name + ext, Floor(name + ext)));
+        byte[] floorHeader = Floor(FloorPiece + ".cstch_pc"), floorData = Floor(FloorPiece + ".gstch_pc");
+        shared.Add((FloorPiece + ".cstch_pc", floorHeader));
+        shared.Add((FloorPiece + ".gstch_pc", floorData));
+        var floorModel = ModelFile.Read(FloorPiece + ".cstch_pc", floorHeader, floorData);
+        Vector2 floorMin = new(floorModel.Positions.Min(p => p.X), floorModel.Positions.Min(p => p.Z));
+        Vector2 floorMax = new(floorModel.Positions.Max(p => p.X), floorModel.Positions.Max(p => p.Z));
+
+        byte[] terrainTemplate = Pre("ruin01.cterrain_pc"), terrainDataTemplate = Pre("ruin01.gterrain_pc"), navTemplate = Pre("ruin01.navdata_pc");
+        byte[] zoneTemplate = Ruin("ruin01.rfgzone_pc"), persistentTemplate = Ruin("p_ruin01.rfgzone_pc");
+        Vector3 templateMiddle = new(127.5f, 0, -127.5f);  // ruin01's zone marker
+        const uint templateBox = 0x88030008;                // its environment box over the arena
+
+        var asm = new AsmFile();
+        var asm1 = new AsmFile();
+        var layer = new List<(string Name, byte[] Data)> { ("world_precache.precache", worldL0.Read(worldL0.Find("world_precache.precache")!)) };
+        var layer1 = new List<(string Name, byte[] Data)>();
+        var zonescript = new List<(string Name, byte[] Data)>();
+        uint Class(string name) => NameHashes.ClassHash(name);
+        foreach (var (col, row) in zones)
+        {
+            string zone = $"{World}_{col:00}_{row:00}";
+            bool isStart = (col, row) == start;
+            var look = looks[(col, row)];
+            var h = heights[(col, row)];
+            var corner = Corner(col, row);
+            var zoneMiddle = new Vector3(corner.X + ZoneWidth / 2, 0, corner.Y + ZoneWidth / 2);
+            uint prefix = (uint)(col * 16 + row) << 24;
+
+            // The ground. The blend map's alpha is its cliff weight too (red: the cliff shader mixes its
+            // two textures by alpha, which the ground's shader doesn't read).
+            var blend = new RgbaImage(look.Blend.Width, look.Blend.Height);
+            Array.Copy(look.Blend.Pixels, blend.Pixels, blend.Pixels.Length);
+            for (int p = 0; p < blend.Pixels.Length; p += 4) blend.Pixels[p + 3] = blend.Pixels[p];
+            var cliff = new byte[S * S];
+            for (int z = 0; z < S; z++)
+                for (int x = 0; x < S; x++)
+                    cliff[z * S + x] = blend.Pixels[(Math.Min(z, blend.Height - 1) * blend.Width + Math.Min(x, blend.Width - 1)) * 4];
+            var subzones = GuerrillaGround.Subzones(h, corner, null, cliff, Layout);
+            // (Without the template's foliage, Junction's rubble and trash; Guerrilla's is still to port.)
+            byte[] terrain = ZoneFoliage.WithoutPieces(GuerrillaGround.TerrainFile(terrainTemplate, h, Layout));
+            int box = HeaderBox(terrain);
+            BitConverter.TryWriteBytes(terrain.AsSpan(box), corner.X);
+            BitConverter.TryWriteBytes(terrain.AsSpan(box + 8), corner.Y);
+            BitConverter.TryWriteBytes(terrain.AsSpan(box + 12), corner.X + ZoneWidth);
+            BitConverter.TryWriteBytes(terrain.AsSpan(box + 20), corner.Y + ZoneWidth);
+            string blendName = $"rfg{col:00}{row:00}_a00", colourName = $"rfg{col:00}{row:00}cmb";
+            var renames = new (string Old, string New)[]
+            {
+                ("ter_sur_sand_dirt_di", Alias(look.Textures[0])), ("ter_sur_sand_dirt_nm", Alias(look.Textures[1])),
+                ("ter_sur_sand_wave_01_di", Alias(look.Textures[2])), ("ter_sur_sand_wave_01_nm", Alias(look.Textures[3])),
+                ("ter_sur_rubble_tile_di", Alias(look.Textures[4])), ("ter_sur_rubble_nm", Alias(look.Textures[5])),
+                ("ter_sur_road02_di", Alias(look.Textures[6])), ("ter_sur_road02_nm", Alias(look.Textures[7])),
+                ("ter_sur_rock_tile_03_di", Alias(look.Textures[6])), ("ter_sur_rock_tile_03_nm", Alias(look.Textures[7])),
+                ("ruin01_alpha00", blendName), ("ruin01comb", colourName),
+            };
+            foreach (var (oldName, newName) in renames) MaterialBlocks.ReplaceName(terrain, oldName + ".tga", newName + ".tga");
+            for (int k = 0; k < 4; k++)
+            {
+                MaterialBlocks.SetConstant(terrain, NameHashes.PropertyHash($"Terrain_layer{k}_scale_offset"), look.Constants[2 * k]);
+                MaterialBlocks.SetConstant(terrain, NameHashes.PropertyHash($"Diffuse_color_{k}"), look.Constants[2 * k + 1]);
+            }
+            if (MaterialBlocks.SetCliffMaterials(terrain, look.Constants[1], look.Constants[7], MathF.Abs(look.Constants[0].X) / 511f, MathF.Abs(look.Constants[6].X) / 511f) == 0)
+                throw new InvalidDataException("no cliff material in the terrain template");
+            var (terrainFile, terrainData) = FarGround.Build(terrain, terrainDataTemplate, corner, ZoneWidth);
+            // The blend map uncompressed with one level, data not colour; the colour map DXT1 with its
+            // levels down to 4 × 4: as the game's own ground maps are kept.
+            byte[] blendData = TextureCodec.Encode(TextureFormat.Argb8888, blend);
+            int colourLevels = (int)Math.Log2(Math.Min(look.Colour.Width, look.Colour.Height)) - 1;
+            byte[] colourData = TextureCodec.EncodeWithMips(TextureFormat.Dxt1, look.Colour, colourLevels);
+
+            // Objects: the marker and the environment box (over the whole zone, every height), and in
+            // the start zone the player start, from ruin01's zone.
+            var zoneFile = ZoneFile.Read(zoneTemplate);
+            var originals = zoneFile.Objects.ToList();
+            var kept = originals.Where(o => o.ClassHash == Class("obj_zone") || o.Handle == templateBox).ToList();
+            if (isStart)
+                foreach (string kind in new[] { "player_start", "multi_object_marker" })
+                    if (originals.FirstOrDefault(o => o.ClassHash == Class(kind)) is { } first) kept.Add(first);
+            var copies = kept.Select(o => ZoneFile.Copy(o, prefix | (o.Handle & 0xFFFFFF))).ToList();
+            zoneFile.Remove(originals);
+            for (int k = 0; k < copies.Count; k++) zoneFile.Insert(k, copies[k]);
+            Vector3 startAt = new(zoneMiddle.X, GuerrillaGround.HeightAt(h, ZoneWidth / 2, ZoneWidth / 2, Layout) + 1, zoneMiddle.Z);
+            foreach (var (o, copy) in kept.Zip(copies))
+                copy.MoveTo(copy.ClassHash == Class("player_start") ? startAt : o.Placement.Position + (zoneMiddle - templateMiddle));
+            copies.Single(o => o.ClassHash == Class("obj_zone")).Property("terrain_file_name")!.SetText(zone);
+            var environment = copies.Single(o => o.Handle == (prefix | (templateBox & 0xFFFFFF)));
+            environment.Property("cam_effect_1")!.SetText("none");
+            environment.Property("affects_coloration")!.SetValue([0]);
+            float half = ZoneWidth / 2 + 0.5f;
+            environment.Property("Bb")!.SetValue([.. new[] { -half, BoxBottom, -half, half, BoxTop, half }.SelectMany(BitConverter.GetBytes)]);
+            byte[] zoneBytes = zoneFile.ToBytes();
+            var persistent = ZoneFile.Read(persistentTemplate);
+            var persistentOriginals = persistent.Objects.ToList();
+            var persistentCopies = new List<ZoneObject>();
+            if (isStart && persistentOriginals.FirstOrDefault(o => o.ClassHash == Class("player_start")) is { } persistentStart)
+            {
+                var playerStart = ZoneFile.Copy(persistentStart, prefix | 0x000004);
+                playerStart.MoveTo(startAt);
+                persistentCopies.Add(playerStart);
+            }
+            persistent.Remove(persistentOriginals);
+            for (int k = 0; k < persistentCopies.Count; k++) persistent.Insert(k, persistentCopies[k]);
+            zonescript.Add((zone + ".rfgzone_pc", zoneBytes));
+            zonescript.Add(("p_" + zone + ".rfgzone_pc", persistent.ToBytes()));
+
+            // The stitch list: the buried floor piece (piece 0, the one the collision tree reaches:
+            // first of list 0 when there are rocks, else in the middle list) and the rocks.
+            var rocks = rocksIn[(col, row)];
+            var floorAt = new Vector3(zoneMiddle.X, FloorDepth, zoneMiddle.Z);
+            var floor = new StitchPieceToWrite(FloorPiece, rocks.Count > 0 ? 0 : 4, floorAt, StitchPieceToWrite.Unturned, 4,
+                                               new Vector2(floorAt.X, floorAt.Z) + floorMin, new Vector2(floorAt.X, floorAt.Z) + floorMax);
+            var treeFrom = new Vector3(floor.AreaMin.X - 20, FloorDepth - 40, floor.AreaMin.Y - 20);
+            float treeSize = MathF.Max(floor.AreaMax.X - floor.AreaMin.X + 40, MathF.Max(80, floor.AreaMax.Y - floor.AreaMin.Y + 40));
+            byte[] stitch = StitchList.Write([floor, .. rocks], zoneMiddle, treeFrom, treeSize, StitchList.BoxTreeCode());
+
+            // Its containers and asset list entries.
+            var files = new List<(string Name, byte[] Data)>(shared);
+            foreach (string texture in look.Textures.Take(8).Distinct(StringComparer.OrdinalIgnoreCase)) files.AddRange(layerFiles[texture]);
+            foreach (string name in rocks.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var piece = rockPieces[name];
+                files.Add((name + ".cstch_pc", piece.Header));
+                files.Add((name + ".gstch_pc", piece.Data));
+                foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>())
+                    files.AddRange(rockTextures[texture]);
+            }
+            if (rocks.Count > 0) files.AddRange(whiteFiles);
+            files = files.DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            files.AddRange(new (string Name, byte[] Data)[]
+            {
+                (blendName + ".cvbm_pc", PegFile.SingleHeader(blendName + ".tga", blend.Width, blend.Height, TextureFormat.Argb8888, 1, PegFile.DataFlag)), (blendName + ".gvbm_pc", blendData),
+                (colourName + ".cvbm_pc", PegFile.SingleHeader(colourName + ".tga", look.Colour.Width, look.Colour.Height, TextureFormat.Dxt1, colourLevels, 0)), (colourName + ".gvbm_pc", colourData),
+                (zone + ".cterrain_pc", terrainFile), (zone + ".gterrain_pc", terrainData),
+                (zone + ".navdata_pc", NavData(navTemplate, col, row)), (zone + ".stchlst_pc", stitch), (zone + ".rfgzone_pc", zoneBytes),
+            });
+            string zoneContainer = $"1h_c{col:00}{15 - row:00}";
+            byte[] zoneContainerBytes = Packfile.CreateContainer(files);
+            var own = ContainerEntry(zoneContainer, zoneContainerBytes, files);
+            asm1.Containers.Add(own);
+            var group = new AsmContainer { Name = $"1_c{col:00}{15 - row:00}", Type = 17, Flags = 0x2300 };
+            group.Primitives.AddRange(own.Primitives.Select(p => new AsmPrimitive { Name = p.Name, Type = p.Type, Allocator = p.Allocator, Flags = p.Flags, SplitIndex = p.SplitIndex, HeaderSize = p.HeaderSize, DataSize = p.DataSize }));
+            asm.Containers.Add(group);  // the groups stay in layer 0's list, as Guerrilla's
+            layer1.Add((zoneContainer + ".str2_pc", zoneContainerBytes));
+            for (int n = 0; n < 9; n++)
+            {
+                string part = $"0h_c{col * 3 + n % 3:00}{(15 - row) * 3 + n / 3:00}";
+                var partFiles = new List<(string Name, byte[] Data)> { ($"{zone}_{n}.ctmesh_pc", subzones[n].Header), ($"{zone}_{n}.gtmesh_pc", subzones[n].Data) };
+                byte[] bytes = Packfile.CreateContainer(partFiles);
+                asm.Containers.Add(ContainerEntry(part, bytes, partFiles));
+                layer.Add((part + ".str2_pc", bytes));
+            }
+            log($"{zone}{(isStart ? " (start)" : "")}: ground {h.Min():0} to {h.Max():0} m, {rocks.Count} rocks, {zoneContainerBytes.Length / 1024:N0} KB");
+        }
+        asm.Containers.Add(worldAsm.Containers.Single(c => c.Name == FloorPiece + ".rfgstitchx"));
+        foreach (var (name, piece) in rockPieces)
+        {
+            var pieceFiles = new List<(string Name, byte[] Data)> { (name + ".cstch_pc", piece.Header), (name + ".gstch_pc", piece.Data) };
+            foreach (var texture in new[] { piece.Normal, piece.Diffuse }.Select(t => rockTextures[Path.GetFileNameWithoutExtension(t)])) pieceFiles.AddRange(texture);
+            pieceFiles.AddRange(whiteFiles);
+            var group = new AsmContainer { Name = name + ".rfgstitchx", Type = 14, Flags = 0x300 };
+            group.Primitives.AddRange(pieceFiles.Where(f => f.Name.EndsWith(".cstch_pc") || f.Name.EndsWith(".cvbm_pc")).Select(f => PrimitiveOf(f.Name, pieceFiles)));
+            asm.Containers.Add(group);
+        }
+        layer.Add((World + "_l0.asm_pc", asm.ToBytes()));
+        layer1.Add((World + "_l1.asm_pc", asm1.ToBytes()));
+
+        string output = Path.Combine(overrides, "build", "pc", "cache");
+        Directory.CreateDirectory(output);
+        File.WriteAllBytes(Path.Combine(output, World + "_l0.vpp_pc"), Packfile.Create(layer));
+        File.WriteAllBytes(Path.Combine(output, World + "_l1.vpp_pc"), Packfile.Create(layer1));
+        File.WriteAllBytes(Path.Combine(output, "zonescript_" + World + ".vpp_pc"), Packfile.Create(zonescript));
+        var (orbitals, set) = GuerrillaTimeOfDay.Build(Packfile.Open(Path.Combine(cache, "misc.vpp_pc")), Packfile.Open(Path.Combine(rfgCache, "misc.vpp_pc")));
+        File.WriteAllBytes(Path.Combine(output, World + ".gtodx"), orbitals);
+        File.WriteAllBytes(Path.Combine(output, World + "_default.dtodx"), set);
+        log($"World {World}: {zones.Count} zones, start {World}_{start.Col:00}_{start.Row:00}; written into {output}");
+        GuerrillaSky.Write(cache, rfgCache, modFolder, log);
+    }
+
+    /// <summary>
+    /// Deep shafts and sheer walls, over all zones' samples together (so shared edges stay equal):
+    /// Guerrilla's ground has round openings (where it puts other pieces) whose walls go down hundreds
+    /// of metres. No point is left more than MaxPit below where its hollow would spill (a priority
+    /// flood from the edge of the zones built), then none more than MaxStep below a neighbouring
+    /// sample (the low side raised): seen from inside or below, sheer walls look like flat sheets
+    /// hanging in the sky.
+    /// </summary>
+    static void LimitGround(IReadOnlyList<(int Col, int Row)> zones, Dictionary<(int, int), float[]> heights, Action<string> log)
+    {
+        int S = Layout.Samples, last = S - 1;
+        int colMin = zones.Min(z => z.Col), colMax = zones.Max(z => z.Col), rowMin = zones.Min(z => z.Row), rowMax = zones.Max(z => z.Row);
+        int acrossX = (colMax - colMin + 1) * last + 1, acrossZ = (rowMax - rowMin + 1) * last + 1;
+        var ground = new float[acrossX * acrossZ];
+        var present = new bool[ground.Length];
+        foreach (var (col, row) in zones)
+        {
+            int i = col - colMin, j = rowMax - row;  // j along z (a higher row is further south)
+            for (int z = 0; z <= last; z++)
+                for (int x = 0; x <= last; x++)
+                {
+                    int k = (j * last + z) * acrossX + i * last + x;
+                    ground[k] = heights[(col, row)][z * S + x];
+                    present[k] = true;
+                }
+        }
+        var filled = (float[])ground.Clone();
+        var done = new bool[ground.Length];
+        var queue = new PriorityQueue<int, float>();
+        for (int k = 0; k < ground.Length; k++)
+        {
+            if (!present[k]) continue;
+            int cx = k % acrossX, cz = k / acrossX;
+            if (cx == 0 || cz == 0 || cx == acrossX - 1 || cz == acrossZ - 1 || !present[k - 1] || !present[k + 1] || !present[k - acrossX] || !present[k + acrossX])
+            {
+                done[k] = true;
+                queue.Enqueue(k, filled[k]);
+            }
+        }
+        while (queue.TryDequeue(out int cell, out float level))
+        {
+            int cx = cell % acrossX, cz = cell / acrossX;
+            foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+            {
+                int nx = cx + dx, nz = cz + dz;
+                if (nx < 0 || nz < 0 || nx >= acrossX || nz >= acrossZ) continue;
+                int next = nz * acrossX + nx;
+                if (done[next] || !present[next]) continue;
+                done[next] = true;
+                filled[next] = Math.Max(ground[next], level);
+                queue.Enqueue(next, filled[next]);
+            }
+        }
+        int plugged = 0, raised = 0;
+        for (int k = 0; k < ground.Length; k++)
+            if (present[k] && ground[k] < filled[k] - MaxPit) { ground[k] = filled[k] - MaxPit; plugged++; }
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            for (int pass = 0; pass < 2; pass++)
+                for (int n = 0; n < ground.Length; n++)
+                {
+                    int k = pass == 0 ? n : ground.Length - 1 - n;
+                    if (!present[k]) continue;
+                    int cx = k % acrossX, cz = k / acrossX;
+                    float need = ground[k];
+                    if (cx > 0 && present[k - 1]) need = Math.Max(need, ground[k - 1] - MaxStep);
+                    if (cx < acrossX - 1 && present[k + 1]) need = Math.Max(need, ground[k + 1] - MaxStep);
+                    if (cz > 0 && present[k - acrossX]) need = Math.Max(need, ground[k - acrossX] - MaxStep);
+                    if (cz < acrossZ - 1 && present[k + acrossX]) need = Math.Max(need, ground[k + acrossX] - MaxStep);
+                    if (need <= ground[k] + 0.001f) continue;
+                    ground[k] = need;
+                    raised++;
+                    changed = true;
+                }
+        }
+        foreach (var (col, row) in zones)
+        {
+            int i = col - colMin, j = rowMax - row;
+            for (int z = 0; z <= last; z++)
+                for (int x = 0; x <= last; x++)
+                    heights[(col, row)][z * S + x] = ground[(j * last + z) * acrossX + i * last + x];
+        }
+        log($"Ground: {plugged:N0} samples raised to within {MaxPit} m of their hollow's spill, {raised:N0} so no drop is over {MaxStep} m a sample");
+    }
+
+    /// <summary>The terrain file's header box (from x, y, z, to x, y, z; world positions): after its three name blocks.</summary>
+    static int HeaderBox(byte[] terrain)
+    {
+        int at = 0x28;
+        foreach (int sizeAt in new[] { 0x10, 0x1C, 0x18 }) at += (BitConverter.ToInt32(terrain, sizeAt) + 3) & ~3;
+        return at + 4;
+    }
+
+    /// <summary>
+    /// ruin01's navigation data (2,484 bytes, as ruin03's and world_07_11's: a flat 3 × 3 grid over the
+    /// square of zone 08_08, x 0 to 255 and z −255 to 0) for a whole zone (col, row): its 13 points (two
+    /// boxes, two grids of 9, two tree frames) moved to the zone's square and scaled to its width, and
+    /// the zone's place written where it names 08_08 (row × 16 + col and column × 16 + row in each
+    /// cell's record, column × 16 + row in two more). With ruin01's place left in it the game found no
+    /// zone for its islands ("Invalid island pathfind data found!").
+    /// </summary>
+    static byte[] NavData(byte[] ruin, int col, int row)
+    {
+        byte[] d = (byte[])ruin.Clone();
+        var places = new List<int>();
+        foreach (int cells in new[] { 0x154, 0x7D0 })
+            for (int k = 0; k < 8; k++) places.AddRange([cells + 0x24 * k + 2, cells + 0x24 * k + 5]);
+        places.AddRange([0x2ED, 0x935]);
+        if (d.Length != 2484 || places.Any(p => d[p] != 0x88)) throw new InvalidDataException("ruin01's navigation data isn't as expected");
+        var ruinCorner = new Vector2(0, -255);
+        var corner = Corner(col, row);
+        float scale = ZoneWidth / 255f;
+        int[] points = [0x84, 0x90, .. Enumerable.Range(0, 9).Select(k => 0xCC + 12 * k), 0x694, 0x700, 0x70C, .. Enumerable.Range(0, 9).Select(k => 0x748 + 12 * k), 0x96C];
+        foreach (int p in points)
+        {
+            BitConverter.TryWriteBytes(d.AsSpan(p), corner.X + (BitConverter.ToSingle(d, p) - ruinCorner.X) * scale);
+            BitConverter.TryWriteBytes(d.AsSpan(p + 8), corner.Y + (BitConverter.ToSingle(d, p + 8) - ruinCorner.Y) * scale);
+        }
+        foreach (int p in places) d[p] = (byte)(p is 0x2ED or 0x935 || (p - (p < 0x7D0 ? 0x154 : 0x7D0)) % 0x24 == 5 ? col * 16 + row : row * 16 + col);
+        return d;
+    }
+
+    /// <summary>An asset list entry for a container of ours: its data block's place and size, each file's size, and a primitive for each header file.</summary>
+    static AsmContainer ContainerEntry(string name, byte[] containerBytes, IReadOnlyList<(string Name, byte[] Data)> files)
+    {
+        var c = Packfile.FromBytes(name, containerBytes);
+        var entry = new AsmContainer { Name = name, Type = 17, Flags = 0x480, DataOffset = (uint)c.DataStart, CompressedSize = c.CompressedDataSize };
+        entry.Sizes.AddRange(files.Select(f => f.Data.Length));
+        static bool IsHeader(string n) { string e = Path.GetExtension(n).ToLowerInvariant(); return e is ".rfgzone_pc" or ".navdata_pc" or ".stchlst_pc" || e.StartsWith(".c"); }
+        entry.Primitives.AddRange(files.Where(f => IsHeader(f.Name)).Select(f => PrimitiveOf(f.Name, files)));
+        return entry;
+    }
+
+    /// <summary>A file's asset list primitive: its kind's type, allocator, flags and split index (as the game's), and its and its data file's sizes.</summary>
+    static AsmPrimitive PrimitiveOf(string name, IReadOnlyList<(string Name, byte[] Data)> files)
+    {
+        string ext = Path.GetExtension(name).ToLowerInvariant();
+        (byte type, byte allocator, byte flags, byte split) = ext switch
+        {
+            ".cvbm_pc" => ((byte)1, (byte)1, (byte)6, (byte)1),
+            ".cstch_pc" => ((byte)2, (byte)1, (byte)6, (byte)1),
+            ".rfgzone_pc" => ((byte)3, (byte)0, (byte)2, (byte)0),
+            ".cterrain_pc" => ((byte)4, (byte)0, (byte)6, (byte)0),
+            ".navdata_pc" => ((byte)5, (byte)0, (byte)2, (byte)0),
+            ".cfmesh_pc" => ((byte)8, (byte)1, (byte)2, (byte)0),
+            ".cefct_pc" => ((byte)13, (byte)1, (byte)6, (byte)0),
+            ".ctmesh_pc" => ((byte)21, (byte)0, (byte)6, (byte)0),
+            ".stchlst_pc" => ((byte)23, (byte)0, (byte)2, (byte)0),
+            _ => throw new InvalidDataException($"no asset list primitive type known for {name}"),
+        };
+        string dataName = ext.StartsWith(".c") && ext != ".cfmesh_pc" ? Path.ChangeExtension(name, ".g" + ext[2..]) : "";
+        var data = files.FirstOrDefault(f => f.Name.Equals(dataName, StringComparison.OrdinalIgnoreCase));
+        return new AsmPrimitive { Name = name, Type = type, Allocator = allocator, Flags = flags, SplitIndex = split,
+                                  HeaderSize = files.First(f => f.Name == name).Data.Length, DataSize = data.Data?.Length ?? 0 };
+    }
+}

@@ -102,4 +102,26 @@ public sealed class TerrainHeightField
         BitConverter.TryWriteBytes(result.AsSpan(boxAt + 20), centre);
         return result;
     }
+
+    /// <summary>
+    /// A copy of the terrain file whose height field has samples <paramref name="step"/> metres
+    /// apart (its samples kept): the int-to-float scale (step, 1, step), the float-to-int scale
+    /// (1 / step), the floor-corrected float-to-int offset (−step / 128: Armageddon's −0.0039 at
+    /// 255/511 m, Guerrilla's −1/128 at its 1 m), the extents ((samples − 1) × step) and the list
+    /// shape's box around them. Guerrilla's zones (511 m, 512 samples) have step 1.
+    /// </summary>
+    public byte[] WithStep(byte[] file, float step)
+    {
+        if (step <= 0) throw new ArgumentOutOfRangeException(nameof(step));
+        byte[] result = (byte[])file.Clone();
+        void Put(int offset, float value) => BitConverter.TryWriteBytes(result.AsSpan(offset), value);
+        float extentX = (XSamples - 1) * step, extentZ = (ZSamples - 1) * step;
+        Put(at + 0x10, step); Put(at + 0x18, step);
+        Put(at + 0x20, 1 / step); Put(at + 0x28, 1 / step);
+        Put(at + 0x30, -step / 128); Put(at + 0x38, -step / 128);
+        Put(at + 0x40, extentX); Put(at + 0x48, extentZ);
+        Put(boxAt, extentX / 2 + 0.01f); Put(boxAt + 8, extentZ / 2 + 0.01f);
+        Put(boxAt + 16, extentX / 2); Put(boxAt + 24, extentZ / 2);
+        return result;
+    }
 }

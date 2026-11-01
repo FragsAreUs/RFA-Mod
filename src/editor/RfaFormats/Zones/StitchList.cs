@@ -45,6 +45,76 @@ public sealed class StitchList
         Decals = decals;
     }
 
+    /// <summary>
+    /// A stitch list (no decals) from nothing: these pieces in their lists, and one collision tree,
+    /// as the game's loader (0x6B8C09) reads them:
+    ///   "STCH", 11, no texture names, the 0x110-byte header of counts (pieces in list n at +0x24 + 4n,
+    ///   all else 0); each list: its name block's size (exact), the names, NUL-ended, each once, to a
+    ///   multiple of 4, then 100 bytes a piece: where its name starts, position, rotation (rows right,
+    ///   up, forward), flags (4 on most of the game's pieces), −1, 0 (where its words are, set at
+    ///   load), 1 (how many words it has), its area seen from above (x, z from; x, z to), 16 zero
+    ///   bytes (run-time);
+    ///   then a word a piece (0), the tree count N = 1, then N zeros, N × −1, N zeros and N half-words
+    ///   (0), zeros to a multiple of 16 in the file (the game looks for the tree there and stops on
+    ///   "Trying to load invalid MOPP code" if it isn't), then the tree: "MOPP", 0x12D, its frame (from
+    ///   x, y, z, x and z from <paramref name="zoneMiddle"/>, y as it is; then 2^24 / its size), the
+    ///   code's size, 0, and the code padded with 0xCD to 16 bytes.
+    /// </summary>
+    /// <param name="treeCode">The Havok MOPP code; see <see cref="BoxTreeCode"/>.</param>
+    public static byte[] Write(IReadOnlyList<StitchPieceToWrite> pieces, Vector3 zoneMiddle, Vector3 treeFrom, float treeSize, byte[] treeCode)
+    {
+        var stream = new MemoryStream();
+        var w = new BinaryWriter(stream);
+        w.Write(Encoding.ASCII.GetBytes("STCH")); w.Write(Version); w.Write(0); w.Write(0);
+        var lists = Enumerable.Range(0, ListCount).Select(n => pieces.Where(p => p.List == n).ToList()).ToArray();
+        byte[] counts = new byte[HeaderSize];
+        for (int list = 0; list < ListCount; list++) BitConverter.TryWriteBytes(counts.AsSpan(0x24 + list * 4), lists[list].Count);
+        w.Write(counts);
+        foreach (var list in lists)
+        {
+            var starts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var names = new MemoryStream();
+            foreach (var piece in list.Where(p => !starts.ContainsKey(p.Name)))
+            {
+                starts[piece.Name] = (int)names.Length;
+                names.Write(Encoding.ASCII.GetBytes(piece.Name + "\0"));
+            }
+            w.Write((int)names.Length);
+            w.Write(names.ToArray());
+            w.Write(new byte[Align4((int)names.Length) - (int)names.Length]);
+            foreach (var p in list)
+            {
+                if (p.Rotation.Length != 9) throw new ArgumentException($"{p.Name}'s rotation isn't 9 numbers");
+                w.Write(starts[p.Name]);
+                w.Write(p.Position.X); w.Write(p.Position.Y); w.Write(p.Position.Z);
+                foreach (float r in p.Rotation) w.Write(r);
+                w.Write(p.Flags); w.Write(-1); w.Write(0); w.Write(1);
+                w.Write(p.AreaMin.X); w.Write(p.AreaMin.Y); w.Write(p.AreaMax.X); w.Write(p.AreaMax.Y);
+                w.Write(new byte[16]);
+            }
+        }
+        foreach (var _ in pieces) w.Write(0);
+        w.Write(1); w.Write(0); w.Write(-1); w.Write(0); w.Write((ushort)0);
+        while (stream.Length % 16 != 0) w.Write((byte)0);
+        w.Write(Encoding.ASCII.GetBytes("MOPP")); w.Write(0x12D);
+        w.Write(treeFrom.X - zoneMiddle.X); w.Write(treeFrom.Y); w.Write(treeFrom.Z - zoneMiddle.Z); w.Write(16777216f / treeSize);
+        int padded = (treeCode.Length + 15) & ~15;
+        w.Write(padded); w.Write(0); w.Write(treeCode);
+        for (int i = treeCode.Length; i < padded; i++) w.Write((byte)0xCD);
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// The MOPP code of a tree whose one leaf is piece <paramref name="piece"/>, its whole frame: the
+    /// frame bounded on its three axes (0x28 z, 0x27 y, 0x26 x, each from 0 to 255 of the frame), then
+    /// the piece (0x30 + n, for n under 32). The code the game's one-piece lists have.
+    /// </summary>
+    public static byte[] BoxTreeCode(int piece = 0)
+    {
+        if (piece is < 0 or >= 32) throw new ArgumentOutOfRangeException(nameof(piece));
+        return [0x28, 0x00, 0xFF, 0x27, 0x00, 0xFF, 0x26, 0x00, 0xFF, (byte)(0x30 + piece)];
+    }
+
     public static StitchList Read(byte[] data)
     {
         if (data.Length < 0x10 || Encoding.ASCII.GetString(data, 0, 4) != "STCH")
@@ -128,3 +198,16 @@ public sealed record StitchPiece(string Name, int List, Vector3 Position, Matrix
 /// <param name="Size">Width (along right), depth (along up) and length (along forward), in metres.</param>
 public sealed record StitchDecal(string Texture, string SpecularTexture, int List, Vector3 Position, Matrix4x4 Rotation,
                                  Vector3 Size, float Opacity, Vector3 Colour);
+
+/// <summary>A piece for <see cref="StitchList.Write"/>.</summary>
+/// <param name="Name">The piece's model, without extension.</param>
+/// <param name="List">Its list (the sub-zone it stands in: column + 3 × row of the zone's thirds, from its lowest x and z), 0 to 8.</param>
+/// <param name="Position">Where, in the world.</param>
+/// <param name="Rotation">Rows right, up and forward, 9 numbers.</param>
+/// <param name="Flags">4 on most of the game's pieces, 0 on the rest (the same piece is placed both ways; meaning not known).</param>
+/// <param name="AreaMin">The area it covers seen from above: x and z.</param>
+public sealed record StitchPieceToWrite(string Name, int List, Vector3 Position, float[] Rotation, int Flags, Vector2 AreaMin, Vector2 AreaMax)
+{
+    /// <summary>No turn.</summary>
+    public static readonly float[] Unturned = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+}

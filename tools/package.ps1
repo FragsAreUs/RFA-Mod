@@ -1,7 +1,8 @@
 # Makes a clean copy of the mod and the editor to share with others, in dist\RFA-Mod\ and as a
 # zip next to it. It holds what a new user needs and nothing of yours: the settings files are the
 # templates from config\ (no GameDir, your console settings or video settings), the overrides are
-# the mod's own from src\overrides (not the files you edited), and logs\ and link\ stay out.
+# the mod's own from src\overrides (not the files you edited), the documents are the ones the
+# README links to, and logs\ and link\ stay out.
 # Every file packed is checked for anything naming this PC (your user folder or name, this
 # project's folder, your game folder); the package is refused if one does.
 #
@@ -27,11 +28,23 @@ $parts = @(
     @{ From = 'config\rfa_mods.ini';    To = 'rfa_mods.ini' },
     @{ From = 'config\console.ini';     To = 'console.ini' },
     @{ From = 'README.md';              To = 'README.md' },
+    # The documents the README links to, by name: docs\ also holds private notes.
+    @{ From = 'docs\editor-guide.md';          To = 'docs\editor-guide.md' },
+    @{ From = 'docs\how-it-works.md';          To = 'docs\how-it-works.md' },
+    @{ From = 'docs\editor-roadmap.md';        To = 'docs\editor-roadmap.md' },
+    @{ From = 'docs\renderer-plan.md';         To = 'docs\renderer-plan.md' },
+    @{ From = 'docs\third-party-notices.txt';  To = 'docs\third-party-notices.txt' },
     # The GPL asks that its text travels with the programs.
     @{ From = 'LICENSE';                To = 'LICENSE.txt' }
 )
 foreach ($dll in Get-ChildItem -LiteralPath (Join-Path $bin 'mods') -Filter '*.dll') {
     $parts += @{ From = "bin\mods\$($dll.Name)"; To = "mods\$($dll.Name)" }
+}
+# A mod's own scripts (guerrilla_hud's, which GuerrillaHud.exe packs with Guerrilla's documents),
+# from src\mods: never bin\mods\<mod>\, which also holds files made from the player's own games.
+foreach ($script in Get-ChildItem -LiteralPath (Join-Path $root 'src\mods') -Recurse -Filter '*.lua' -File) {
+    $mod = $script.Directory.Name
+    $parts += @{ From = "src\mods\$mod\$($script.Name)"; To = "mods\$mod\$($script.Name)" }
 }
 $overrides = Join-Path $root 'src\overrides'
 foreach ($file in Get-ChildItem -LiteralPath $overrides -Recurse -File) {

@@ -68,6 +68,40 @@ public sealed class PegFile
         return new PegFile(header, data, textures);
     }
 
+    /// <summary>
+    /// A texture's flags: 0x200 on maps that hold data rather than colours (normal maps, the
+    /// ground's blend maps: ruin01_alpha00, ter_sur_blder_nm), 0 on colour maps (ruin01comb, *_di).
+    /// </summary>
+    public const ushort DataFlag = 0x200;
+
+    /// <summary>
+    /// A header file for one texture (a .cvbm_pc) from nothing, as the game's own single-image ones
+    /// are (checked byte for byte against ruin01_alpha00, ruin01comb, ter_sur_blder_nm and
+    /// ter_ice_rock_dtlonly_di): "GEKV", version 10, platform 0, its own size, the data file's size
+    /// (the texture's data up to a multiple of 16), 1 bitmap, 0, 1 texture, alignment 16; the
+    /// texture at data offset 0: its width and height, format, source width 0, animation tile 1 ×
+    /// 1, 1 frame, its flags, name offset 0, source height 0, 1 frame a second, its mip levels and
+    /// data size, 16 zero bytes the game fills in; then its name.
+    /// </summary>
+    /// <param name="name">The name the game knows it by, with ".tga" ("rfg_white.tga").</param>
+    public static byte[] SingleHeader(string name, int width, int height, TextureFormat format, int mipLevels, ushort flags)
+    {
+        int dataSize = 0;
+        for (int level = 0; level < mipLevels; level++) dataSize += format.LevelSize(Math.Max(1, width >> level), Math.Max(1, height >> level));
+        byte[] nameBytes = Encoding.Latin1.GetBytes(name + "\0");
+        var stream = new MemoryStream();
+        var w = new BinaryWriter(stream);
+        w.Write(Magic); w.Write(Version); w.Write((ushort)0);
+        w.Write(HeaderSize + EntrySize + nameBytes.Length); w.Write((dataSize + 15) & ~15);
+        w.Write((ushort)1); w.Write((ushort)0); w.Write((ushort)1); w.Write((ushort)16);
+        w.Write(0); w.Write((ushort)width); w.Write((ushort)height); w.Write((ushort)format);
+        w.Write((ushort)0); w.Write((ushort)1); w.Write((ushort)1); w.Write((ushort)1); w.Write(flags);
+        w.Write(0); w.Write((ushort)0); w.Write((byte)1); w.Write((byte)mipLevels); w.Write(dataSize);
+        w.Write(new byte[16]);
+        w.Write(nameBytes);
+        return stream.ToArray();
+    }
+
     /// <summary>The names of the textures in a header file, without needing its data file.</summary>
     public static IEnumerable<string> TextureNames(byte[] header)
     {

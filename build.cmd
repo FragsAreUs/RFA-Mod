@@ -23,6 +23,9 @@ cl %CFLAGS% /LD "%ROOT%src\mods\fov\fov.cpp" /Fe"%ROOT%bin\mods\fov.dll" /link /
 cl %CFLAGS% /LD "%ROOT%src\mods\video_settings\video_settings.cpp" /Fe"%ROOT%bin\mods\video_settings.dll" /link /IMPLIB:video_settings.lib || goto :fail
 cl %CFLAGS% /LD "%ROOT%src\mods\console\console.cpp" /Fe"%ROOT%bin\mods\console.dll" /link /IMPLIB:console.lib || goto :fail
 cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_world\guerrilla_world.cpp" /Fe"%ROOT%bin\mods\guerrilla_world.dll" /link /IMPLIB:guerrilla_world.lib || goto :fail
+cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_hud\guerrilla_hud.cpp" /Fe"%ROOT%bin\mods\guerrilla_hud.dll" /link /IMPLIB:guerrilla_hud.lib || goto :fail
+rem guerrilla_hud's scripts, which editor\GuerrillaHud.exe packs with Guerrilla's HUD documents.
+xcopy /i /y /q "%ROOT%src\mods\guerrilla_hud\*.lua" "%ROOT%bin\mods\guerrilla_hud" >nul || goto :fail
 
 popd
 rem overrides\ mirrors the game folder (one folder per archive), so copy the whole tree.
@@ -40,6 +43,10 @@ rem editor too and build it 32-bit, with 2 GB of memory: too little for big leve
 set Platform=
 where dotnet >nul 2>nul || (echo Skipping the editor: the .NET 10 SDK is not installed & goto :done)
 dotnet build "%ROOT%src\editor\RfaEditor\RfaEditor.csproj" -c Release -o "%ROOT%bin\editor" --artifacts-path "%ROOT%build\editor" -v q -nologo || goto :fail
+rem GuerrillaHud.exe, next to the editor: makes Guerrilla's HUD for guerrilla_hud from your copy of Guerrilla.
+dotnet build "%ROOT%src\editor\GuerrillaHud\GuerrillaHud.csproj" -c Release -o "%ROOT%bin\editor" --artifacts-path "%ROOT%build\editor" -v q -nologo || goto :fail
+rem GuerrillaWorld.exe, next to the editor: builds the world rfg for guerrilla_world from your copy of Guerrilla.
+dotnet build "%ROOT%src\editor\GuerrillaWorld\GuerrillaWorld.csproj" -c Release -o "%ROOT%bin\editor" --artifacts-path "%ROOT%build\editor" -v q -nologo || goto :fail
 
 :done
 echo Build OK: %ROOT%bin

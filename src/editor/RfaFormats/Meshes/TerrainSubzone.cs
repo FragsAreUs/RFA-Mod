@@ -167,10 +167,34 @@ public sealed class TerrainSubzone
     /// <param name="origin">Where the vertex grid starts (x, z).</param>
     /// <param name="patches">Each patch's triangle strip, as the game's: every other triangle turned round, repeated indices joining pieces.</param>
     public static (byte[] Header, byte[] Data) Write(byte[] templateHeader, byte[] templateData, Vector2 origin,
-                                                     IReadOnlyList<GroundVertex> vertices, IReadOnlyList<int[]> patches)
+                                                     IReadOnlyList<GroundVertex> vertices, IReadOnlyList<int[]> patches) =>
+        Write(templateHeader, templateData, origin, vertices, patches.Select(p => (IReadOnlyList<PatchBlock>)[new PatchBlock(GroundKind, p)]).ToList());
+
+    /// <summary>The kind of render block that draws ground seen from above (the template's material word).</summary>
+    public const uint GroundKind = 0;
+
+    /// <summary>
+    /// Kinds of render block that draw cliffs, their textures projected from the side (the terrain
+    /// file's cliff material, ir_terrain_sidemap_t and _single_t): the game's sub-zones sort a patch's
+    /// steep triangles into these by the blend map's cliff weight (red), 3 the least, 5 the most.
+    /// </summary>
+    public const uint CliffKindLow = 3, CliffKindMixed = 4, CliffKindHigh = 5;
+
+    /// <summary>One render block of a patch: its kind (<see cref="GroundKind"/> or a cliff kind) and its strip.</summary>
+    public sealed record PatchBlock(uint Kind, int[] Strip);
+
+    /// <summary>
+    /// As <see cref="Write(byte[], byte[], Vector2, IReadOnlyList{GroundVertex}, IReadOnlyList{int[]})"/>,
+    /// with each patch drawn by one or more render blocks (as the game's own sub-zones: ground, then
+    /// cliff kinds 3, 4 and 5 for its steep triangles). A ground block takes the template's material
+    /// word; a cliff block's word is its kind.
+    /// </summary>
+    public static (byte[] Header, byte[] Data) Write(byte[] templateHeader, byte[] templateData, Vector2 origin,
+                                                     IReadOnlyList<GroundVertex> vertices, IReadOnlyList<IReadOnlyList<PatchBlock>> patches,
+                                                     float gridStep = GridStep)
     {
         if (vertices.Count is 0 or > 65536) throw new ArgumentException($"{vertices.Count} vertices: a sub-zone holds 1 to 65,536");
-        if (patches.Count == 0 || patches.Any(p => p.Length < 3)) throw new ArgumentException("every patch needs a strip");
+        if (patches.Count == 0 || patches.Any(p => p.Count == 0 || p.Any(b => b.Strip.Length < 3))) throw new ArgumentException("every patch needs a strip");
         var template = new TerrainSubzone(templateHeader, templateData);
         if (template.FormatVersion != Version || template.PatchCount == 0) throw new ArgumentException("the template must be an Armageddon sub-zone with ground");
         int fields = (0x18 + BitConverter.ToInt32(templateHeader, 0x14) + 3) & ~3;
@@ -184,24 +208,80 @@ public sealed class TerrainSubzone
         uint material = U32(templateHeader, block + 0x60 + (int)U32(templateHeader, block + 0x14) * 48);
         int templateVertexEnd = (int)U32(templateHeader, block + 0x3C) + (int)U32(templateHeader, block + 0x1C) * 8;
         byte[] dataTail = templateData.Length >= templateVertexEnd + 4 ? templateData[templateVertexEnd..(templateVertexEnd + 4)] : new byte[4];
+        return Write(templateHeader[..firstPatch], fields, checksum, material, templateHeader[(block + 0x24)..(block + 0x3C)], afterBlock, dataTail,
+                     origin, vertices, patches, gridStep);
+    }
 
-        Vector3 Position(GroundVertex v) => new(origin.X + v.XStep * GridStep, v.Height, origin.Y + v.ZStep * GridStep);
+    /// <summary>The word at 0x0C of a sub-zone's header: the same, 0x00E798D0, in every one of the game's.</summary>
+    const uint HeaderWord = 0x00E798D0;
 
-        // Each patch: its box, its strip.
+    /// <summary>The bytes between the header's fields and the first patch: zeros in the files (filled in when the game loads it).</summary>
+    const int LoadArea = 0x40C;
+
+    /// <summary>
+    /// Writes a sub-zone (version 42) from nothing but its ground, as the game's own are laid out
+    /// (checked on ruin01's and world_08_02's): "SUBZ", 42, its number, the header word
+    /// (0x00E798D0, the same in all), no names; its fields (1, number, origin, patch count, box and
+    /// centre) and 0x40C zero bytes the game fills in; the patches and mesh block as
+    /// <see cref="Write(byte[], byte[], Vector2, IReadOnlyList{GroundVertex}, IReadOnlyList{IReadOnlyList{PatchBlock}}, float)"/>
+    /// writes them, with the mesh block's six floats 1, 1, 1, 0, 0, 0 (as in every one), the ground
+    /// blocks' material word 0 (the game's hold a leftover pointer's high half, the low half 0, as
+    /// the ground kind), and 4 zero bytes after the block; a checksum of our own tying the c-file
+    /// to the g-file (each of the game's has its own; nothing else names it), which also ends the
+    /// g-file.
+    /// </summary>
+    /// <param name="number">The sub-zone's number in its zone, 0 to 8 (row × 3 + column, rows from the lowest z).</param>
+    public static (byte[] Header, byte[] Data) Write(int number, Vector2 origin, IReadOnlyList<GroundVertex> vertices,
+                                                     IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep = GridStep)
+    {
+        const int fields = 0x18;
+        byte[] prefix = new byte[fields + 0x48 + LoadArea];
+        Encoding.ASCII.GetBytes("SUBZ").CopyTo(prefix, 0);
+        BitConverter.TryWriteBytes(prefix.AsSpan(4), Version);
+        BitConverter.TryWriteBytes(prefix.AsSpan(8), number);
+        BitConverter.TryWriteBytes(prefix.AsSpan(0x0C), HeaderWord);
+        BitConverter.TryWriteBytes(prefix.AsSpan(fields), 1);
+        BitConverter.TryWriteBytes(prefix.AsSpan(fields + 4), number);
+        // The checksum: a hash of the ground (any value ties the halves together, as long as both carry it).
+        uint checksum = 2166136261;
+        void Mix(int value) { foreach (byte b in BitConverter.GetBytes(value)) checksum = (checksum ^ b) * 16777619; }
+        Mix(number); Mix(BitConverter.SingleToInt32Bits(origin.X)); Mix(BitConverter.SingleToInt32Bits(origin.Y));
+        foreach (GroundVertex v in vertices) { Mix(v.XStep); Mix(v.ZStep); Mix(BitConverter.SingleToInt32Bits(v.Height)); }
+        foreach (var patch in patches) foreach (PatchBlock b in patch) { Mix((int)b.Kind); foreach (int i in b.Strip) Mix(i); }
+        if (checksum == 0) checksum = 1;
+        byte[] sixFloats = [.. new[] { 1f, 1f, 1f, 0f, 0f, 0f }.SelectMany(BitConverter.GetBytes)];
+        return Write(prefix, fields, checksum, GroundKind, sixFloats, new byte[4], BitConverter.GetBytes(checksum), origin, vertices, patches, gridStep);
+    }
+
+    /// <summary>The shared part: <paramref name="prefix"/> is the header up to the first patch, its fields at <paramref name="fields"/>.</summary>
+    static (byte[] Header, byte[] Data) Write(byte[] prefix, int fields, uint checksum, uint material, byte[] sixFloats, byte[] afterBlock, byte[] dataTail,
+                                              Vector2 origin, IReadOnlyList<GroundVertex> vertices, IReadOnlyList<IReadOnlyList<PatchBlock>> patches, float gridStep)
+    {
+        if (vertices.Count is 0 or > 65536) throw new ArgumentException($"{vertices.Count} vertices: a sub-zone holds 1 to 65,536");
+        if (patches.Count == 0 || patches.Any(p => p.Count == 0 || p.Any(b => b.Strip.Length < 3))) throw new ArgumentException("every patch needs a strip");
+        prefix = (byte[])prefix.Clone();
+
+        // (A grid step is the zone's width / 511: GridStep in Armageddon's 255 m zones, 1 m in a world the game gives 511 m zones.)
+        Vector3 Position(GroundVertex v) => new(origin.X + v.XStep * gridStep, v.Height, origin.Y + v.ZStep * gridStep);
+
+        // Each patch: its box, its blocks' strips.
         var indices = new List<ushort>();
         var boxes = new List<(Vector3 Min, Vector3 Max)>();
-        var blocks = new List<(int First, int Count, int Lowest, int Highest)>();
-        foreach (int[] strip in patches)
+        var blocks = new List<(uint Material, int First, int Count, int Lowest, int Highest)>();
+        foreach (var patch in patches)
         {
             Vector3 min = new(float.MaxValue), max = new(float.MinValue);
-            foreach (int v in strip)
+            foreach (PatchBlock b in patch)
             {
-                min = Vector3.Min(min, Position(vertices[v]));
-                max = Vector3.Max(max, Position(vertices[v]));
+                foreach (int v in b.Strip)
+                {
+                    min = Vector3.Min(min, Position(vertices[v]));
+                    max = Vector3.Max(max, Position(vertices[v]));
+                }
+                blocks.Add((b.Kind == GroundKind ? material : b.Kind, indices.Count, b.Strip.Length, b.Strip.Min(), b.Strip.Max()));
+                foreach (int v in b.Strip) indices.Add((ushort)v);
             }
             boxes.Add((min, max));
-            blocks.Add((indices.Count, strip.Length, strip.Min(), strip.Max()));
-            foreach (int v in strip) indices.Add((ushort)v);
         }
 
         // The g-file.
@@ -218,7 +298,11 @@ public sealed class TerrainSubzone
             g.Write((byte)v.XStep);
             g.Write((byte)((v.ZStep - 128) & 0xFF));
             Vector3 n = Vector3.Normalize(v.Normal);
-            g.Write(NormalByte(n.X)); g.Write(NormalByte(n.Y)); g.Write(NormalByte(n.Z)); g.Write((byte)0x80);  // the 4th: 0x80 or 0xFF in the game's, unused by its shaders
+            // The 4th byte (0x80 or 0xFF in the game's): how much of a cliff shows. The cliff shaders
+            // (ir_terrain_sidemap_t, _single_t) take it as w × 2 − 1 and drop each pixel where that is
+            // under a dither pattern, so 0x80 shows none of a cliff (it drew black) and 0xFF all of
+            // it; the ground's shader doesn't read it.
+            g.Write(NormalByte(n.X)); g.Write(NormalByte(n.Y)); g.Write(NormalByte(n.Z)); g.Write((byte)0xFF);
         }
         g.Write(dataTail);
         byte[] dataBytes = data.ToArray();
@@ -226,31 +310,31 @@ public sealed class TerrainSubzone
         // The mesh block.
         var meshBlock = new MemoryStream();
         var m = new BinaryWriter(meshBlock);
-        int blockSize = 0x60 + patches.Count * 48 + patches.Count * 20 + 8 + 4;
+        int blockSize = 0x60 + patches.Count * 48 + blocks.Count * 20 + 8 + 4;
         m.Write(9); m.Write(checksum); m.Write(blockSize); m.Write(dataBytes.Length);
         m.Write(1); m.Write(patches.Count); m.Write(0x60); m.Write(vertices.Count);
         m.Write((byte)8); m.Write((byte)24); m.Write((byte)0); m.Write((byte)0);
-        m.Write(templateHeader, block + 0x24, 0x18);  // the six floats
+        m.Write(sixFloats);
         m.Write(vertexOffset); m.Write(indices.Count); m.Write(16);
-        m.Write((byte)2); m.Write((byte)0); m.Write((ushort)patches.Count);
+        m.Write((byte)2); m.Write((byte)0); m.Write((ushort)blocks.Count);
         m.Write(new byte[0x60 - 0x4C]);
-        foreach (var (min, max) in boxes)
+        for (int p = 0; p < patches.Count; p++)
         {
+            var (min, max) = boxes[p];
             Vector3 half = (max - min) / 2;
-            m.Write(1); m.Write(0f); m.Write(0f); m.Write(0f);
+            m.Write(patches[p].Count); m.Write(0f); m.Write(0f); m.Write(0f);
             m.Write(-half.X); m.Write(-half.Y); m.Write(-half.Z); m.Write(half.X); m.Write(half.Y); m.Write(half.Z);
             m.Write(0); m.Write(0);
         }
-        foreach (var (first, count, lowest, highest) in blocks)
+        foreach (var (word, first, count, lowest, highest) in blocks)
         {
-            m.Write(material); m.Write(first); m.Write(count); m.Write(lowest); m.Write(highest);
+            m.Write(word); m.Write(first); m.Write(count); m.Write(lowest); m.Write(highest);
         }
         m.Write(0); m.Write(0); m.Write(checksum);
 
-        // The c-file: the template's header with the new place, patch count and box; the patches; the block.
+        // The c-file: the header with the new place, patch count and box; the patches; the block.
         var output = new MemoryStream();
         var h = new BinaryWriter(output);
-        byte[] prefix = templateHeader[..firstPatch];
         Vector3 allMin = boxes.Select(b => b.Min).Aggregate(Vector3.Min), allMax = boxes.Select(b => b.Max).Aggregate(Vector3.Max);
         BitConverter.TryWriteBytes(prefix.AsSpan(fields + 0x08), origin.X);
         BitConverter.TryWriteBytes(prefix.AsSpan(fields + 0x10), origin.Y);

@@ -50,11 +50,28 @@ public sealed class ZoneFoliage
     /// </summary>
     public Vector3 Corner { get; }
 
-    ZoneFoliage(IReadOnlyList<FoliageLayer> layers, IReadOnlyList<FoliagePatch> patches, Vector3 corner)
+    readonly int patchesAt, patchCount;  // where the patch records are in the file, and how many
+
+    ZoneFoliage(IReadOnlyList<FoliageLayer> layers, IReadOnlyList<FoliagePatch> patches, Vector3 corner, int patchesAt, int patchCount)
     {
         Layers = layers;
         Patches = patches;
         Corner = corner;
+        this.patchesAt = patchesAt;
+        this.patchCount = patchCount;
+    }
+
+    /// <summary>
+    /// A copy of the terrain file whose foliage grows nowhere: every patch's mask cleared, so the game
+    /// scatters no pieces (the layers, cells and patches stay where they are, so nothing in the file
+    /// moves). A copy as it was if it has no foliage.
+    /// </summary>
+    public static byte[] WithoutPieces(byte[] data)
+    {
+        byte[] result = (byte[])data.Clone();
+        if (Read(data, "") is { } foliage)
+            for (int p = 0; p < foliage.patchCount; p++) Array.Clear(result, foliage.patchesAt + p * 16 + 8, 8);
+        return result;
     }
 
     /// <summary>The zone's foliage, or null if its terrain file has none.</summary>
@@ -123,7 +140,7 @@ public sealed class ZoneFoliage
                 patches.Add(new FoliagePatch(x, y, z, layer, BitConverter.ToUInt64(data, patchesAt + p * 16 + 8)));
             }
         }
-        return new ZoneFoliage(layers, patches, corner);
+        return new ZoneFoliage(layers, patches, corner, patchesAt, patchCount);
     }
 
     /// <summary>
