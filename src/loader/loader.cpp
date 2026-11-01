@@ -36,6 +36,7 @@ decltype(&SetUnhandledExceptionFilter) o_SetUnhandledExceptionFilter = SetUnhand
 struct CrashJob {
     EXCEPTION_POINTERS* exception;
     DWORD threadId;
+    const wchar_t* dumpSuffix;  // added to the dump's name: L"" for a crash, L"-first" for a first-chance fault
 };
 
 // "module+offset" for an address, e.g. "amdxx32.dll+00DEA307".
@@ -61,6 +62,31 @@ bool LooksLikeReturnAddress(DWORD address) {
            mbi.Type == MEM_IMAGE && (mbi.Protect & exec);
 }
 
+// True if `size` bytes from `address` can be read (committed, readable, not a guard page).
+bool Readable(DWORD address, size_t size) {
+    MEMORY_BASIC_INFORMATION mbi;
+    const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                           PAGE_EXECUTE_WRITECOPY;
+    return address >= 0x10000 && VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) &&
+           mbi.State == MEM_COMMIT && (mbi.Protect & readable) && !(mbi.Protect & PAGE_GUARD) &&
+           address + size <= reinterpret_cast<DWORD>(mbi.BaseAddress) + mbi.RegionSize;
+}
+
+// The call chain by the frame pointers, which the game's build keeps: [ebp] is the caller's ebp,
+// [ebp + 4] the return address into the caller.
+void LogFrames(const CONTEXT* ctx) {
+    char where[MAX_PATH + 16];
+    DWORD ebp = ctx->Ebp;
+    for (int i = 0; i < 24 && Readable(ebp, 8); ++i) {
+        const DWORD next = reinterpret_cast<const DWORD*>(ebp)[0], ret = reinterpret_cast<const DWORD*>(ebp)[1];
+        if (!LooksLikeReturnAddress(ret)) break;
+        DescribeAddress(ret, where, sizeof(where));
+        rfa::Log("  frame %d: %s", i, where);
+        if (next <= ebp) break;
+        ebp = next;
+    }
+}
+
 void LogCrash(const CrashJob& job) {
     const EXCEPTION_RECORD* rec = job.exception->ExceptionRecord;
     const CONTEXT* ctx = job.exception->ContextRecord;
@@ -74,6 +100,7 @@ void LogCrash(const CrashJob& job) {
     }
     rfa::Log("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
              ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
+    LogFrames(ctx);
 
     // Probable callers: values on the stack that look like return addresses.
     MEMORY_BASIC_INFORMATION mbi;
@@ -94,8 +121,8 @@ void WriteDump(const CrashJob& job) {
     SYSTEMTIME t;
     GetLocalTime(&t);
     wchar_t name[64];
-    swprintf_s(name, L"\\logs\\crash-%04d%02d%02d-%02d%02d%02d.dmp", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
-               t.wSecond);
+    swprintf_s(name, L"\\logs\\crash-%04d%02d%02d-%02d%02d%02d%s.dmp", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
+               t.wSecond, job.dumpSuffix);
     const std::wstring path = rfa::RootDir() + name;
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return;
@@ -118,7 +145,7 @@ DWORD WINAPI WriteCrashReport(LPVOID param) {
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* exception) {
     static LONG reported = 0;
     if (InterlockedExchange(&reported, 1) == 0) {
-        CrashJob job{exception, GetCurrentThreadId()};
+        CrashJob job{exception, GetCurrentThreadId(), L""};
         if (HANDLE thread = CreateThread(nullptr, 0, WriteCrashReport, &job, 0, nullptr)) {
             WaitForSingleObject(thread, 30000);
             CloseHandle(thread);
@@ -135,14 +162,40 @@ LPTOP_LEVEL_EXCEPTION_FILTER WINAPI Hk_SetUnhandledExceptionFilter(LPTOP_LEVEL_E
 }
 
 // First-chance access violations can be handled by the code that caused them, so these are
-// only noted (a few at most) in case the crash filter never gets to run.
+// only noted (a few at most) in case the crash filter never gets to run. One in the game's own
+// code is reported in full (what it touched, the registers, the call chain) and the first such
+// gets a dump of its own (logs\crash-*-first.dmp): the game can catch a fault in its code and
+// quit, and the crash that may follow while it exits no longer shows where the fault was.
 LONG CALLBACK NoteAccessViolation(EXCEPTION_POINTERS* exception) {
-    static LONG noted = 0;
+    static LONG noted = 0, dumped = 0;
     const EXCEPTION_RECORD* rec = exception->ExceptionRecord;
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && InterlockedIncrement(&noted) <= 5) {
         char where[MAX_PATH + 16];
         DescribeAddress(reinterpret_cast<DWORD>(rec->ExceptionAddress), where, sizeof(where));
         rfa::Log("First-chance access violation at %s (may be handled)", where);
+        HMODULE module = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(rec->ExceptionAddress), &module) &&
+            module == GetModuleHandleW(nullptr)) {
+            if (rec->NumberParameters >= 2)
+                rfa::Log("  while %s address %08lX", rec->ExceptionInformation[0] == 8 ? "executing"
+                                                     : rec->ExceptionInformation[0] == 1 ? "writing" : "reading",
+                         static_cast<DWORD>(rec->ExceptionInformation[1]));
+            const CONTEXT* ctx = exception->ContextRecord;
+            rfa::Log("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
+                     ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
+            LogFrames(ctx);
+            if (InterlockedExchange(&dumped, 1) == 0) {
+                CrashJob job{exception, GetCurrentThreadId(), L"-first"};
+                if (HANDLE thread = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
+                        WriteDump(*static_cast<CrashJob*>(param));
+                        return 0;
+                    }, &job, 0, nullptr)) {
+                    WaitForSingleObject(thread, 30000);
+                    CloseHandle(thread);
+                }
+            }
+        }
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
