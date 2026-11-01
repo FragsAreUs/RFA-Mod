@@ -17,9 +17,14 @@ namespace RfaFormats.Guerrilla;
 /// its sky colours about a twentieth of Armageddon's): Guerrilla's Oasis set as it is gave a black
 /// world. So the set is Armageddon's own (world_default: exposure, colour correction, fog), with
 /// Guerrilla's Oasis sky and clouds as they are (the guerrilla_world mod draws them, and sets their
-/// brightness itself), its sun's light (which the mod draws; world_default's is black at noon), and
-/// its ambient light from above and below with each key's brightness folded into its colour (see
-/// <see cref="Linear"/>), which the mod's light pass lights the ground with.
+/// brightness itself), its sun's light (which the mod draws; world_default's is black at noon), its
+/// ambient light from above and below with each key's brightness folded into its colour (see
+/// <see cref="Linear"/>), which the mod's light pass lights the ground with, and its fog's colour
+/// over the day, as bright at noon as world_default's (see <see cref="MatchedAtNoon"/>:
+/// world_default's fog is grey, brighter by night than by day, and teal at noon, which the pink of
+/// the colour correction turned lavender on far ground; Guerrilla's is a dusty grey, nearly black
+/// by night). Its density and ground height are still world_default's: Guerrilla reads them on
+/// another scale (density 15 where Armageddon's is 0.0001) not yet worked out.
 /// </summary>
 public static class GuerrillaTimeOfDay
 {
@@ -44,6 +49,7 @@ public static class GuerrillaTimeOfDay
         float ldrMax = Constant(day, "ldr_max") ?? throw new InvalidDataException("world_default's ldr_max changes over the day");
         if (Constant(day, "ldr_min") != 0) throw new InvalidDataException("world_default's ldr_min isn't 0");
         foreach (string curve in new[] { "ambient_color", "back_ambient_color" }) day = Replace(day, curve, Linear(oasis, curve, ldrMax));
+        day = Replace(day, "fog_color", MatchedAtNoon(day, oasis, "fog_color"));
         return (Encoding.Latin1.GetBytes(orbitals), Encoding.Latin1.GetBytes(day));
     }
 
@@ -81,4 +87,38 @@ public static class GuerrillaTimeOfDay
             v[3] = brightness;
             return "<value>" + string.Join(" ", v.Select(x => x.ToString("F6", CultureInfo.InvariantCulture))) + "</value>";
         });
+
+    /// <summary>
+    /// Guerrilla's colour curve, every key's colour times one number: the one that makes it as bright
+    /// at noon (time 24) as Armageddon's (luminance times the fourth number, the brightness). For a
+    /// curve the games read on other scales, as the fog's (Guerrilla's colours about a sixth as
+    /// bright): Guerrilla's colours and how they change over the day, at Armageddon's level.
+    /// </summary>
+    static string MatchedAtNoon(string armageddon, string guerrilla, string name)
+    {
+        static float Luminance(float[] c) => 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+        static List<(float Time, float[] Value)> Keys(string block) =>
+            [.. Regex.Matches(block, @"<time>([^<]*)</time>.*?<value>([^<]*)</value>", RegexOptions.Singleline)
+                     .Select(m => (Values(m.Groups[1].Value)[0], Values(m.Groups[2].Value))).OrderBy(k => k.Item1)];
+        // A curve's brightness at a time, straight from one key to the next.
+        static float BrightnessAt(List<(float Time, float[] Value)> keys, float time)
+        {
+            float Of(float[] v) => Luminance(v) * v[3];
+            if (keys.Count == 0) throw new InvalidDataException("a colour curve without keys");
+            if (time <= keys[0].Time) return Of(keys[0].Value);
+            for (int k = 1; k < keys.Count; k++)
+                if (time <= keys[k].Time)
+                    return Of(keys[k - 1].Value) + (Of(keys[k].Value) - Of(keys[k - 1].Value)) * (time - keys[k - 1].Time) / (keys[k].Time - keys[k - 1].Time);
+            return Of(keys[^1].Value);
+        }
+        string theirs = Block(guerrilla, name);
+        float scale = BrightnessAt(Keys(Block(armageddon, name)), 24) / BrightnessAt(Keys(theirs), 24);
+        return Regex.Replace(theirs, @"<value>([^<]*)</value>", m =>
+        {
+            float[] v = Values(m.Groups[1].Value);
+            if (v.Length != 4) throw new InvalidDataException($"{name} isn't a colour curve");
+            for (int i = 0; i < 3; i++) v[i] *= scale;
+            return "<value>" + string.Join(" ", v.Select(x => x.ToString("F6", CultureInfo.InvariantCulture))) + "</value>";
+        });
+    }
 }

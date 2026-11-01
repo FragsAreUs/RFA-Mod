@@ -77,7 +77,7 @@ single-player.
 ## Try the Guerrilla world (beta)
 
 1. Install **Red Faction: Guerrilla Steam Edition** (Re-MARS-tered's files aren't read yet). You
-   need about 3 GB free where RFA-Mod is.
+   need about 1 GB free where RFA-Mod is.
 2. In `rfa_mods.ini`, under `[Launcher]`, set `GuerrillaDir=` to Guerrilla's folder (for example
    `D:\Games\Red Faction Guerrilla`). Or give the folder to each tool as its argument.
 3. Run `editor\GuerrillaWorld.exe` (two or three minutes). It writes the world `rfg` into

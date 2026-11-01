@@ -43,6 +43,22 @@ public sealed class GroundLayout
 }
 
 /// <summary>
+/// How a square of ground samples is drawn under Guerrilla's roads (see
+/// <see cref="GuerrillaGround.RoadHoles"/>). Cut as usual, from (x, z + 1) to (x + 1, z), its first
+/// triangle is the one with the corner at (x, z), its second the one with (x + 1, z + 1);
+/// <see cref="Flipped"/>, from (x, z) to (x + 1, z + 1), its first is the one with (x + 1, z), its
+/// second the one with (x, z + 1).
+/// </summary>
+[Flags]
+public enum SquareCut : byte
+{
+    None = 0,
+    First = 1,    // left out
+    Second = 2,   // left out
+    Flipped = 4,  // cut from (x, z) to (x + 1, z + 1), as Guerrilla cuts most of its squares
+}
+
+/// <summary>
 /// Red Faction: Guerrilla's ground in place of an Armageddon zone's: its terrain sub-zones (what is
 /// drawn) and the height field in its terrain file (what is walked on), sampled as a
 /// <see cref="GroundLayout"/> says (<see cref="GroundLayout.Quarter"/> where none is given).
@@ -208,6 +224,73 @@ public static class GuerrillaGround
     }
 
     /// <summary>
+    /// Where Guerrilla's ground is cut open for its road decals, over the square from
+    /// <paramref name="corner"/>: for each square of samples (<c>[z * (Samples - 1) + x]</c>), which
+    /// of its triangles to leave out, and whether to cut it the other way. A triangle is left out
+    /// where one of the sub-zones' road decals covers it and none of their ground does (the
+    /// skirts' cut-outs, around rocks, stay filled). Guerrilla's ground is on the same whole-metre
+    /// grid, but cuts most of its squares from (x, z) to (x + 1, z + 1), and the holes' edges follow
+    /// its cuts: so each square is looked at in quarters (the four triangles both diagonals make,
+    /// whose middles are on neither), and a square the hole's edge crosses along the other diagonal
+    /// is cut that way. One crossed otherwise (by one of Guerrilla's bigger triangles) loses only a
+    /// triangle that is covered whole, so the ground overlaps the road there rather than leaving a gap.
+    /// </summary>
+    public static SquareCut[] RoadHoles(IEnumerable<TerrainSubzone> subzones, Vector2 corner, GroundLayout? layout = null)
+    {
+        layout ??= GroundLayout.Quarter;
+        int squares = layout.Samples - 1;
+        // Each square's quarters: below the middle, right of it, above it, left of it (x, z within the square).
+        (float X, float Z)[] quarters = [(0.5f, 1 / 6f), (5 / 6f, 0.5f), (0.5f, 5 / 6f), (1 / 6f, 0.5f)];
+        var ground = new bool[squares * squares * 4];
+        var road = new bool[ground.Length];
+        void Mark(bool[] covered, Vector3 a, Vector3 b, Vector3 c)
+        {
+            float area = (b.X - a.X) * (c.Z - a.Z) - (c.X - a.X) * (b.Z - a.Z);
+            if (MathF.Abs(area) < 1e-9f) return;
+            int x1 = Math.Max(0, SampleBelow(MathF.Min(a.X, MathF.Min(b.X, c.X)) - corner.X, layout)), x2 = Math.Min(squares - 1, SampleBelow(MathF.Max(a.X, MathF.Max(b.X, c.X)) - corner.X, layout));
+            int z1 = Math.Max(0, SampleBelow(MathF.Min(a.Z, MathF.Min(b.Z, c.Z)) - corner.Y, layout)), z2 = Math.Min(squares - 1, SampleBelow(MathF.Max(a.Z, MathF.Max(b.Z, c.Z)) - corner.Y, layout));
+            for (int z = z1; z <= z2; z++)
+                for (int x = x1; x <= x2; x++)
+                    for (int q = 0; q < 4; q++)
+                    {
+                        float px = corner.X + layout.SampleAt(x) + quarters[q].X * (layout.SampleAt(x + 1) - layout.SampleAt(x));
+                        float pz = corner.Y + layout.SampleAt(z) + quarters[q].Z * (layout.SampleAt(z + 1) - layout.SampleAt(z));
+                        float wa = ((b.X - px) * (c.Z - pz) - (c.X - px) * (b.Z - pz)) / area;
+                        float wb = ((c.X - px) * (a.Z - pz) - (a.X - px) * (c.Z - pz)) / area;
+                        if (wa >= 0 && wb >= 0 && wa + wb <= 1) covered[(z * squares + x) * 4 + q] = true;
+                    }
+        }
+        foreach (TerrainSubzone s in subzones)
+        {
+            for (int t = 0; t < s.Triangles.Length; t += 3) Mark(ground, s.Positions[s.Triangles[t]], s.Positions[s.Triangles[t + 1]], s.Positions[s.Triangles[t + 2]]);
+            foreach (GuerrillaRoadDecal decal in s.RoadDecals)
+                for (int t = 0; t + 2 < decal.Corners.Length; t += 3) Mark(road, decal.Corners[t], decal.Corners[t + 1], decal.Corners[t + 2]);
+        }
+        var cuts = new SquareCut[squares * squares];
+        for (int i = 0; i < cuts.Length; i++)
+        {
+            bool Open(int q) => road[i * 4 + q] && !ground[i * 4 + q];
+            bool below = Open(0), right = Open(1), above = Open(2), left = Open(3);
+            if (!(below || right || above || left)) continue;
+            // Cut as usual, the first triangle the quarters left and below, the second right and above;
+            // or the other way, the first below and right, the second left and above.
+            if (left == below && right == above) cuts[i] = (left ? SquareCut.First : 0) | (right ? SquareCut.Second : 0);
+            else if (below == right && left == above) cuts[i] = SquareCut.Flipped | (below ? SquareCut.First : 0) | (left ? SquareCut.Second : 0);
+            else cuts[i] = (left && below ? SquareCut.First : 0) | (right && above ? SquareCut.Second : 0);
+        }
+        return cuts;
+    }
+
+    /// <summary>The sample at or before a distance (m) from the square's corner.</summary>
+    static int SampleBelow(float metres, GroundLayout layout)
+    {
+        int n = Math.Clamp((int)MathF.Floor(metres / layout.SampleAt(1)), 0, layout.Samples - 1);
+        while (n > 0 && layout.SampleAt(n) > metres) n--;
+        while (n + 1 < layout.Samples && layout.SampleAt(n + 1) <= metres) n++;
+        return n;
+    }
+
+    /// <summary>
     /// The height at a point of the square (in Guerrilla's metres from its corner), on the
     /// triangles the sub-zones make: each square of samples is cut from its corner at (x, z + 1)
     /// to the one at (x + 1, z), so the height field lies exactly on the drawn ground.
@@ -244,10 +327,13 @@ public static class GuerrillaGround
     /// the side, as the game's own sub-zones draw theirs: cliff kind 4, or 5 from
     /// <see cref="CliffHighFrom"/>; the rest of the patch as ground seen from above. (Kind 3, the
     /// ground's first layer alone from the side, showed slopes darker than the mixed layers around
-    /// them, so moderate slopes stay ground.)
+    /// them, so moderate slopes stay ground.) With <paramref name="holes"/> (see <see cref="RoadHoles"/>)
+    /// the triangles under the roads are left out, and <paramref name="roads"/> holds each sub-zone's
+    /// road decals to lay in them (only for sub-zones written from nothing).
     /// </summary>
     public static IReadOnlyList<(byte[] Header, byte[] Data)> Subzones(float[] heights, Vector2 zoneCorner, IReadOnlyList<(byte[] Header, byte[] Data)>? templates, byte[]? cliff,
-                                                                     GroundLayout? layout = null)
+                                                                     GroundLayout? layout = null, SquareCut[]? holes = null,
+                                                                     IReadOnlyList<IReadOnlyList<RoadDecalToWrite>>? roads = null)
     {
         if (templates != null && templates.Count != 9) throw new ArgumentException("a zone has nine sub-zones");
         layout ??= GroundLayout.Quarter;
@@ -295,12 +381,14 @@ public static class GuerrillaGround
                             strip.Add((qz + 1) * width + qx);
                         }
                     }
-                    patches.Add(cliff == null ? [new TerrainSubzone.PatchBlock(TerrainSubzone.GroundKind, [.. strip])]
-                                              : CliffBlocks(vertices, width, qx0, qx1, qz0, qz1, x0, z0, cliff, layout));
+                    IReadOnlyList<TerrainSubzone.PatchBlock> blocks = cliff == null && holes == null
+                        ? [new TerrainSubzone.PatchBlock(TerrainSubzone.GroundKind, [.. strip])]
+                        : CliffBlocks(vertices, width, qx0, qx1, qz0, qz1, x0, z0, cliff, holes, layout);
+                    if (blocks.Count > 0) patches.Add(blocks);  // (none if a road covers it all)
                 }
             var origin = new Vector2(zoneCorner.X + layout.StepOf(x0) * step, zoneCorner.Y + layout.StepOf(z0) * step);
             written.Add(templates != null ? TerrainSubzone.Write(templates[n].Header, templates[n].Data, origin, vertices, patches, step)
-                                          : TerrainSubzone.Write(n, origin, vertices, patches, step));
+                                          : TerrainSubzone.Write(n, origin, vertices, patches, step, roads?[n]));
         }
         return written;
     }
@@ -314,36 +402,88 @@ public static class GuerrillaGround
     /// <summary>
     /// One patch (squares qx0–qx1, qz0–qz1 of a sub-zone whose first sample is x0, z0; its
     /// vertices <paramref name="width"/> to a row) as render blocks: the ground's triangles, then
-    /// each cliff kind's, every square cut as the strips cut it (from its corner at (x, z + 1) to
-    /// the one at (x + 1, z)).
+    /// each cliff kind's (none without <paramref name="cliff"/>), every square cut as the strips cut
+    /// it (from its corner at (x, z + 1) to the one at (x + 1, z)) but where <paramref name="holes"/>
+    /// say otherwise, and without the triangles they leave out. Each block is a strip made of the
+    /// rows' strips: a row runs a0, b0, a1, b1, ... (its triangle 2k is square k's first, 2k + 1 its
+    /// second), and each run of a row's triangles of one kind is a piece of it, so a block takes
+    /// about two indices a triangle, as the game's own; a square cut the other way is a piece of its
+    /// own for each of its triangles.
     /// </summary>
     static IReadOnlyList<TerrainSubzone.PatchBlock> CliffBlocks(List<GroundVertex> vertices, int width, int qx0, int qx1, int qz0, int qz1,
-                                                                 int x0, int z0, byte[] cliff, GroundLayout layout)
+                                                                 int x0, int z0, byte[]? cliff, SquareCut[]? holes, GroundLayout layout)
     {
-        var kinds = new Dictionary<uint, List<int>>();
         float step = layout.GridStep;
         Vector3 At(int v) => new(vertices[v].XStep * step, vertices[v].Height, vertices[v].ZStep * step);
-        int Weight(int v) => cliff[(z0 + v / width) * layout.Samples + x0 + v % width];
-        void Add(int a, int b, int c)
+        int Weight(int v) => cliff![(z0 + v / width) * layout.Samples + x0 + v % width];
+        uint KindOf(int a, int b, int c)
         {
             Vector3 n = Vector3.Cross(At(b) - At(a), At(c) - At(a));
-            uint kind = TerrainSubzone.GroundKind;
-            if (n.Length() > 1e-6f && MathF.Abs(n.Y) / n.Length() < CliffSlope)
-            {
-                int mean = (Weight(a) + Weight(b) + Weight(c)) / 3;
-                if (mean >= CliffFrom) kind = mean < CliffHighFrom ? TerrainSubzone.CliffKindMixed : TerrainSubzone.CliffKindHigh;
-            }
-            if (!kinds.TryGetValue(kind, out var list)) kinds[kind] = list = [];
-            list.Add(a); list.Add(b); list.Add(c);
+            if (cliff == null || n.Length() <= 1e-6f || MathF.Abs(n.Y) / n.Length() >= CliffSlope) return TerrainSubzone.GroundKind;
+            int mean = (Weight(a) + Weight(b) + Weight(c)) / 3;
+            return mean < CliffFrom ? TerrainSubzone.GroundKind : mean < CliffHighFrom ? TerrainSubzone.CliffKindMixed : TerrainSubzone.CliffKindHigh;
         }
+        // Each kind's pieces of strip, and whether a piece's first triangle must be at an odd place
+        // (where a strip turns its triangle round).
+        var pieces = new Dictionary<uint, List<(int[] Vertices, bool Odd)>>();
+        void Piece(uint kind, int[] piece, bool odd)
+        {
+            if (!pieces.TryGetValue(kind, out var list)) pieces[kind] = list = [];
+            list.Add((piece, odd));
+        }
+        int squares = qx1 - qx0;
+        var kindAt = new uint?[2 * squares];
         for (int qz = qz0; qz < qz1; qz++)
-            for (int qx = qx0; qx < qx1; qx++)
+        {
+            Array.Clear(kindAt);
+            for (int k = 0; k < squares; k++)
             {
-                int a0 = qz * width + qx, a1 = a0 + 1, b0 = a0 + width, b1 = b0 + 1;
-                Add(a0, b0, a1);
-                Add(a1, b0, b1);
+                int a0 = qz * width + qx0 + k, a1 = a0 + 1, b0 = a0 + width, b1 = b0 + 1;
+                SquareCut cut = holes?[(z0 + qz) * (layout.Samples - 1) + x0 + qx0 + k] ?? SquareCut.None;
+                if (cut.HasFlag(SquareCut.Flipped))
+                {
+                    if (!cut.HasFlag(SquareCut.First)) Piece(KindOf(a0, b1, a1), [a0, b1, a1], false);
+                    if (!cut.HasFlag(SquareCut.Second)) Piece(KindOf(a0, b0, b1), [a0, b0, b1], false);
+                    continue;
+                }
+                if (!cut.HasFlag(SquareCut.First)) kindAt[2 * k] = KindOf(a0, b0, a1);
+                if (!cut.HasFlag(SquareCut.Second)) kindAt[2 * k + 1] = KindOf(a1, b0, b1);
             }
-        return kinds.OrderBy(k => k.Key).Select(k => new TerrainSubzone.PatchBlock(k.Key, TerrainSubzone.Strip(k.Value))).ToList();
+            int RowVertex(int i) => (i % 2 == 0 ? qz : qz + 1) * width + qx0 + i / 2;
+            for (int t = 0; t < kindAt.Length;)
+            {
+                if (kindAt[t] is not uint kind)
+                {
+                    t++;
+                    continue;
+                }
+                int end = t;
+                while (end + 1 < kindAt.Length && kindAt[end + 1] == kind) end++;
+                Piece(kind, [.. Enumerable.Range(t, end - t + 3).Select(RowVertex)], t % 2 == 1);
+                t = end + 1;
+            }
+        }
+        return pieces.OrderBy(k => k.Key).Select(k => new TerrainSubzone.PatchBlock(k.Key, Joined(k.Value))).ToList();
+    }
+
+    /// <summary>
+    /// Pieces of strip joined into one strip by repeated indices (which make no triangles), each
+    /// piece's first triangle at an even place, or an odd one where it says so.
+    /// </summary>
+    static int[] Joined(List<(int[] Vertices, bool Odd)> pieces)
+    {
+        var strip = new List<int>();
+        foreach (var (piece, odd) in pieces)
+        {
+            if (strip.Count > 0)
+            {
+                strip.Add(strip[^1]);
+                strip.Add(piece[0]);
+            }
+            if (strip.Count % 2 != (odd ? 1 : 0)) strip.Add(piece[0]);
+            strip.AddRange(piece);
+        }
+        return [.. strip];
     }
 
     /// <summary>

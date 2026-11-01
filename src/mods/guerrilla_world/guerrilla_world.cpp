@@ -44,7 +44,8 @@
 // The view distance: the game streams a world's zones (each with its far-away ground) only within a
 // radius of the player, small in the campaign (its levels are walled canyons). In our worlds, whose
 // zones stream in a layer of their own, the mod widens it to [GuerrillaWorld] StreamRadius= metres
-// (up to 500: 5 × 5 zones), and puts the game's own back elsewhere.
+// (500 by default: the 3 × 3 of our 511 m zones around the player, as Guerrilla's own 510 m; at
+// most just under two zones, 5 × 5), and puts the game's own back elsewhere.
 //
 // The zone size: our worlds' zones are [GuerrillaWorld] ZoneSize= metres wide (511, Guerrilla's),
 // so 16 × 16 of them is Guerrilla's whole map; the mod widens the game's physics world at start-up
@@ -60,6 +61,13 @@
 //
 // And it leaves out the game's "invalid mission info hash" report for our worlds' zones, which
 // carry no mission (one line a zone at every load).
+//
+// The precache: a world keeps the files several of its containers use once, loose, in a precache
+// archive, and each streaming cell's precache group in the asset list names those it needs. Which
+// precache a level mounts comes from the area of its start zone's grid place, from a table filled
+// once at start-up from precache.xtbl (bio, ice, magma, natural, surface; elsewhere "world"). That
+// table knows only grid places, so our worlds would get the campaign's empty world_precache: for
+// them the mod answers the area as the world's own name, so a world rfg mounts rfg_precache.vpp_pc.
 #define RFA_MOD_NAME "guerrilla_world"
 #include "rfa_mod.h"
 #include "rfa_game.h"
@@ -186,6 +194,15 @@ constexpr size_t kReportErrorPrologue = 9;  // push ebp / mov ebp,esp / sub esp,
 constexpr DWORD kMissionHashFormat = 0xF82734;
 using ReportErrorFn = void(__cdecl*)(int level, int flag, const char* format, va_list arguments);
 ReportErrorFn g_reportError;
+
+// The area a level's start zone is in, for its precache (0x6B4710: column, row and the grid's size
+// in, the area's 64-byte name out). Its one caller, the level's streaming set-up (0x6B43ED, after
+// the world's name is known), then looks for the one "<area>_precache.precache" marker among the
+// world's archives and mounts build\pc\cache\<area>_precache.vpp_pc.
+constexpr DWORD kPrecacheArea = 0x6B4710;
+constexpr size_t kPrecacheAreaPrologue = 6;  // push ebp / mov ebp,esp / sub esp,10h
+using PrecacheAreaFn = const char*(__cdecl*)(int column, int row, int gridSize);
+PrecacheAreaFn g_precacheArea;
 
 // The scene renderer's sky step: a method (the renderer in ECX).
 constexpr DWORD kRenderSkybox = 0xD528E0;
@@ -553,6 +570,21 @@ void __cdecl ReportError(int level, int flag, const char* format, va_list argume
         }
     }
     g_reportError(level, flag, format, arguments);
+}
+
+// Replaces the area lookup: in our worlds the area is the world itself, so its own precache is mounted
+// (if the world has one: a world built before the precache keeps the game's choice, as before).
+const char* __cdecl PrecacheArea(int column, int row, int gridSize) {
+    const char* area = g_precacheArea(column, row, gridSize);
+    if (!InOurWorld()) return area;
+    wchar_t precache[MAX_PATH];
+    swprintf_s(precache, L"%s\\overrides\\build\\pc\\cache\\%hs_precache.vpp_pc", rfa::RootDir().c_str(), WorldName());
+    if (GetFileAttributesW(precache) == INVALID_FILE_ATTRIBUTES) {
+        rfa::Log("Precache: world \"%s\" has no %s_precache.vpp_pc (built before it had one); the game's \"%s\" is used", WorldName(), WorldName(), area);
+        return area;
+    }
+    rfa::Log("Precache: world \"%s\" mounts %s_precache.vpp_pc (the game's area there is \"%s\")", WorldName(), WorldName(), area);
+    return WorldName();
 }
 
 // ---- Shaders
@@ -1519,6 +1551,8 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     if (!g_setAmbient || !g_setBackAmbient) rfa::Log("Could not hook the time of day's ambient light; Ambient= does nothing");
     g_reportError = reinterpret_cast<ReportErrorFn>(rfa::HookFunction(kReportError, kReportErrorPrologue, reinterpret_cast<void*>(&ReportError)));
     if (!g_reportError) rfa::Log("Could not hook the game's error reports; the invalid mission hash lines stay");
+    g_precacheArea = reinterpret_cast<PrecacheAreaFn>(rfa::HookFunction(kPrecacheArea, kPrecacheAreaPrologue, reinterpret_cast<void*>(&PrecacheArea)));
+    if (!g_precacheArea) rfa::Log("Could not hook the game's precache areas; our worlds' shared files won't be found");
     if (!g_skyOn && !g_lightOn && g_clockSpeed <= 0) {
         rfa::Log("Guerrilla's sky, light and clock are off (Sky=0, Light=0, ClockSpeed=0)");
         return;

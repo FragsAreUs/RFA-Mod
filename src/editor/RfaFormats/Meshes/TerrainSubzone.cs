@@ -99,6 +99,12 @@ public sealed class TerrainSubzone
     /// <summary>Guerrilla's road decal meshes in the sub-zone (empty for Armageddon's).</summary>
     public IReadOnlyList<GuerrillaRoadDecal> RoadDecals { get; } = [];
 
+    /// <summary>The sub-zone's road decal meshes as drawn, in both games' (Armageddon lays its roads into its ground's cut-outs as Guerrilla does).</summary>
+    public IReadOnlyList<RoadMesh> Roads { get; } = [];
+
+    /// <summary>The road shader's slot for the road's own colour texture (ter_sur_road02_di in world_10_07's), the same in both games.</summary>
+    const uint RoadTextureSlot = 0x97AE6CD3;
+
     TerrainSubzone(byte[] header, byte[] data)
     {
         if (header.Length < 0x60 || Encoding.ASCII.GetString(header, 0, 4) != "SUBZ")
@@ -189,7 +195,30 @@ public sealed class TerrainSubzone
         }
         PatchTriangles = patches;
         Triangles = [.. patches.SelectMany(p => p)];
+        Roads = ReadRoads(header, data, fields, at, guerrilla);
         if (guerrilla) (Paving, RoadDecals) = GuerrillaFill(header, data, fields, at);
+    }
+
+    /// <summary>The road decals' meshes (see <see cref="Sections"/>), in the world, each with its road texture's name.</summary>
+    static IReadOnlyList<RoadMesh> ReadRoads(byte[] header, byte[] data, int fields, int groundAt, bool guerrilla)
+    {
+        var roads = new List<RoadMesh>();
+        foreach (RoadDecalSections d in Sections(header, fields, groundAt, guerrilla).Decals)
+        {
+            var origin = new Vector3(F32(header, d.Record + 0x1C), F32(header, d.Record + 0x20), F32(header, d.Record + 0x24));
+            var (positions, textureCoordinates, triangles) = ReadMesh(header, data, d.Mesh, d.Data, origin, guerrilla);
+            // The material's textures (12 bytes each: where the name starts in the list, the slot's hash, an index) from +0x20 in Guerrilla's, +0x24 in Armageddon's.
+            int textures = BitConverter.ToUInt16(header, d.Material + 0x10), first = d.Material + (guerrilla ? 0x20 : 0x24);
+            string? roadTexture = null;
+            for (int t = 0; t < textures; t++)
+                if (U32(header, first + t * 12 + 4) == RoadTextureSlot)
+                {
+                    int start = d.Names + 4 + (int)U32(header, first + t * 12);
+                    roadTexture = Encoding.ASCII.GetString(header, start, Array.IndexOf(header, (byte)0, start) - start);
+                }
+            roads.Add(new RoadMesh(positions, textureCoordinates, triangles, roadTexture));
+        }
+        return roads;
     }
 
     /// <summary>Where a road decal's parts are in a sub-zone's c-file: its record, mesh block, name list (its size first), material map and material; where the material ends; where its g-data starts.</summary>
@@ -245,6 +274,20 @@ public sealed class TerrainSubzone
         return (stitchMesh, stitchMeshData, decals);
     }
 
+    /// <summary>
+    /// An Armageddon sub-zone's road decals' material maps (16 bytes) and material blocks, in order;
+    /// none if it has no road. (world_10_07_2's are the road shader's, ir_terrain_road_layer2.)
+    /// </summary>
+    public static IReadOnlyList<(byte[] Map, byte[] Material)> RoadMaterials(byte[] header)
+    {
+        if (BitConverter.ToInt32(header, 4) != Version) throw new NotSupportedException("not an Armageddon terrain sub-zone");
+        int fields = (0x18 + BitConverter.ToInt32(header, 0x14) + 3) & ~3;
+        int ground = Enumerable.Range((fields + 0x48) / 4, (header.Length - fields - 0x48) / 4).Select(i => i * 4)
+                               .FirstOrDefault(a => ModelFile.IsMeshBlock(header, a), -1);
+        if (ground < 0) return [];
+        return Sections(header, fields, ground, guerrilla: false).Decals.Select(d => (header[d.Map..d.Material], header[d.Material..d.End])).ToList();
+    }
+
     /// <summary>Guerrilla's skirts and road decals after the ground's mesh block (at <paramref name="groundAt"/>): all their triangles' corners in the world, and the road decals.</summary>
     static (Vector3[] Corners, IReadOnlyList<GuerrillaRoadDecal> Decals) GuerrillaFill(byte[] header, byte[] data, int fields, int groundAt)
     {
@@ -290,28 +333,48 @@ public sealed class TerrainSubzone
     static Vector3 BoundsMinOf(byte[] header, int fields) => new(F32(header, fields + 0x24), F32(header, fields + 0x28), F32(header, fields + 0x2C));
     static Vector3 BoundsMaxOf(byte[] header, int fields) => new(F32(header, fields + 0x30), F32(header, fields + 0x34), F32(header, fields + 0x38));
 
-    /// <summary>A version-6 mesh block's triangles' corners, its positions (3 floats first in each vertex) from <paramref name="origin"/>; its g-data from <paramref name="dataAt"/>.</summary>
+    /// <summary>A version-6 mesh block's triangles' corners, its positions from <paramref name="origin"/>; its g-data from <paramref name="dataAt"/>.</summary>
     static Vector3[] MeshCorners(byte[] header, byte[] data, int at, int dataAt, Vector3 origin)
     {
-        int vertexSize = header[at + 0x1C];
-        int submeshes = (int)U32(header, at + 0x10), table = at + (int)U32(header, at + 0x14), vertexCount = (int)U32(header, at + 0x18);
-        int vertexOffset = dataAt + (int)U32(header, at + 0x20), indexCount = (int)U32(header, at + 0x24), indexOffset = dataAt + (int)U32(header, at + 0x28);
+        var (positions, _, triangles) = ReadMesh(header, data, at, dataAt, origin, version6: true);
+        return [.. triangles.Select(v => positions[v])];
+    }
+
+    /// <summary>
+    /// A version-6 or version-9 mesh block's vertices (positions, 3 floats first in each, from
+    /// <paramref name="origin"/>; the first texture coordinates, 2 × 16 bits with 1024 = 1, the
+    /// last 4 bytes if it has any) and its triangles (three vertex numbers each); its g-data from
+    /// <paramref name="dataAt"/>.
+    /// </summary>
+    static (Vector3[] Positions, Vector2[] TextureCoordinates, int[] Triangles) ReadMesh(byte[] header, byte[] data, int at, int dataAt, Vector3 origin, bool version6)
+    {
+        int fieldsAt = version6 ? at - 4 : at;              // where version 9's fields would start (it has one more before them)
+        int afterFloats = version6 ? fieldsAt - 0x18 : fieldsAt;  // version 6 hasn't the six floats
+        int submeshes = (int)U32(header, fieldsAt + 0x14), table = at + (int)U32(header, fieldsAt + 0x18), vertexCount = (int)U32(header, fieldsAt + 0x1C);
+        int vertexSize = header[fieldsAt + 0x20], uvChannels = header[fieldsAt + 0x22];
+        int vertexOffset = dataAt + (int)U32(header, afterFloats + 0x3C), indexCount = (int)U32(header, afterFloats + 0x40), indexOffset = dataAt + (int)U32(header, afterFloats + 0x44);
+        if (header[afterFloats + 0x48] != 2) throw new NotSupportedException($"{header[afterFloats + 0x48]}-byte indices in a terrain mesh");
         var positions = new Vector3[vertexCount];
+        var textureCoordinates = new Vector2[uvChannels > 0 && vertexSize >= 16 ? vertexCount : 0];
         for (int v = 0; v < vertexCount; v++)
         {
             int p = vertexOffset + v * vertexSize;
             positions[v] = origin + new Vector3(F32(data, p), F32(data, p + 4), F32(data, p + 8));
+            if (textureCoordinates.Length > 0)
+            {
+                int uv = p + vertexSize - 4 * uvChannels;
+                textureCoordinates[v] = new Vector2(BitConverter.ToInt16(data, uv), BitConverter.ToInt16(data, uv + 2)) / 1024f;
+            }
         }
         var indices = new int[indexCount];
         for (int i = 0; i < indexCount; i++) indices[i] = BitConverter.ToUInt16(data, indexOffset + i * 2);
         // Each submesh has the next of the render blocks (20 bytes: a word, first index, count, ...), as many as its first word says.
-        var corners = new List<Vector3>();
-        int blockTable = table + submeshes * 44;
+        int submeshSize = version6 ? 44 : 48, blockTable = table + submeshes * submeshSize;
+        var triangles = new List<int>();
         for (int s = 0, b = 0; s < submeshes; s++)
-            for (int end = b + (int)U32(header, table + s * 44); b < end; b++)
-                foreach (int corner in ModelFile.StripToTriangles(indices, (int)U32(header, blockTable + b * 20 + 4), (int)U32(header, blockTable + b * 20 + 8)))
-                    corners.Add(positions[corner]);
-        return [.. corners];
+            for (int end = b + (int)U32(header, table + s * submeshSize); b < end; b++)
+                triangles.AddRange(ModelFile.StripToTriangles(indices, (int)U32(header, blockTable + b * 20 + 4), (int)U32(header, blockTable + b * 20 + 8)));
+        return (positions, textureCoordinates, [.. triangles]);
     }
 
     public static TerrainSubzone Read(byte[] header, byte[] data) => new(header, data);
@@ -610,6 +673,14 @@ public readonly record struct GroundVertex(int XStep, int ZStep, float Height, V
 /// </summary>
 public sealed record GuerrillaRoadDecal(byte[] Record, Vector3 Position, byte[] MeshBlock, byte[] MeshData, IReadOnlyList<string> Names,
                                         IReadOnlyList<(uint Slot, string Texture)> Slots, IReadOnlyDictionary<uint, Vector4> Constants, Vector3[] Corners);
+
+/// <summary>
+/// A road decal mesh of a sub-zone as drawn: its vertices in the world, their texture coordinates
+/// (across the road, and along it in repeats of its texture), its triangles (three vertex numbers
+/// each, wound as <see cref="TerrainSubzone.PatchTriangles"/>), and its road texture (the road
+/// shader's own, such as ter_sur_road02_di.tga), or null.
+/// </summary>
+public sealed record RoadMesh(Vector3[] Positions, Vector2[] TextureCoordinates, int[] Triangles, string? RoadTexture);
 
 /// <summary>
 /// A road decal mesh as Armageddon's sub-zones hold it: its 40-byte record (instance count first,

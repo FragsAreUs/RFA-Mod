@@ -222,8 +222,9 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
   zones next to you (its levels are walled canyons), so in an open world the ground stops not far
   off. The game streams zones and their high-detail sub-zones on two grids, each tracking only
   about 35 containers at once. The mod wraps the game's radius setter (`0x6B3100`) and widens the zones' radius to `StreamRadius=`
-  metres (500 by default and at most, 5 × 5 zones; also read again when `rfa_mods.ini` is saved)
-  and puts the game's own back elsewhere.
+  metres (500 by default, the 3 × 3 zones around you as in Guerrilla; at most just under two
+  zones, 5 × 5; also read again when `rfa_mods.ini` is saved) and puts the game's own back
+  elsewhere.
 - **The light**: Armageddon lights surfaces only with lamps (it draws them into a light buffer
   that each surface is then multiplied by); the time of day's ambient light never reaches the
   ground, so a ported world without lamps is dark. The mod adds light into that buffer right after
@@ -240,6 +241,10 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
   its own 255 m zones; the constants `0xFB5DC0` and `0xFB5DC4`), and anything beyond it drops out
   of the physics, so at start-up the mod widens it to nine of ours (4599 m). That is for every
   world, since the game makes it only once.
+- **The precache**: when a level opens, the game mounts `<area>_precache.vpp_pc`, the area being
+  the one its start zone's grid place has in `precache.xtbl` (`bio`, `ice`, ... or `world`),
+  read once at start-up. The mod wraps that lookup (`0x6B4710`) and answers the world's own name
+  in our worlds, so `rfg` mounts `rfg_precache.vpp_pc`.
 
 The world itself is built by `editor\GuerrillaWorld.exe` (code in `src\editor\GuerrillaWorld\` and
 `src\editor\RfaFormats\Guerrilla\`), from the player's own copy of Guerrilla. It writes the world
@@ -247,10 +252,13 @@ The world itself is built by `editor\GuerrillaWorld.exe` (code in `src\editor\Gu
 converts:
 - **The ground** of each of Guerrilla's 102 zones, sampled whole, with its own textures and cliff
   material, far-away meshes, and a starting point in the middle of every zone. Guerrilla cuts its
-  roads and paved places out of the ground and lays them in as separate meshes in the same
-  sub-zone files (`TerrainSubzone.Paving`); their heights are sampled with the ground's (their own
-  road textures aren't drawn yet). Where a rock closes the ground itself (a cap on a pillar, a cover
-  on a slope), the ground is laid half a metre under the rock's surface.
+  roads, and the ground around its rocks (skirts), out of the ground and lays them in as separate
+  meshes in the same sub-zone files (`TerrainSubzone.Paving`); their heights are sampled with the
+  ground's. The roads (road decals) are laid into our sub-zones as Armageddon lays its own
+  (`GuerrillaRoads`: the mesh and Guerrilla's road textures, with Armageddon's road shader), and
+  the ground is left out under them (`GuerrillaGround.RoadHoles`). Where a rock closes the ground
+  itself (a cap on a pillar, a cover on a slope), the ground is laid half a metre under the rock's
+  surface.
 - **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
   (Havok MOPP code, written from scratch) over each zone's pieces.
 - **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file
@@ -261,6 +269,14 @@ converts:
   (kept in the objects in Guerrilla, in the zone's extra block in Armageddon) and ground anchors
   (`GuerrillaMovers`). Each chunk file goes into the container of the sub-zone its object stands
   in, as Armageddon keeps them.
+- **The precache**: every file more than one container would hold (the ground's texture layers,
+  roads, rocks, chunk files and their textures) goes once into `rfg_precache.vpp_pc`, and each
+  zone's and sub-zone's precache group in the asset list (`0p_cXXYY`, `1p_cXXYY`) names the ones
+  it needs, as Guerrilla's world and Armageddon's campaign keep their shared files. The game loads
+  such a file once while any cell that needs it is loaded, so the zones around you take about a
+  third of the memory they did. The game picks a level's precache by the area of its start zone's
+  grid place, which knows only the campaign's areas, so `guerrilla_world` makes it pick the
+  world's own (below).
 - The zone files go into `zonescript_rfg.vpp_pc`, stored compressed file by file as the game's own
   zone archive is: the game reads that archive whole into a 20 MB pool when a level loads.
 
