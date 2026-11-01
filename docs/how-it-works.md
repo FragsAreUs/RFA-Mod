@@ -312,6 +312,17 @@ tell the game how big it is, including the group entries (such as `1_c0812`) tha
 memory aside by. Many zones are in the game twice, identically (in a `zonescript_*.vpp_pc` archive
 and in their level's container); the game may read either, so the editor saves every copy.
 
+**The zone schema**: the game still has the schema of Volition's level editor (CLOE),
+`rfg_zonex_format.txt` in `misc.vpp_pc`: every class of zone object (69, with `edit_obj` the base
+they share) and its properties' types, defaults, choices (some read from a table, such as
+`squads.xtbl`) and markers (editor-only, read-only, hidden). `RfaFormats\Zones\ZoneSchema.cs`
+reads it from the player's copy of the game (it is never shipped). Its names hash as the zones' do,
+and it was checked against every zone and layer in the game: it names all 42 classes the zones use
+and 269 of their 294 properties (the rest were added by Volition's tools: `oP`, a navpoint's data,
+links, destruction data), every value has the type and size the schema gives, and an object made
+from it has the same properties as the game's own objects of its class. The inspector edits each
+property by its type, and Add makes new objects from it.
+
 **Saving zones**: the game's object table (the zone's relation table) is built again on saving, as
 the game's tools do. Deleting an object also removes its destruction links to the buildings next
 to it (the game's table of which pieces hold onto which, renumbered as the game's own files number

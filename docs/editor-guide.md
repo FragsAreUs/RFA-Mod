@@ -219,13 +219,35 @@ the other. Lines keep the same width on the screen near and far. You can't edit 
   turns with it.
 - The inspector's **Transform** shows the picked object's position (X, Y, Z in metres) and
   rotation (in degrees). Type a number, or drag a field's coloured letter left and right (Shift:
-  faster; Snap applies). Below it are the object's other properties with readable names (hover
-  for the game's own name and type): numbers, colours, on/off flags, and text (up to 255
-  characters; longer text than before makes the object larger). Moving or turning an object moves
-  its bounding box (which the game uses) with it.
+  faster; Snap applies). Moving or turning an object moves its bounding box (which the game uses)
+  with it.
+- Below it are the object's **properties**, as the game's own zone schema describes them (the file
+  Volition's level editor used, which the game still has): each with its name and an editor that
+  fits it. Hover over a name for the game's own name, what it holds, its default and its choices.
+  - A list of **choices**: the schema's own, and the entries of the table it names (a squad
+    spawn's squads come from `squads.xtbl`, an effect's from `effects.xtbl`; tables you changed
+    are read as you changed them). Type to find one; only a choice is taken.
+  - A **tick box per flag** (a light's player, characters, vehicles, environment), and one for
+    on/off values.
+  - **Numbers**, whole numbers and **handles** of other objects (8 hex digits, or `none`).
+  - **X, Y, Z** for vectors, the lowest and highest corners for boxes (a trigger region's), and a
+    **colour** swatch with its red, green, blue and alpha (above 1 is brighter than white).
+  - **Text**, up to 255 characters (longer text than before makes the object larger).
+  - Properties the game's files leave out at their default (most lights have no light flags) show
+    as *not set*: tick a flag, or press **Set**, to add one.
+  - As in Volition's editor, some properties are hidden and some are read-only (with a lock): its
+    tools set them, such as a building's model or a light's curve files. Tick **Show hidden and
+    read-only properties** to see and change them anyway.
+  - Properties Volition's tools added that the schema doesn't describe (a navpoint's data, links,
+    a building's destruction data) are shown at the end, with their names from the game.
 - **Add** (+ in the toolbar) lists one of each kind of object the file has (a crate, a light, a
   squad spawn, a building piece, ...), with a Find box. Pick one to add a copy where the middle of
-  the view points.
+  the view points. Below them are **new objects** of every class in the game's schema that can be
+  made from it alone (lights, spawns, triggers, effects, items, ...): a new one gets every
+  property at the schema's default, as Volition's tools would have written it, where the middle
+  of the view points. Hover over the last line for the classes that can't be made this way and
+  why (navpoints, roads and buildings need data Volition's tools made). A few classes, marked
+  *unused*, are in none of the game's levels, so the game may do nothing with them.
 - **Duplicate** (Ctrl+D) copies the picked object beside it (to the view's right, clear of it). A
   copy is a whole breakable object, as the game's own are: copying a loose piece (the tank of an
   explosive tanker) copies the part it hangs from too (the tanker's base), with everything
@@ -243,9 +265,10 @@ the other. Lines keep the same width on the screen near and far. You can't edit 
 - **Restore** puts the game's own zone back in every copy. Other changes in the same containers
   (such as replaced textures) stay.
 - **Adding objects is experimental.** It has been tried in the game: a new game with four copied
-  tankers in `world_08_03` loaded and ran with all four in place. When you test added objects,
-  start the game afresh and start a new game: a save made before they were added doesn't know
-  them. If you saved a zone with an older version of the editor, save it again.
+  tankers in `world_08_03` loaded and ran with all four in place. New objects made from the
+  schema haven't been tried in the game yet. When you test added objects, start the game afresh
+  and start a new game: a save made before they were added doesn't know them. If you saved a zone
+  with an older version of the editor, save it again.
 
 ## Using it with the running game
 
@@ -273,6 +296,8 @@ Start the game with `RFAModLauncher.exe` (the console mod links it to the editor
 - Shadows of the few omni lamps that cast them.
 - Editing the level geometry, terrain or foliage.
 - Adding objects whose models aren't in the zone.
+- Making new navpoints, roads, splines, logic handlers and animation rigs from nothing (copy one
+  instead).
 - Deleting objects that other objects' links name, and editing links between objects.
 - Changing a zone's layers or the zones around it from the zone's tab.
 - Putting changed models back into the game, and textures of another size.

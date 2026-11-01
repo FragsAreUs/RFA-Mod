@@ -25,6 +25,9 @@ sealed class GameAssets
     readonly Dictionary<string, BitmapSource?> bitmaps = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, XtblFile?> tables = new(StringComparer.OrdinalIgnoreCase);
     ZoneNames? zoneNames;
+    ZoneSchema? zoneSchema;
+    bool zoneSchemaRead;
+    readonly Dictionary<string, IReadOnlyList<string>> choices = new(StringComparer.OrdinalIgnoreCase);  // enum choices, by their populate
 
     public GameAssets(Workspace workspace) => this.workspace = workspace;
 
@@ -45,8 +48,45 @@ sealed class GameAssets
         IndexBecameReady?.Invoke();
     }
 
-    /// <summary>Names for the class and property hashes in zone files, from the strings in the game's exe.</summary>
-    public ZoneNames ZoneNames => zoneNames ??= new ZoneNames(ZoneNames.StringsIn(File.ReadAllBytes(Path.Combine(workspace.GameFolder, GameFolder.ExeName))));
+    /// <summary>
+    /// Names for the class and property hashes in zone files, from the strings in the game's exe and
+    /// the names in its zone schema (which has a few the exe doesn't).
+    /// </summary>
+    public ZoneNames ZoneNames => zoneNames ??= new ZoneNames(
+        ZoneNames.StringsIn(File.ReadAllBytes(Path.Combine(workspace.GameFolder, GameFolder.ExeName))).Concat(ZoneSchema?.Names ?? []));
+
+    /// <summary>
+    /// The game's zone schema (<see cref="RfaFormats.Zones.ZoneSchema"/>: what every class of zone
+    /// object is made of), as the game has it; null if it can't be found or read.
+    /// </summary>
+    public ZoneSchema? ZoneSchema
+    {
+        get
+        {
+            if (zoneSchemaRead) return zoneSchema;
+            zoneSchemaRead = true;
+            try
+            {
+                if (workspace.ReadAsGameSeesIt(RfaFormats.Zones.ZoneSchema.FileName) is { } data) zoneSchema = RfaFormats.Zones.ZoneSchema.FromBytes(data);
+            }
+            catch (InvalidDataException) { }
+            return zoneSchema;
+        }
+    }
+
+    /// <summary>
+    /// An enum's choices from the table its schema names (<see cref="SchemaPopulate"/>), as the game
+    /// sees the table (yours, if you changed it), read once. Empty if the table can't be found.
+    /// </summary>
+    public IReadOnlyList<string> Choices(SchemaPopulate populate)
+    {
+        string key = populate.ToString();
+        if (choices.TryGetValue(key, out IReadOnlyList<string>? known)) return known;
+        IReadOnlyList<string> found = [];
+        if (workspace.ReadAsGameSeesIt(populate.Table) is { } data) found = populate.Values(XtblFile.FromBytes(data));
+        choices[key] = found;
+        return found;
+    }
 
     /// <summary>Every place a file name is: archives, and containers in them. Empty until the index is ready.</summary>
     public IEnumerable<(string Archive, string? Container)> PlacesOf(string name) =>

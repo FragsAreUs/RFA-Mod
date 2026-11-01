@@ -11,8 +11,9 @@ in `src\editor` still lacks, grouped by those tools, with what each needs.
 ## Done so far
 
 Archives and containers, tables (editing fields; adding, copying and deleting entries), textures (same-size replacing), every kind of
-model (viewing, exporting), zones and mission layers (moving, turning, adding copies, deleting
-with their attachments and destruction links, editing properties and longer text), level
+model (viewing, exporting), zones and mission layers (moving, turning, adding copies, adding new
+objects of most classes from the game's own zone schema, deleting with their attachments and
+destruction links, editing properties by their type in the schema, and longer text), level
 geometry, terrain, foliage and decals (viewing), links between objects (drawn as lines, listed in
 the inspector), the zones around, the link with the running game
 (show in game, follow the game's camera), CLOE positions in the inspector, skeletons, animations
@@ -24,6 +25,7 @@ their bones).
 | Missing | What it needs |
 |---|---|
 | Placing any chunk or building, not only copies of the zone's own | adding the model's files (and textures) to the zone's container and asset list |
+| New navpoints, roads, splines, logic handlers and animation rigs from nothing (other classes can be made from the schema) | the layouts of `navpoint_data`, `path_road_data`, `object_spline_data`, `logic_handler_buffer` and the rig lists, which Volition's tools made |
 | Moving and adding level geometry (stitch pieces) | writing stitch lists (`.stchlst_pc`, read already) |
 | Editing links and logic between objects: triggers, logic handlers, patrols, navpoint paths, squads (shown as lines and listed already) | writing the list properties (`obj_links`, `logic_handler_buffer`, ...): their layouts beyond the handles; what a logic handler's buffer says |
 | How buildings break: pieces, links and their strengths; tuning them | the destroyables in chunk files (read) and their links (read); their strengths' meaning |

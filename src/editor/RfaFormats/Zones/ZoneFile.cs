@@ -23,10 +23,11 @@ namespace RfaFormats.Zones;
 /// (by size: 1 = flag, 4 = number, 12 = vector, 16 = colour, 36 = rotation, 48 = position and
 /// rotation, such as "oP"), 6 = a list (links between objects).
 ///
-/// Objects can be added (copies of others, <see cref="Copy"/>) and removed (with the objects
-/// attached to them and their destruction links), and properties can grow (longer text); the file
-/// is then laid out again when written, and the relation table built again, as the game's tools
-/// build it.
+/// Objects can be added (copies of others, <see cref="Copy"/>, or new ones made from the game's
+/// schema, <see cref="AddNew"/>) and removed (with the objects attached to them and their
+/// destruction links), and properties can grow (longer text) or be added and removed; the file is
+/// then laid out again when written, and the relation table built again, as the game's tools build
+/// it.
 /// </summary>
 public sealed class ZoneFile
 {
@@ -139,9 +140,10 @@ public sealed class ZoneFile
     /// and its layer: 0x82 for world_08_02, 0x80 in its mission layer 128), and a number after the
     /// highest one used with them, here or in <paramref name="taken"/> (the zone's other files).
     /// </summary>
-    public uint NewHandle(ZoneObject like, IEnumerable<uint> taken)
+    public uint NewHandle(ZoneObject like, IEnumerable<uint> taken) => NewHandle(like.Handle & 0xFFFF0000, taken);
+
+    uint NewHandle(uint prefix, IEnumerable<uint> taken)
     {
-        uint prefix = like.Handle & 0xFFFF0000;
         var used = objects.Select(o => o.Handle).Concat(taken).Where(h => (h & 0xFFFF0000) == prefix).Select(h => h & 0xFFFF).ToHashSet();
         uint next = used.Count == 0 ? 1 : used.Max() + 1;
         if (next > 0xFFFE)
@@ -151,6 +153,28 @@ public sealed class ZoneFile
             if (next > 0xFFFE) throw new InvalidOperationException("no handles are left for new objects here");
         }
         return prefix | next;
+    }
+
+    /// <summary>
+    /// Adds a new object of a class, made from nothing (see <see cref="SchemaClass.NewObject"/>), at
+    /// the end of the list: attached to nothing, with no flags, a handle of its own (with the first
+    /// two bytes most of the zone's objects of its class have, else most of its objects; see
+    /// <see cref="NewHandle(ZoneObject, IEnumerable{uint})"/>), and the number after the highest the
+    /// zone's objects have (the number Volition's editor gave each object, at +48 in its header).
+    /// </summary>
+    public ZoneObject AddNew(uint classHash, IReadOnlyList<NewProperty> properties, Vector3 boundsMin, Vector3 boundsMax, IEnumerable<uint> taken)
+    {
+        if (relationTable != null && objects.Count >= ZoneRelationTable.Entries)
+            throw new InvalidOperationException($"a zone can hold at most {ZoneRelationTable.Entries:N0} objects");
+        uint? MostCommonPrefix(IEnumerable<ZoneObject> these) =>
+            these.GroupBy(o => o.Handle & 0xFFFF0000).OrderByDescending(g => g.Count()).Select(g => (uint?)g.Key).FirstOrDefault();
+        uint prefix = MostCommonPrefix(objects.Where(o => o.ClassHash == classHash)) ?? MostCommonPrefix(objects)
+                      ?? throw new InvalidOperationException("the zone has no objects to take a handle's zone and layer from");
+        uint number = objects.Count == 0 ? 0 : objects.Max(o => o.Number) + 1;
+        ZoneObject obj = ZoneObject.Create(classHash, NewHandle(prefix, taken), number, boundsMin, boundsMax, properties);
+        objects.Add(obj);
+        Renumber();
+        return obj;
     }
 
     /// <summary>Puts an object (a <see cref="Copy"/>) into the zone at a place in its list.</summary>
@@ -468,6 +492,23 @@ public sealed class ZoneObject
         ReadProperties();
     }
 
+    /// <summary>A new object: its header (no flags, attached to nothing), then its properties.</summary>
+    internal static ZoneObject Create(uint classHash, uint handle, uint number, Vector3 boundsMin, Vector3 boundsMax, IEnumerable<NewProperty> properties)
+    {
+        var header = new byte[HeaderSize];
+        BitConverter.TryWriteBytes(header.AsSpan(0), classHash);
+        BitConverter.TryWriteBytes(header.AsSpan(34), (ushort)HeaderSize);
+        BitConverter.TryWriteBytes(header.AsSpan(36), None);
+        BitConverter.TryWriteBytes(header.AsSpan(40), None);
+        BitConverter.TryWriteBytes(header.AsSpan(44), None);
+        BitConverter.TryWriteBytes(header.AsSpan(48), number);
+        var obj = new ZoneObject(header) { Handle = handle };
+        obj.WriteVector(8, boundsMin);
+        obj.WriteVector(20, boundsMax);
+        obj.LayOut(properties.Select(p => (new ZoneProperty(obj, p.Type, p.NameHash, 0, 0), p.Value)).ToList());
+        return obj;
+    }
+
     /// <summary>Where it is in its zone's list (from 0).</summary>
     public int Index { get; internal set; }
 
@@ -488,6 +529,12 @@ public sealed class ZoneObject
     /// <summary>The first object attached to it.</summary>
     public uint Child { get => U32(44); internal set => SetU32(44, value); }
 
+    /// <summary>
+    /// The number Volition's editor gave the object: they count up through a zone's objects
+    /// (world_08_02's navpoints 0xA93, 0xA94, ...), but not every number is the zone's alone.
+    /// </summary>
+    public uint Number => U32(48);
+
     public List<ZoneProperty> Properties { get; } = [];
 
     internal byte[] Bytes => bytes;
@@ -496,8 +543,11 @@ public sealed class ZoneObject
     public ZoneProperty? Property(uint nameHash) => Properties.FirstOrDefault(p => p.NameHash == nameHash);
     public ZoneProperty? Property(string name) => Property(NameHashes.PropertyHash(name));
 
-    /// <summary>Where the object is and how it is turned: its "oP" property if it has one, else
-    /// the middle of its bounding box, unturned.</summary>
+    /// <summary>
+    /// Where the object is and how it is turned: its "oP" property if it has one (every object but
+    /// navpoints), else its "just_pos" (navpoints: a position, no rotation), else the middle of its
+    /// bounding box, unturned.
+    /// </summary>
     public (Vector3 Position, Matrix4x4 Rotation) Placement
     {
         get
@@ -508,6 +558,11 @@ public sealed class ZoneObject
                 // The 9 numbers after the position are the right, up and forward directions.
                 var rotation = new Matrix4x4(f[3], f[4], f[5], 0, f[6], f[7], f[8], 0, f[9], f[10], f[11], 0, 0, 0, 0, 1);
                 return (new Vector3(f[0], f[1], f[2]), rotation);
+            }
+            if (Property("just_pos") is { Size: 12 } justPosition)
+            {
+                float[] f = justPosition.Floats();
+                return (new Vector3(f[0], f[1], f[2]), Matrix4x4.Identity);
             }
             return ((BoundsMin + BoundsMax) / 2, Matrix4x4.Identity);
         }
@@ -552,11 +607,25 @@ public sealed class ZoneObject
     /// <summary>Lays the object out again with one property's value changed to a different size.</summary>
     internal void Resize(ZoneProperty changed, byte[] value) => LayOut(Properties.Select(p => (p, p == changed ? value : p.Value)).ToList());
 
-    /// <summary>Takes a property out of the object, if it has it.</summary>
-    internal void RemoveProperty(uint nameHash)
+    /// <summary>
+    /// Takes a property out of the object, if it has it. The other properties are read afresh, so
+    /// <see cref="ZoneProperty"/> objects taken from it before are no longer its own.
+    /// </summary>
+    public void RemoveProperty(uint nameHash)
     {
         if (Property(nameHash) is not { } going) return;
         LayOut(Properties.Where(p => p != going).Select(p => (p, p.Value)).ToList());
+    }
+
+    /// <summary>
+    /// Adds a property at the end (a value the game's files leave out at its default, such as a
+    /// light's flags). As with <see cref="RemoveProperty"/>, the properties are read afresh.
+    /// </summary>
+    public ZoneProperty AddProperty(int type, uint nameHash, byte[] value)
+    {
+        if (Property(nameHash) != null) throw new InvalidOperationException($"the object has the property {nameHash:X8} already");
+        LayOut([.. Properties.Select(p => (p, p.Value)), (new ZoneProperty(this, type, nameHash, 0, 0), value)]);
+        return Property(nameHash)!;
     }
 
     /// <summary>The object's bytes made again from its header and these properties and values (padding zeroed).</summary>
@@ -615,19 +684,20 @@ public sealed class ZoneObject
     }
 
     /// <summary>
-    /// Moves the object: its "oP" position (if it has one) and its bounding box, which moves with
-    /// it. The rest of the zone stays as it is.
+    /// Moves the object: its position ("oP", or a navpoint's "just_pos": see <see cref="Placement"/>)
+    /// and its bounding box, which moves with it. The rest of the zone stays as it is.
     /// </summary>
     public void MoveTo(Vector3 position)
     {
         Vector3 by = position - Placement.Position;
-        if (Property("oP") is { Size: 48 } op)
+        // Both start with the position (x, y, z); "oP" goes on with the rotation.
+        if ((Property("oP") is { Size: 48 } p ? p : Property("just_pos") is { Size: 12 } j ? j : null) is { } positioned)
         {
-            byte[] value = op.Value;
+            byte[] value = positioned.Value;
             BitConverter.TryWriteBytes(value.AsSpan(0), position.X);
             BitConverter.TryWriteBytes(value.AsSpan(4), position.Y);
             BitConverter.TryWriteBytes(value.AsSpan(8), position.Z);
-            op.SetValue(value);
+            positioned.SetValue(value);
         }
         WriteVector(8, BoundsMin + by);
         WriteVector(20, BoundsMax + by);
