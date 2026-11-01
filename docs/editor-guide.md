@@ -160,7 +160,9 @@ The game's world is a grid of zones; each holds the objects placed in that part 
 - The **terrain**, the ground of outdoor zones, painted the way the game draws it: its four
   texture layers (sand, sand ripples, rubble, ...) mixed by the zone's blend map, in colours
   matched to the game's own far-away picture of the ground. Cave zones have no ground. With
-  textures off it is drawn plain.
+  textures off it is drawn plain. Roads the game lays into the ground (as in `world_10_07`, and
+  all over the Guerrilla world) are drawn with their road texture; in the game their edges blend
+  into the ground's layers, which the editor doesn't show yet.
 - The zone's **mission layers**: what each mission adds (its enemies at their squad spawns,
   triggers, force fields, turrets, vehicles), with a chip and an outliner group per mission
   (`Mission_01A` for `world_08_02`). You can pick their objects and read their properties;

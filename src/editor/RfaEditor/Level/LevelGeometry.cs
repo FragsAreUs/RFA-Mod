@@ -140,6 +140,42 @@ static partial class LevelGeometry
     public static Model3DGroup BuildTerrain(IReadOnlyList<TerrainSubzone> subzones, BitmapSource? zonePicture, System.Numerics.Vector2 corner) =>
         BuildTerrain(subzones, s => (zonePicture, p => new System.Windows.Point((p.X - corner.X) / s.ZoneWidth, (p.Z - corner.Y) / s.ZoneWidth)));
 
+    /// <summary>
+    /// The sub-zones' roads (<see cref="TerrainSubzone.Roads"/>: meshes laid into the ground's
+    /// cut-outs), each with its road texture along its texture coordinates (<paramref name="texture"/>
+    /// gives one by name, or null to draw it plain). The game mixes the ground's layers in at a road's
+    /// edges; here a road is its road texture alone.
+    /// </summary>
+    public static Model3DGroup BuildRoads(IReadOnlyList<TerrainSubzone> subzones, Func<string, BitmapSource?> texture)
+    {
+        Material plain = ModelScene.Plain(Color.FromRgb(120, 112, 100));
+        var materials = new Dictionary<string, Material>(StringComparer.OrdinalIgnoreCase);
+        Material MaterialOf(string? name)
+        {
+            if (name == null) return plain;
+            if (!materials.TryGetValue(name, out Material? material))
+                materials[name] = material = texture(name) is { } picture ? ModelScene.Textured(picture) : plain;
+            return material;
+        }
+        var roads = new Model3DGroup();
+        foreach (RoadMesh road in subzones.SelectMany(s => s.Roads))
+        {
+            var mesh = new MeshBuilder();
+            for (int i = 0; i < road.Positions.Length; i++)
+            {
+                System.Numerics.Vector3 p = road.Positions[i];
+                System.Numerics.Vector2 uv = i < road.TextureCoordinates.Length ? road.TextureCoordinates[i] : default;
+                mesh.AddVertex(new Point3D(p.X, p.Y, -p.Z), new System.Windows.Point(uv.X, uv.Y));  // WPF's Z is the game's -Z
+            }
+            // Flipping Z turns the triangles over, as for the ground.
+            for (int t = 0; t + 2 < road.Triangles.Length; t += 3) mesh.AddTriangle(road.Triangles[t], road.Triangles[t + 2], road.Triangles[t + 1]);
+            Material material = MaterialOf(road.RoadTexture);
+            roads.Children.Add(new GeometryModel3D(mesh.ToMesh(), material) { BackMaterial = material });
+        }
+        roads.Freeze();
+        return roads;
+    }
+
     /// <param name="paint">For a sub-zone: its picture (or null, plain), and where a point of it is in the picture (0 to 1).</param>
     static Model3DGroup BuildTerrain(IReadOnlyList<TerrainSubzone> subzones,
                                      Func<TerrainSubzone, (BitmapSource? Picture, Func<System.Numerics.Vector3, System.Windows.Point> At)> paint,

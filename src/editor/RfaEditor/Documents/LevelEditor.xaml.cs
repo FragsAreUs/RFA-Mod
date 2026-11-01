@@ -1350,14 +1350,24 @@ public partial class LevelEditor : UserControl, IEditorDocument
             (TerrainPainter? painter, string look) = ShowTexturesBox.IsChecked == true ? GroundPainter(zone, corner, subzones[0].ZoneWidth) : (null, "plain");
             static System.Numerics.Vector2 From(TerrainSubzone s) => new(s.BoundsMin.X, s.BoundsMin.Z);
             static System.Numerics.Vector2 To(TerrainSubzone s) => new(s.BoundsMax.X, s.BoundsMax.Z);
-            terrain = LevelGeometry.BuildTerrain(subzones, subzone => painter?.Paint(From(subzone), To(subzone)),
+            var ground = LevelGeometry.BuildTerrain(subzones, subzone => painter?.Paint(From(subzone), To(subzone)),
                 inGameLight: painter == null ? null : subzone => () => painter.PaintAsInGame(From(subzone), To(subzone)));
+            var roads = LevelGeometry.BuildRoads(subzones, RoadTexture);
+            var both = new Model3DGroup { Children = { ground, roads } };
+            both.Freeze();
+            terrain = both;
             terrainParts = subzones.Count;
             terrainContent.Content = showTerrain ? terrain : null;
-            context.Log($"{zoneName}: terrain from {subzones.Count} of {zone}'s 9 sub-zones ({subzones.Sum(s => s.Triangles.Length / 3):N0} triangles), {look}.");
+            int roadCount = subzones.Sum(s => s.Roads.Count);
+            context.Log($"{zoneName}: terrain from {subzones.Count} of {zone}'s 9 sub-zones ({subzones.Sum(s => s.Triangles.Length / 3):N0} triangles), {look}" +
+                        (roadCount > 0 ? $"; {roadCount} road{(roadCount == 1 ? "" : "s")} laid in it." : "."));
             return;
         }
     }
+
+    /// <summary>A road's texture (see <see cref="LevelGeometry.BuildRoads"/>), or none while textures are off.</summary>
+    System.Windows.Media.Imaging.BitmapSource? RoadTexture(string name) =>
+        ShowTexturesBox.IsChecked == true ? context.Assets.Texture(name, archive, container, 512) : null;
 
     /// <summary>A zone's terrain sub-zones that have ground (each is in its own small container), found by name.</summary>
     List<TerrainSubzone> ReadSubzones(string zone)
@@ -1420,6 +1430,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
                     found = true;
                     System.Windows.Media.Imaging.BitmapSource? colourMap = textures ? context.Assets.Texture(zone + "comb.tga", archive, container, 512) : null;
                     drawn.Children.Add(LevelGeometry.BuildTerrain(subzones, colourMap, LevelGeometry.ZoneCorner(subzones)));
+                    drawn.Children.Add(LevelGeometry.BuildRoads(subzones, RoadTexture));
                 }
                 if (models && context.Assets.ReadFile(zone + ".rfgzone_pc", archive, container) is { } zoneFile)
                 {
