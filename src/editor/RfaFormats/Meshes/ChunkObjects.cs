@@ -14,7 +14,7 @@ namespace RfaFormats.Meshes;
 /// where noted). Header: 0x10 where the mesh block starts, 0x1C/0x20 where the collision data
 /// starts and its size, 0x28 where the destruction data starts, 0x158 the number of general
 /// objects, 0x180 script points, 0x18C object ids.
-///   general objects, 100 bytes each (RFA's are 4 bytes longer), right before their names, which
+///   general objects, 100 bytes each (Guerrilla's 88), right before their names, which
 ///     end at the destruction data: name (run-time), box (from, to), position, rotation (9 floats),
 ///     two collision models (u16), flags (u16), mesh: the submesh to draw (i16), and another (i16)
 ///   destruction data (from the next multiple of 128): the number of breakable objects and 4

@@ -6,17 +6,20 @@ namespace RfaFormats.Guerrilla;
 /// Textures Red Faction: Guerrilla's engine has built in rather than as files (neither game ships
 /// them). Its zones' ground materials name them for the layers they leave unused: "misc-white" for
 /// the colour and "flat-normalmap" for the normal (in 11 of its 102 zones, e.g. terr01_02_11). The
-/// world builder makes them from nothing, under the names it gives them.
+/// world builder makes them from nothing, under the names it gives them. One more is ours:
+/// "rfg_nospec", a black specular map, for materials moved to a shader with a specular slot they
+/// have no texture for (<see cref="GuerrillaMaterials"/>).
 /// </summary>
 public static class GuerrillaBuiltIns
 {
-    /// <summary>A built-in texture's files (.cvbm_pc, .gvbm_pc) under <paramref name="name"/>, or null if Guerrilla has no such built-in.</summary>
+    /// <summary>A built-in texture's files (.cvbm_pc, .gvbm_pc) under <paramref name="name"/>, or null if there is no such built-in.</summary>
     public static (string Name, byte[] Data)[]? Files(string texture, string name) => texture.ToLowerInvariant() switch
     {
-        "misc-white" => Flat(name, [255, 255, 255, 255], 0),
+        GuerrillaMaterials.White => Flat(name, [255, 255, 255, 255], 0),
         // Guerrilla's normal maps hold the normal's x and y in red and green (128 is 0) and blue 0:
         // their means are 127-130, 127-128, 0.
-        "flat-normalmap" => Flat(name, [128, 128, 0, 255], PegFile.DataFlag),
+        GuerrillaMaterials.FlatNormal => Flat(name, [128, 128, 0, 255], PegFile.DataFlag),
+        GuerrillaMaterials.NoSpecular => Flat(name, [0, 0, 0, 255], 0),
         _ => null,
     };
 
