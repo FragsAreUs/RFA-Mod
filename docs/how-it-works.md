@@ -350,7 +350,19 @@ converts:
   shapes nothing draws that keep the player in an area (`TerrainBarriers`: Guerrilla's Havok 5.5
   shapes written as 2010, as the chunks' are). Nothing of another level's terrain file is used.
 - **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
-  (Havok MOPP code, written from scratch) over each zone's pieces.
+  (Havok MOPP code, written from scratch) over each zone's pieces. A zone without rocks gets an
+  empty stitch list, with no tree, which the game's loader skips (Armageddon's own levels put a
+  floor piece in such zones; Guerrilla has none).
+- **The navigation meshes** the AI walks and drives on. Armageddon's `.navdata_pc` is Guerrilla's
+  terrain pathfinding moved into a file of its own, so each of Guerrilla's 41 playable zones keeps
+  its two meshes, the people's and the vehicles' (`NavigationFile`, `GuerrillaNavigation`: the
+  vertices, the triangular cells with their neighbours and flags, the edges that meet the next
+  zones, and Havok's tree over the cells), with what Armageddon adds made from the mesh: each
+  cell's island (a piece of the mesh joined to nothing else) and the pools the game fills while it
+  runs. When a level loads, the game checks that within each island of the people's mesh the
+  cells no mission has switched off are one piece ("Isolated sub-islands found!"), so the people's
+  islands are numbered that way. The scenery zones around the map get a file with no navigation,
+  as in Guerrilla.
 - **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file
   (`.cchk_pc`, Guerrilla's version 55) is rewritten as Armageddon's version 62 (`GuerrillaChunks`):
   the mesh block, the materials moved onto Armageddon's shaders (`GuerrillaMaterials`), the

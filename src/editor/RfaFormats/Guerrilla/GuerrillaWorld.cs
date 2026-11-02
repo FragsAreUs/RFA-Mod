@@ -17,23 +17,23 @@ namespace RfaFormats.Guerrilla;
 /// roads and paving with it, holes (under its rocks) filled smoothly, deep shafts capped and sheer drops limited over
 /// all zones together (so shared edges stay equal); its nine sub-zones and the height field written
 /// from that; its far-away meshes; its ground material from Guerrilla's (its four layers' textures at
-/// Guerrilla's own scale and tints, its blend and colour maps, the cliff material from its layers 0
-/// and 3); its invisible barriers (see <see cref="TerrainBarriers"/>: Guerrilla's own, in place of the
-/// terrain template's, ruin01's arena walls, which stood in every zone); Guerrilla's rocks where its
-/// zone places them (see <see cref="GuerrillaRocks"/>); the
+/// Guerrilla's own scale and tints, its blend and colour maps, and its cliff materials); its invisible
+/// barriers (see <see cref="TerrainBarriers"/>: Guerrilla's own); Guerrilla's rocks where its zone
+/// places them (see <see cref="GuerrillaRocks"/>); the
 /// destructible objects asked for (its rfg_movers: buildings, walls, pipes; and general_movers: crates,
 /// boxes) where its zone places them, attached and linked as there (see <see cref="GuerrillaMovers"/>),
-/// each chunk file converted (see <see cref="GuerrillaChunks"/>); a buried
-/// floor piece and its collision tree (every zone with ground needs a stitch list; the rocks have no
-/// collision yet); an environment box over the whole zone; ruin01's navigation data moved and scaled
-/// to it. And the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the
-/// mod (<see cref="GuerrillaSky"/>).
+/// each chunk file converted (see <see cref="GuerrillaChunks"/>); a stitch list of the
+/// rocks with a collision tree over them (empty in zones without rocks); an environment box over the
+/// whole zone; Guerrilla's navigation meshes, for people and
+/// vehicles (see <see cref="GuerrillaNavigation"/>; none in the scenery zones, as in Guerrilla). And
+/// the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the mod (<see
+/// cref="GuerrillaSky"/>).
 ///
-/// What still comes from Armageddon's files, written over: the floor piece (dlib_floor_flat, from
-/// world_l0's 1h_c0810), the rocks' template (ter_sur_blder), the roads' material (world_10_07_2's)
-/// and the navigation data (ruin01's). Terrain files (see ZoneTerrain), zone files (their objects, the
-/// destructible ones too, made from the game's schema), sub-zones, textures, containers, archives,
-/// stitch lists and asset lists are written from nothing.
+/// What still comes from Armageddon's files, written over: the rocks' template (ter_sur_blder) and the
+/// roads' material (world_10_07_2's).
+/// Terrain files (see ZoneTerrain), zone files (their objects, the destructible ones too, made from the
+/// game's schema), navigation files (Guerrilla's own meshes: see GuerrillaNavigation), sub-zones,
+/// textures, containers, archives, stitch lists and asset lists are written from nothing.
 ///
 /// Out: rfg_l0.vpp_pc (the sub-zones' containers and the asset list), rfg_l1.vpp_pc (the zones'),
 /// rfg_precache.vpp_pc, zonescript_rfg.vpp_pc, rfg.gtodx and a time of day for each district
@@ -56,8 +56,6 @@ public static class GuerrillaWorld
     const float MaxStep = 25f;  // nor more than this below a neighbouring sample, 1 m away: only the deep shafts' walls, not Guerrilla's own cliffs and retaining walls
     const float BoxBottom = -500, BoxTop = 1500;   // the environment boxes' heights
     const float BoxFogNear = 100000;               // where the boxes' own fog would start (their far clip is 1,500 m)
-    const float FloorDepth = -150;                 // the buried floor piece's height
-    const string FloorPiece = "dlib_floor_flat";
     // The most chunk files (c- and g-files) one container is given. The game reads a container's
     // CPU-side files through a 20 MB pool ("Pregame_split_pool"), asking a little more than their
     // sizes; its own containers hold at most 19 MB of them. Guerrilla's busiest zone, all in one
@@ -128,10 +126,7 @@ public static class GuerrillaWorld
         string cache = Path.Combine(game, "build", "pc", "cache"), rfgCache = Path.Combine(guerrilla, "build", "pc", "cache");
         var worldL0 = Packfile.Open(Path.Combine(cache, "world_l0.vpp_pc"));
         var precache = Packfile.Open(Path.Combine(cache, "dlc01_precache.vpp_pc"));
-        var floorContainer = Packfile.FromBytes("1h_c0810.str2_pc", worldL0.Read(worldL0.Find("1h_c0810.str2_pc") ?? throw new InvalidDataException("no 1h_c0810 in world_l0.vpp_pc")));
-        var worldAsm = AsmFile.Read(worldL0.Read(worldL0.Find("world_l0.asm_pc")!));
         byte[] Pre(string name) => precache.Read(precache.Find(name) ?? throw new InvalidDataException($"no {name} in dlc01_precache.vpp_pc"));
-        byte[] Floor(string name) => floorContainer.Read(floorContainer.Find(name) ?? throw new InvalidDataException($"no {name} in world_l0.vpp_pc's 1h_c0810"));
         // Armageddon's road decal material (world_10_07's, in one of its sub-zones), for Guerrilla's road decals.
         var roadContainer = Packfile.FromBytes("0h_c3224.str2_pc", worldL0.Read(worldL0.Find("0h_c3224.str2_pc") ?? throw new InvalidDataException("no 0h_c3224 in world_l0.vpp_pc")));
         var (roadMap, roadMaterial) = TerrainSubzone.RoadMaterials(roadContainer.Read(roadContainer.Find("world_10_07_2.ctmesh_pc")
@@ -257,6 +252,7 @@ public static class GuerrillaWorld
         // its invisible barriers, which take the place of the terrain template's (ruin01's arena walls).
         var looks = new Dictionary<(int, int), Look>();
         var barriers = new Dictionary<(int, int), List<ChunkShape>>();
+        var navigation = new Dictionary<(int, int), NavigationFile>();
         foreach (var (col, row) in zones)
         {
             string zoneName = $"terr01_{col:00}_{row:00}";
@@ -271,8 +267,12 @@ public static class GuerrillaWorld
             looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000),
                                          GuerrillaTerrain.CliffMaterials(terrain), GuerrillaTerrain.LayerMap(terrain));
             barriers[(col, row)] = TerrainBarriers.Read(terrain);
+            navigation[(col, row)] = GuerrillaNavigation.Convert(terrain, col, row);
         }
         log($"Invisible barriers: Guerrilla's own, {barriers.Values.Sum(b => b.Count):N0} in {barriers.Values.Count(b => b.Count > 0)} of {zones.Count} zones");
+        var navigable = navigation.Values.Where(n => n.People != null || n.Vehicles != null).ToList();
+        log($"Navigation: Guerrilla's own in {navigable.Count} zones ({navigable.Sum(n => n.People?.Cells.Length ?? 0):N0} cells for people, " +
+            $"{navigable.Sum(n => n.Vehicles?.Cells.Length ?? 0):N0} for vehicles); none in the other {zones.Count - navigable.Count}, as in Guerrilla");
         // A Guerrilla texture's header made again under its new name: its size, format and flags as
         // Guerrilla's, and its mip levels, but a compressed one's only down to 4 x 4. Guerrilla sizes
         // the levels smaller than a 4-pixel block by their pixels (a 2 x 2 DXT5 level 4 bytes, not a
@@ -428,21 +428,6 @@ public static class GuerrillaWorld
             return gameplayProperties.Contains(closest) ? closest : null;
         }
 
-        // ---- What every zone carries: the buried floor piece with its textures.
-        var shared = new List<(string Name, byte[] Data)>();
-        foreach (string name in new[] { "ter_dlib_di", "ter_dlib_nm", "ter_dlib_sp" })
-            foreach (string ext in new[] { ".cvbm_pc", ".gvbm_pc" }) shared.Add((name + ext, Floor(name + ext)));
-        byte[] floorHeader = Floor(FloorPiece + ".cstch_pc"), floorData = Floor(FloorPiece + ".gstch_pc");
-        shared.Add((FloorPiece + ".cstch_pc", floorHeader));
-        shared.Add((FloorPiece + ".gstch_pc", floorData));
-        var floorModel = ModelFile.Read(FloorPiece + ".cstch_pc", floorHeader, floorData);
-        Vector2 floorMin = new(floorModel.Positions.Min(p => p.X), floorModel.Positions.Min(p => p.Z));
-        Vector2 floorMax = new(floorModel.Positions.Max(p => p.X), floorModel.Positions.Max(p => p.Z));
-        var (floorCollision, _) = PieceCollision.Read(floorHeader);
-        var floorCollisionMin = floorCollision.Aggregate(new Vector3(float.MaxValue), Vector3.Min);
-        var floorCollisionMax = floorCollision.Aggregate(new Vector3(float.MinValue), Vector3.Max);
-
-        byte[] navTemplate = Pre("ruin01.navdata_pc");
         var schema = ZoneSchema.FromGame(game) ?? throw new InvalidDataException($"no {ZoneSchema.FileName} in the game's {ZoneSchema.ArchiveName}");
 
         var asm = new AsmFile();
@@ -552,17 +537,13 @@ public static class GuerrillaWorld
             zonescript.Add((zone + ".rfgzone_pc", zoneBytes));
             zonescript.Add(("p_" + zone + ".rfgzone_pc", persistent.ToBytes()));
 
-            // The stitch list: the buried floor piece (first of list 0 when there are rocks, else in the
-            // middle list) and the rocks, with a collision tree reaching all of them, each by the box
-            // its own collision fills where it is placed.
+            // The stitch list: Guerrilla's rocks, with a collision tree reaching all of them, each by the
+            // box its own collision fills where it is placed; none in a zone without rocks (Guerrilla's
+            // scenery zones and some others), whose list is empty, with no tree, which the game's loader
+            // takes (Armageddon's own levels put a floor piece in such zones instead).
             var rocks = rocksIn[(col, row)];
-            var floorAt = new Vector3(zoneMiddle.X, FloorDepth, zoneMiddle.Z);
-            var floor = new StitchPieceToWrite(FloorPiece, rocks.Count > 0 ? 0 : 4, floorAt, StitchPieceToWrite.Unturned, 4,
-                                               new Vector2(floorAt.X, floorAt.Z) + floorMin, new Vector2(floorAt.X, floorAt.Z) + floorMax);
-            var boxes = new List<(Vector3 Min, Vector3 Max)> { StitchList.PlacedBox(floorCollisionMin, floorCollisionMax, StitchPieceToWrite.Unturned, floorAt) };
-            foreach (var r in rocks)
-                boxes.Add(StitchList.PlacedBox(rockPieces[r.Name].CollisionMin, rockPieces[r.Name].CollisionMax, r.Rotation, r.Position));
-            byte[] stitch = StitchList.Write([floor, .. rocks], zoneMiddle, boxes);
+            var boxes = rocks.Select(r => StitchList.PlacedBox(rockPieces[r.Name].CollisionMin, rockPieces[r.Name].CollisionMax, r.Rotation, r.Position)).ToList();
+            byte[] stitch = StitchList.Write(rocks, zoneMiddle, boxes);
 
             // The chunk files go where Armageddon keeps them, in the container of the sub-zone each object
             // stands in (its third of the zone each way), each container's share kept within ChunkBudget;
@@ -632,7 +613,7 @@ public static class GuerrillaWorld
             }
 
             // Its containers and asset list entries.
-            var files = new List<(string Name, byte[] Data)>(shared);
+            var files = new List<(string Name, byte[] Data)>();
             foreach (string texture in look.TerrainTextures) files.AddRange(layerFiles[texture]);
             foreach (string texture in roadTexturesIn[(col, row)]) files.AddRange(roadTextures[texture]);
             foreach (string name in rocks.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -651,7 +632,7 @@ public static class GuerrillaWorld
                 (blendName + ".cvbm_pc", PegFile.SingleHeader(blendName + ".tga", blend.Width, blend.Height, TextureFormat.Argb8888, 1, PegFile.DataFlag)), (blendName + ".gvbm_pc", blendData),
                 (colourName + ".cvbm_pc", PegFile.SingleHeader(colourName + ".tga", look.Colour.Width, look.Colour.Height, TextureFormat.Dxt1, colourLevels, 0)), (colourName + ".gvbm_pc", colourData),
                 (zone + ".cterrain_pc", terrainFile), (zone + ".gterrain_pc", terrainData),
-                (zone + ".navdata_pc", NavData(navTemplate, col, row)), (zone + ".stchlst_pc", stitch), (zone + ".rfgzone_pc", zoneBytes),
+                (zone + ".navdata_pc", navigation[(col, row)].ToBytes()), (zone + ".stchlst_pc", stitch), (zone + ".rfgzone_pc", zoneBytes),
             });
             pending.Add(new PendingContainer($"1h_c{col:00}{15 - row:00}", ZoneLayer: true, files));
             for (int n = 0; n < 9; n++)
@@ -745,7 +726,6 @@ public static class GuerrillaWorld
         log($"Precache: {precacheFiles.Count} files ({sharedBytes / 1048576:N0} MB) held by more than one container, kept once (its directory " +
             $"{directory / 1024:N0} KB of the {PrecacheDirectoryBudget / 1024:N0} KB it may take; {left} more such files stay in their containers); " +
             $"the containers' files {before / 1048576:N0} MB → {after / 1048576:N0} MB");
-        asm.Containers.Add(worldAsm.Containers.Single(c => c.Name == FloorPiece + ".rfgstitchx"));
         foreach (var (name, piece) in rockPieces)
         {
             var pieceFiles = new List<(string Name, byte[] Data)> { (name + ".cstch_pc", piece.Header), (name + ".gstch_pc", piece.Data) };
@@ -1055,35 +1035,6 @@ public static class GuerrillaWorld
 
     /// <summary>The first choice for an enum the schema gives no default (the zone marker's district and spawn resources: "Default", which the game's tables have).</summary>
     static IReadOnlyList<string> DefaultChoice(SchemaPopulate table) => ["Default"];
-
-    /// <summary>
-    /// ruin01's navigation data (2,484 bytes, as ruin03's and world_07_11's: a flat 3 × 3 grid over the
-    /// square of zone 08_08, x 0 to 255 and z −255 to 0) for a whole zone (col, row): its 13 points (two
-    /// boxes, two grids of 9, two tree frames) moved to the zone's square and scaled to its width, and
-    /// the zone's place written where it names 08_08 (row × 16 + col and column × 16 + row in each
-    /// cell's record, column × 16 + row in two more). With ruin01's place left in it the game found no
-    /// zone for its islands ("Invalid island pathfind data found!").
-    /// </summary>
-    static byte[] NavData(byte[] ruin, int col, int row)
-    {
-        byte[] d = (byte[])ruin.Clone();
-        var places = new List<int>();
-        foreach (int cells in new[] { 0x154, 0x7D0 })
-            for (int k = 0; k < 8; k++) places.AddRange([cells + 0x24 * k + 2, cells + 0x24 * k + 5]);
-        places.AddRange([0x2ED, 0x935]);
-        if (d.Length != 2484 || places.Any(p => d[p] != 0x88)) throw new InvalidDataException("ruin01's navigation data isn't as expected");
-        var ruinCorner = new Vector2(0, -255);
-        var corner = Corner(col, row);
-        float scale = ZoneWidth / 255f;
-        int[] points = [0x84, 0x90, .. Enumerable.Range(0, 9).Select(k => 0xCC + 12 * k), 0x694, 0x700, 0x70C, .. Enumerable.Range(0, 9).Select(k => 0x748 + 12 * k), 0x96C];
-        foreach (int p in points)
-        {
-            BitConverter.TryWriteBytes(d.AsSpan(p), corner.X + (BitConverter.ToSingle(d, p) - ruinCorner.X) * scale);
-            BitConverter.TryWriteBytes(d.AsSpan(p + 8), corner.Y + (BitConverter.ToSingle(d, p + 8) - ruinCorner.Y) * scale);
-        }
-        foreach (int p in places) d[p] = (byte)(p is 0x2ED or 0x935 || (p - (p < 0x7D0 ? 0x154 : 0x7D0)) % 0x24 == 5 ? col * 16 + row : row * 16 + col);
-        return d;
-    }
 
     /// <summary>An asset list entry for a container of ours: its data block's place and size, each file's size, and a primitive for each header file.</summary>
     static AsmContainer ContainerEntry(string name, byte[] containerBytes, IReadOnlyList<(string Name, byte[] Data)> files)

@@ -28,27 +28,9 @@ public static class GuerrillaTerrain
     public static List<CliffMaterial> CliffMaterials(byte[] terrain)
     {
         int I(int at) => BitConverter.ToInt32(terrain, at);
-        int data = DataAt(terrain);
-        int p = SkipMaterialSet(terrain, data + 0x428);
-        if (I(data + 0x98) != -1)
-        {
-            if (Encoding.ASCII.GetString(terrain, p, 4) != "MCKH") throw new InvalidDataException("no height field where the Guerrilla terrain file should have it");
-            p += I(p + 8);
-        }
-        p = To(p, 4) + I(data + 0x48) * 4;
-        int count = I(data + 0x9C);
         var result = new List<CliffMaterial>();
-        if (count <= 0) return result;
-        p += 8 + count * 8;
-        for (int k = 0; k < count; k++)
+        foreach (var (names, material) in CliffMaterialBlocks(terrain, out _))
         {
-            p = To(p, 4);
-            int names = p + 4;
-            p = names + I(p);
-            p = To(p, 16);
-            int material = p, size = I(p);
-            p += size == 0 ? 4 : size;
-            if (size == 0) continue;
             int textures = BitConverter.ToUInt16(terrain, material + 0x10), constants = terrain[material + 0x12];
             var textureNames = Enumerable.Range(0, textures).Select(t => CString(terrain, names + I(material + 0x20 + t * 12))).ToList();
             int hashesAt = material + 0x20 + textures * 12, valuesAt = material + To(hashesAt + constants * 4 - material, 16);
@@ -64,6 +46,51 @@ public static class GuerrillaTerrain
             result.Add(new CliffMaterial(textureNames, values));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Where the zone's pathfinding is (Guerrilla's terrain_pf_data: 1, its size, then its people's and
+    /// vehicles' navigation layers and trees, each an offset from the file's start and a size), right
+    /// after the cliff materials; -1 if it has none. The 41 zones with a height field have it; the 61
+    /// around them (the scenery past the playable map) have neither.
+    /// </summary>
+    public static int PathfindingAt(byte[] terrain)
+    {
+        CliffMaterialBlocks(terrain, out int end);
+        return end + 12 <= terrain.Length && BitConverter.ToInt32(terrain, end) == 1 && BitConverter.ToInt32(terrain, end + 8) is int layer &&
+               layer > end && layer + 4 <= terrain.Length && BitConverter.ToUInt32(terrain, layer) == NavigationLayer.Signature ? end : -1;
+    }
+
+    /// <summary>Each cliff material's names block and material block (none if it has none), walking from terrain_data past the ground's materials, the height field and the sub-zones; and where they end.</summary>
+    static List<(int Names, int Material)> CliffMaterialBlocks(byte[] terrain, out int end)
+    {
+        int I(int at) => BitConverter.ToInt32(terrain, at);
+        int data = DataAt(terrain);
+        int p = SkipMaterialSet(terrain, data + 0x428);
+        if (I(data + 0x98) != -1)
+        {
+            if (Encoding.ASCII.GetString(terrain, p, 4) != "MCKH") throw new InvalidDataException("no height field where the Guerrilla terrain file should have it");
+            p += I(p + 8);
+        }
+        p = To(p, 4) + I(data + 0x48) * 4;
+        int count = I(data + 0x9C);
+        var blocks = new List<(int, int)>();
+        if (count > 0)
+        {
+            p += 8 + count * 8;
+            for (int k = 0; k < count; k++)
+            {
+                p = To(p, 4);
+                int names = p + 4;
+                p = names + I(p);
+                p = To(p, 16);
+                int material = p, size = I(p);
+                p += size == 0 ? 4 : size;
+                if (size != 0) blocks.Add((names, material));
+            }
+        }
+        end = p;
+        return blocks;
     }
 
     /// <summary>The zone's layer map: its cells (2 bits each, as the file keeps them) and its materials' names; null if it has none.</summary>

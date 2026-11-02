@@ -59,9 +59,11 @@ public sealed class StitchList
     ///   "Trying to load invalid MOPP code" if it isn't), then the tree: "MOPP", 0x12D, its frame (from
     ///   x, y, z, x and z from <paramref name="zoneMiddle"/>, y as it is; then 2^24 / its size), the
     ///   code's size, 0, and the code padded with 0xCD to 16 bytes.
+    /// With no tree (no pieces), the tree count 0 and nothing after it: the loader skips the trees then
+    /// (it checks for none at 0x6B8D10), though every list in the game has at least one piece.
     /// </summary>
-    /// <param name="treeCode">The Havok MOPP code; see <see cref="BoxTreeCode"/>.</param>
-    public static byte[] Write(IReadOnlyList<StitchPieceToWrite> pieces, Vector3 zoneMiddle, Vector3 treeFrom, float treeSize, byte[] treeCode)
+    /// <param name="treeCode">The Havok MOPP code (see <see cref="BoxTreeCode"/>); null for no tree.</param>
+    public static byte[] Write(IReadOnlyList<StitchPieceToWrite> pieces, Vector3 zoneMiddle, Vector3 treeFrom, float treeSize, byte[]? treeCode)
     {
         var stream = new MemoryStream();
         var w = new BinaryWriter(stream);
@@ -94,6 +96,11 @@ public sealed class StitchList
             }
         }
         foreach (var _ in pieces) w.Write(0);
+        if (treeCode == null)
+        {
+            w.Write(0);
+            return stream.ToArray();
+        }
         w.Write(1); w.Write(0); w.Write(-1); w.Write(0); w.Write((ushort)0);
         while (stream.Length % 16 != 0) w.Write((byte)0);
         w.Write(Encoding.ASCII.GetBytes("MOPP")); w.Write(0x12D);
@@ -108,10 +115,12 @@ public sealed class StitchList
     /// A stitch list of these pieces whose collision tree reaches every one of them: <paramref name="boxes"/>
     /// are the pieces' collision boxes in the world, in the same order as <paramref name="pieces"/>. The
     /// tree's leaves follow the pieces as written (list by list), its frame the boxes with a metre to spare.
+    /// No pieces: an empty list with no tree.
     /// </summary>
     public static byte[] Write(IReadOnlyList<StitchPieceToWrite> pieces, Vector3 zoneMiddle, IReadOnlyList<(Vector3 Min, Vector3 Max)> boxes)
     {
         if (boxes.Count != pieces.Count) throw new ArgumentException("a box for every piece");
+        if (pieces.Count == 0) return Write(pieces, zoneMiddle, Vector3.Zero, 0, null);
         var order = Enumerable.Range(0, pieces.Count).OrderBy(i => pieces[i].List).ToList();  // stable: as Write lays them out
         var written = order.Select(i => boxes[i]).ToList();
         var min = new Vector3(written.Min(b => b.Min.X), written.Min(b => b.Min.Y), written.Min(b => b.Min.Z)) - Vector3.One;
