@@ -29,13 +29,11 @@ namespace RfaFormats.Guerrilla;
 /// to it. And the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the
 /// mod (<see cref="GuerrillaSky"/>).
 ///
-/// What still comes from Armageddon's files, written over: the terrain file (ruin01's: its Havok
-/// height field, material slots and unknown sections), the zone files' few objects (ruin01's marker,
-/// environment box and player start; the destructible objects are laid out as world_08_03's
-/// cardboard box and barricade),
-/// the floor piece (dlib_floor_flat, from world_l0's 1h_c0810),
-/// the rocks' template (ter_sur_blder) and the navigation data (ruin01's). Sub-zones, textures,
-/// containers, archives, stitch lists and asset lists are written from nothing.
+/// What still comes from Armageddon's files, written over: the floor piece (dlib_floor_flat, from
+/// world_l0's 1h_c0810), the rocks' template (ter_sur_blder), the roads' material (world_10_07_2's)
+/// and the navigation data (ruin01's). Terrain files (see ZoneTerrain), zone files (their objects, the
+/// destructible ones too, made from the game's schema), sub-zones, textures, containers, archives,
+/// stitch lists and asset lists are written from nothing.
 ///
 /// Out: rfg_l0.vpp_pc (the sub-zones' containers and the asset list), rfg_l1.vpp_pc (the zones'),
 /// rfg_precache.vpp_pc, zonescript_rfg.vpp_pc, rfg.gtodx and a time of day for each district
@@ -69,7 +67,32 @@ public static class GuerrillaWorld
 
     static Vector2 Corner(int col, int row) => new((col - 8) * ZoneWidth, (7 - row) * ZoneWidth);
 
-    sealed record Look(string[] Textures, Vector4[] Constants, RgbaImage Blend, RgbaImage Colour);
+    /// <summary>
+    /// A zone's look from its Guerrilla terrain file: its ground layers' textures (colour and normal, four
+    /// layers, without ".tga") and constants, blend and colour maps, cliff materials and layer map.
+    /// </summary>
+    sealed record Look(string[] Textures, Vector4[] Constants, RgbaImage Blend, RgbaImage Colour,
+                       List<GuerrillaTerrain.CliffMaterial> Cliffs, (byte[] Cells, List<string> Names)? LayerMap)
+    {
+        /// <summary>
+        /// A cliff material's colour maps (…_d) with their normal maps (…_n), in its textures' order, without
+        /// ".tga" (the zone's own blend and colour maps, and empty slots, left out).
+        /// </summary>
+        public List<(string Colour, string Normal)> CliffPairs(int material)
+        {
+            var names = Cliffs[material].Textures
+                .Where(t => t.EndsWith(".tga", StringComparison.OrdinalIgnoreCase) && !t.StartsWith("terr01_", StringComparison.OrdinalIgnoreCase))
+                .Select(t => t[..^4]).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return names.Where(n => n.EndsWith("_d", StringComparison.OrdinalIgnoreCase))
+                .Select(d => (d, names.FirstOrDefault(n => n.Equals(d[..^2] + "_n", StringComparison.OrdinalIgnoreCase)) ?? d))
+                .ToList();
+        }
+
+        /// <summary>Every ground and cliff texture the zone's terrain file names (without ".tga").</summary>
+        public IEnumerable<string> TerrainTextures =>
+            Textures.Take(8).Concat(Enumerable.Range(0, Cliffs.Count).SelectMany(CliffPairs).SelectMany(p => new[] { p.Colour, p.Normal }))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>Guerrilla's zones with ground (terr01_CC_RR.cterrain_pc in its terr01_l0 and _l1 archives): column and row.</summary>
     public static List<(int Col, int Row)> ZonesIn(string guerrillaCache)
@@ -105,11 +128,9 @@ public static class GuerrillaWorld
         string cache = Path.Combine(game, "build", "pc", "cache"), rfgCache = Path.Combine(guerrilla, "build", "pc", "cache");
         var worldL0 = Packfile.Open(Path.Combine(cache, "world_l0.vpp_pc"));
         var precache = Packfile.Open(Path.Combine(cache, "dlc01_precache.vpp_pc"));
-        var ruin = Packfile.Open(Path.Combine(cache, "ruin01.vpp_pc"));
         var floorContainer = Packfile.FromBytes("1h_c0810.str2_pc", worldL0.Read(worldL0.Find("1h_c0810.str2_pc") ?? throw new InvalidDataException("no 1h_c0810 in world_l0.vpp_pc")));
         var worldAsm = AsmFile.Read(worldL0.Read(worldL0.Find("world_l0.asm_pc")!));
         byte[] Pre(string name) => precache.Read(precache.Find(name) ?? throw new InvalidDataException($"no {name} in dlc01_precache.vpp_pc"));
-        byte[] Ruin(string name) => ruin.Read(ruin.Find(name) ?? throw new InvalidDataException($"no {name} in ruin01.vpp_pc"));
         byte[] Floor(string name) => floorContainer.Read(floorContainer.Find(name) ?? throw new InvalidDataException($"no {name} in world_l0.vpp_pc's 1h_c0810"));
         // Armageddon's road decal material (world_10_07's, in one of its sub-zones), for Guerrilla's road decals.
         var roadContainer = Packfile.FromBytes("0h_c3224.str2_pc", worldL0.Read(worldL0.Find("0h_c3224.str2_pc") ?? throw new InvalidDataException("no 0h_c3224 in world_l0.vpp_pc")));
@@ -247,11 +268,11 @@ public static class GuerrillaWorld
                                        RfgFile(col, row, stem + ".gvbm_pc", minSize) ?? throw new InvalidDataException($"no {stem}.gvbm_pc"));
                 return peg.Decode(peg.Textures[0]);
             }
-            looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000));
+            looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000),
+                                         GuerrillaTerrain.CliffMaterials(terrain), GuerrillaTerrain.LayerMap(terrain));
             barriers[(col, row)] = TerrainBarriers.Read(terrain);
         }
         log($"Invisible barriers: Guerrilla's own, {barriers.Values.Sum(b => b.Count):N0} in {barriers.Values.Count(b => b.Count > 0)} of {zones.Count} zones");
-        static string Alias(string texture) => "rfg_" + NameHashes.PropertyHash(texture).ToString("x8");
         // A Guerrilla texture's header made again under its new name: its size, format and flags as
         // Guerrilla's, and its mip levels, but a compressed one's only down to 4 x 4. Guerrilla sizes
         // the levels smaller than a 4-pixel block by their pixels (a 2 x 2 DXT5 level 4 bytes, not a
@@ -270,7 +291,7 @@ public static class GuerrillaWorld
         }
         var layerFiles = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var ((col, row), look) in looks)
-            foreach (string texture in look.Textures.Take(8).Distinct(StringComparer.OrdinalIgnoreCase).Where(t => !layerFiles.ContainsKey(t)))
+            foreach (string texture in look.TerrainTextures.Where(t => !layerFiles.ContainsKey(t)))
             {
                 if (GuerrillaBuiltIns.Files(texture, Alias(texture)) is { } builtIn)
                 {
@@ -386,29 +407,29 @@ public static class GuerrillaWorld
                 (missing.Count > 0 ? $"; not found next to the zones that place them: {string.Join(", ", missing)}" : "") +
                 (missingTextures.Count > 0 ? $"; textures not found, drawn white: {string.Join(", ", missingTextures)}" : ""));
         }
-        // What they are laid out as: Armageddon's own movers by the first mission's start, a cardboard
-        // box (general_mover) and a barricade (rfg_mover); and the names Armageddon's tables have.
-        var firstMission = Packfile.FromBytes("1h_c0812.str2_pc", worldL0.Read(worldL0.Find("1h_c0812.str2_pc") ?? throw new InvalidDataException("no 1h_c0812 in world_l0.vpp_pc")));
-        var firstZone = ZoneFile.Read(firstMission.Read(firstMission.Find("world_08_03.rfgzone_pc") ?? throw new InvalidDataException("no world_08_03.rfgzone_pc in world_l0's 1h_c0812")));
-        ZoneObject Template(uint cls, string chunk) => firstZone.Objects.FirstOrDefault(o => o.ClassHash == cls && o.Property("chunk_name")?.Text == chunk)
-            ?? throw new InvalidDataException($"no {chunk} mover in world_08_03");
-        var moverTemplates = new Dictionary<uint, ZoneObject>
-        {
-            [generalMover] = Template(generalMover, "s_cm_cont_cardboard_box.cchk_pc"),
-            [rfgMover] = Template(rfgMover, "s_cm_cont_barricade.cchk_pc"),
-        };
+        // The Props and gameplay_props names Armageddon's tables have.
         var misc = Packfile.Open(Path.Combine(cache, "misc.vpp_pc"));
         HashSet<string> TableNames(string table) => new(XtblFile.FromBytes(misc.Read(misc.Find(table) ?? throw new InvalidDataException($"no {table} in misc.vpp_pc"))).Entries.Select(XtblFile.EntryName), StringComparer.OrdinalIgnoreCase);
         var levelObjects = TableNames("level_objects.xtbl");
         var gameplayProperties = TableNames("gameplay_properties.xtbl");
+        // Guerrilla's gameplay_props names that Armageddon's table lacks (121, on about 2,000 objects;
+        // nearly all cast shadows) get Armageddon's Default entry with the same shadows and anchoring as
+        // Guerrilla's entry: Default, Default_shadow, Default_Prevent_Anchor or Default_Shadow_and_Anchor.
+        var rfgTables = Packfile.Open(Path.Combine(rfgCache, "misc.vpp_pc"));
+        var guerrillaGameplay = XtblFile.FromBytes(rfgTables.Read(rfgTables.Find("gameplay_properties.xtbl") ?? throw new InvalidDataException("no gameplay_properties.xtbl in Guerrilla's misc.vpp_pc")))
+            .Entries.GroupBy(XtblFile.EntryName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        string? GameplayProps(string name)
+        {
+            if (gameplayProperties.Contains(name)) return name;
+            if (!guerrillaGameplay.TryGetValue(name, out var entry)) return null;
+            var flags = (entry.Element("chunk_flags")?.ElementsNamed("Flag").Select(f => f.Value.Trim()) ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            bool shadows = flags.Contains("casts_shadows"), anchor = flags.Contains("prevent_anchor");
+            string closest = shadows && anchor ? "Default_Shadow_and_Anchor" : shadows ? "Default_shadow" : anchor ? "Default_Prevent_Anchor" : "Default";
+            return gameplayProperties.Contains(closest) ? closest : null;
+        }
 
-        // ---- What every zone carries: the foliage meshes the terrain template names (it grows none:
-        // see below), and the buried floor piece with its textures.
+        // ---- What every zone carries: the buried floor piece with its textures.
         var shared = new List<(string Name, byte[] Data)>();
-        foreach (string texture in new[] { "f_cm_rubble_di", "f_cm_rubble_sp", "f_cm_trash_di", "f_cm_trash_sp" })
-            foreach (string ext in new[] { ".cvbm_pc", ".gvbm_pc" }) shared.Add((texture + ext, Pre(texture + ext)));
-        foreach (string mesh in new[] { "f_cm_rubble_a", "f_cm_rubble_b", "f_cm_trash_a", "f_cm_trash_b", "f_cm_trash_c", "f_cm_trash_d", "f_cm_trash_e", "f_cm_trash_f" })
-            shared.Add((mesh + ".cfmesh_pc", Pre(mesh + ".cfmesh_pc")));
         foreach (string name in new[] { "ter_dlib_di", "ter_dlib_nm", "ter_dlib_sp" })
             foreach (string ext in new[] { ".cvbm_pc", ".gvbm_pc" }) shared.Add((name + ext, Floor(name + ext)));
         byte[] floorHeader = Floor(FloorPiece + ".cstch_pc"), floorData = Floor(FloorPiece + ".gstch_pc");
@@ -421,10 +442,8 @@ public static class GuerrillaWorld
         var floorCollisionMin = floorCollision.Aggregate(new Vector3(float.MaxValue), Vector3.Min);
         var floorCollisionMax = floorCollision.Aggregate(new Vector3(float.MinValue), Vector3.Max);
 
-        byte[] terrainTemplate = Pre("ruin01.cterrain_pc"), terrainDataTemplate = Pre("ruin01.gterrain_pc"), navTemplate = Pre("ruin01.navdata_pc");
-        byte[] zoneTemplate = Ruin("ruin01.rfgzone_pc"), persistentTemplate = Ruin("p_ruin01.rfgzone_pc");
-        Vector3 templateMiddle = new(127.5f, 0, -127.5f);  // ruin01's zone marker
-        const uint templateBox = 0x88030008;                // its environment box over the arena
+        byte[] navTemplate = Pre("ruin01.navdata_pc");
+        var schema = ZoneSchema.FromGame(game) ?? throw new InvalidDataException($"no {ZoneSchema.FileName} in the game's {ZoneSchema.ArchiveName}");
 
         var asm = new AsmFile();
         var asm1 = new AsmFile();
@@ -480,51 +499,24 @@ public static class GuerrillaWorld
                 for (int x = 0; x < S; x++)
                     cliff[z * S + x] = blend.Pixels[(Math.Min(z, blend.Height - 1) * blend.Width + Math.Min(x, blend.Width - 1)) * 4];
             var subzones = GuerrillaGround.Subzones(h, corner, null, cliff, Layout, holes[(col, row)], roadsIn[(col, row)]);
-            // (Without the template's foliage, Junction's rubble and trash; Guerrilla's is still to port.)
-            byte[] terrain = TerrainBarriers.WithBarriers(ZoneFoliage.WithoutPieces(GuerrillaGround.TerrainFile(terrainTemplate, h, Layout)), barriers[(col, row)]);
-            int box = HeaderBox(terrain);
-            BitConverter.TryWriteBytes(terrain.AsSpan(box), corner.X);
-            BitConverter.TryWriteBytes(terrain.AsSpan(box + 8), corner.Y);
-            BitConverter.TryWriteBytes(terrain.AsSpan(box + 12), corner.X + ZoneWidth);
-            BitConverter.TryWriteBytes(terrain.AsSpan(box + 20), corner.Y + ZoneWidth);
             string blendName = $"rfg{col:00}{row:00}_a00", colourName = $"rfg{col:00}{row:00}cmb";
-            var renames = new (string Old, string New)[]
-            {
-                ("ter_sur_sand_dirt_di", Alias(look.Textures[0])), ("ter_sur_sand_dirt_nm", Alias(look.Textures[1])),
-                ("ter_sur_sand_wave_01_di", Alias(look.Textures[2])), ("ter_sur_sand_wave_01_nm", Alias(look.Textures[3])),
-                ("ter_sur_rubble_tile_di", Alias(look.Textures[4])), ("ter_sur_rubble_nm", Alias(look.Textures[5])),
-                ("ter_sur_road02_di", Alias(look.Textures[6])), ("ter_sur_road02_nm", Alias(look.Textures[7])),
-                ("ter_sur_rock_tile_03_di", Alias(look.Textures[6])), ("ter_sur_rock_tile_03_nm", Alias(look.Textures[7])),
-                ("ruin01_alpha00", blendName), ("ruin01comb", colourName),
-            };
-            foreach (var (oldName, newName) in renames) MaterialBlocks.ReplaceName(terrain, oldName + ".tga", newName + ".tga");
-            for (int k = 0; k < 4; k++)
-            {
-                MaterialBlocks.SetConstant(terrain, NameHashes.PropertyHash($"Terrain_layer{k}_scale_offset"), look.Constants[2 * k]);
-                MaterialBlocks.SetConstant(terrain, NameHashes.PropertyHash($"Diffuse_color_{k}"), look.Constants[2 * k + 1]);
-            }
-            if (MaterialBlocks.SetCliffMaterials(terrain, look.Constants[1], look.Constants[7], MathF.Abs(look.Constants[0].X) / 511f, MathF.Abs(look.Constants[6].X) / 511f) == 0)
-                throw new InvalidDataException("no cliff material in the terrain template");
-            var (terrainFile, terrainData) = FarGround.Build(terrain, terrainDataTemplate, corner, ZoneWidth);
+            var (terrainFile, terrainData) = ZoneTerrain(h, corner, look, barriers[(col, row)], zone, blendName, colourName);
             // The blend map uncompressed with one level, data not colour; the colour map DXT1 with its
             // levels down to 4 × 4: as the game's own ground maps are kept.
             byte[] blendData = TextureCodec.Encode(TextureFormat.Argb8888, blend);
             int colourLevels = (int)Math.Log2(Math.Min(look.Colour.Width, look.Colour.Height)) - 1;
             byte[] colourData = TextureCodec.EncodeWithMips(TextureFormat.Dxt1, look.Colour, colourLevels);
 
-            // Objects: the marker, the environment box (over the whole zone, every height) and a player
-            // start (so "level rfg_CC_RR" starts in any zone, as each of Armageddon's world zones has
-            // one: Guerrilla's own where the zone has one, else the zone's middle on the ground, which
-            // can be inside a rock or a building), and in the start zone the multiplayer marker, from
-            // ruin01's zone.
-            var zoneFile = ZoneFile.Read(zoneTemplate);
-            var originals = zoneFile.Objects.ToList();
-            var kept = originals.Where(o => o.ClassHash == Class("obj_zone") || o.Handle == templateBox).ToList();
-            foreach (string kind in isStart ? new[] { "player_start", "multi_object_marker" } : ["player_start"])
-                if (originals.FirstOrDefault(o => o.ClassHash == Class(kind)) is { } first) kept.Add(first);
-            var copies = kept.Select(o => ZoneFile.Copy(o, prefix | (o.Handle & 0xFFFFFF))).ToList();
-            zoneFile.Remove(originals);
-            for (int k = 0; k < copies.Count; k++) zoneFile.Insert(k, copies[k]);
+            // Objects, made from the game's schema (each class's properties at their defaults, as Volition's
+            // tools wrote them), as each of Armageddon's world zones has them: the zone's marker, an
+            // environment box over the whole zone (every height; see ZoneEnvironment) and a player start
+            // (so "level rfg_CC_RR" starts in any zone: Guerrilla's own where the zone has one, else the
+            // zone's middle on the ground, which can be inside a rock or a building).
+            var zoneFile = ZoneFile.Create(Class("Default"), Class("none"));
+            var marker = zoneFile.AddNew(Class("obj_zone"), prefix | 0x000020, schema.Class("obj_zone")!.NewObject(zoneMiddle, DefaultChoice),
+                                         zoneMiddle - new Vector3(0.5f), zoneMiddle + new Vector3(0.5f));
+            marker.Property("terrain_file_name")!.SetText(zone);
+            ZoneEnvironment(zoneFile, schema, prefix | 0x030008, zoneMiddle);
             Vector3 startAt = new(zoneMiddle.X, GuerrillaGround.HeightAt(h, ZoneWidth / 2, ZoneWidth / 2, Layout) + 1, zoneMiddle.Z);
             Matrix4x4? startTurn = null;
             if (guerrillaStarts.TryGetValue((col, row), out var guerrillaStart))
@@ -534,44 +526,29 @@ public static class GuerrillaWorld
                 startAt = guerrillaStart.Position with { Y = Math.Max(guerrillaStart.Position.Y, ground + 0.5f) };
                 startTurn = guerrillaStart.Rotation;
             }
-            foreach (var (o, copy) in kept.Zip(copies))
-                copy.MoveTo(copy.ClassHash == Class("player_start") ? startAt : o.Placement.Position + (zoneMiddle - templateMiddle));
-            if (startTurn is { } turn)
-                foreach (var copy in copies.Where(c => c.ClassHash == Class("player_start"))) copy.TurnTo(turn);
-            copies.Single(o => o.ClassHash == Class("obj_zone")).Property("terrain_file_name")!.SetText(zone);
+            ZoneObject PlayerStart(ZoneFile file)
+            {
+                var start = file.AddNew(Class("player_start"), prefix | 0x000004, schema.Class("player_start")!.NewObject(startAt),
+                                        startAt - new Vector3(0.5f), startAt + new Vector3(0.5f));
+                if (startTurn is { } turn) start.TurnTo(turn);
+                return start;
+            }
+            PlayerStart(zoneFile);
             // The destructible objects, attached and linked as in Guerrilla's zone.
             byte[] links = [];
             if (propsIn[(col, row)].Count > 0)
             {
                 var taken = new HashSet<uint>(zoneFile.Objects.Select(o => o.Handle));
-                (var movers, links) = GuerrillaMovers.Convert(propsIn[(col, row)], guerrillaObjects[(col, row)], moverTemplates,
-                                                               levelObjects.Contains, gameplayProperties.Contains,
+                (var movers, links) = GuerrillaMovers.Convert(propsIn[(col, row)], guerrillaObjects[(col, row)], schema,
+                                                               levelObjects.Contains, GameplayProps,
                                                                chunk => BitConverter.ToUInt32(chunkFiles[chunk].Header, 0x24), taken);
                 foreach (var mover in movers) zoneFile.Insert(zoneFile.Objects.Count, mover);
             }
-            var environment = copies.Single(o => o.Handle == (prefix | (templateBox & 0xFFFFFF)));
-            environment.Property("cam_effect_1")!.SetText("none");
-            environment.Property("affects_coloration")!.SetValue([0]);
-            // Armageddon's fog is the box's, by distance (ruin01's: an orange haze from 0 to 150 m); the
-            // guerrilla_world mod draws Guerrilla's height fog over the world instead, so the box's starts
-            // far past the far clip and never shows.
-            environment.Property("fog_near")!.SetValue(BitConverter.GetBytes(BoxFogNear));
-            environment.Property("fog_far")!.SetValue(BitConverter.GetBytes(BoxFogNear + 1));
-            float half = ZoneWidth / 2 + 0.5f;
-            environment.Property("Bb")!.SetValue([.. new[] { -half, BoxBottom, -half, half, BoxTop, half }.SelectMany(BitConverter.GetBytes)]);
             byte[] zoneBytes = GuerrillaMovers.WithLinks(zoneFile.ToBytes(), links);
-            var persistent = ZoneFile.Read(persistentTemplate);
-            var persistentOriginals = persistent.Objects.ToList();
-            var persistentCopies = new List<ZoneObject>();
-            if (persistentOriginals.FirstOrDefault(o => o.ClassHash == Class("player_start")) is { } persistentStart)
-            {
-                var playerStart = ZoneFile.Copy(persistentStart, prefix | 0x000004);
-                playerStart.MoveTo(startAt);
-                if (startTurn is { } persistentTurn) playerStart.TurnTo(persistentTurn);
-                persistentCopies.Add(playerStart);
-            }
-            persistent.Remove(persistentOriginals);
-            for (int k = 0; k < persistentCopies.Count; k++) persistent.Insert(k, persistentCopies[k]);
+            // The persistent zone: the player start again (as the game's own levels keep one there), and
+            // no district or mission (0, as the game's persistent zones).
+            var persistent = ZoneFile.Create(0, 0);
+            PlayerStart(persistent);
             zonescript.Add((zone + ".rfgzone_pc", zoneBytes));
             zonescript.Add(("p_" + zone + ".rfgzone_pc", persistent.ToBytes()));
 
@@ -656,7 +633,7 @@ public static class GuerrillaWorld
 
             // Its containers and asset list entries.
             var files = new List<(string Name, byte[] Data)>(shared);
-            foreach (string texture in look.Textures.Take(8).Distinct(StringComparer.OrdinalIgnoreCase)) files.AddRange(layerFiles[texture]);
+            foreach (string texture in look.TerrainTextures) files.AddRange(layerFiles[texture]);
             foreach (string texture in roadTexturesIn[(col, row)]) files.AddRange(roadTextures[texture]);
             foreach (string name in rocks.Select(r => r.Name).Distinct(StringComparer.OrdinalIgnoreCase))
             {
@@ -916,13 +893,168 @@ public static class GuerrillaWorld
         log($"Ground: {plugged:N0} samples raised to within {MaxPit} m of their hollow's spill, {raised:N0} so no drop is over {MaxStep} m a sample");
     }
 
-    /// <summary>The terrain file's header box (from x, y, z, to x, y, z; world positions): after its three name blocks.</summary>
-    static int HeaderBox(byte[] terrain)
+    /// <summary>A Guerrilla texture's name in our world (its name's hash, so every alias is as short and the names in our files never grow).</summary>
+    static string Alias(string texture) => "rfg_" + NameHashes.PropertyHash(texture).ToString("x8");
+
+    /// <summary>
+    /// A zone's terrain file, written from its parts (see <see cref="TerrainFile"/>): terrain_data field by field;
+    /// every material written from code (<see cref="TerrainMaterials"/>): the ground's with Guerrilla's
+    /// layer textures, scales, offsets and tints, the three cliff kinds from Guerrilla's own cliff
+    /// materials (textures, projections, tints; a zone with none: the ground's layers 0 and 3), the far
+    /// meshes' with the zone's colour map; Guerrilla's barriers and layer map; no foliage (Guerrilla's is
+    /// still to port); the texture list of what the materials name; the height field's Havok packfile
+    /// (<see cref="TerrainHeightField.Section"/>) and the far meshes and their buffer (<see cref="FarGround"/>)
+    /// from the zone's heights. Nothing of another level's terrain file is used. Returns the terrain
+    /// file and its .gterrain_pc.
+    /// </summary>
+    static (byte[] Terrain, byte[] Data) ZoneTerrain(float[] heights, Vector2 corner, Look look, IReadOnlyList<ChunkShape> barriers,
+                                                     string zone, string blendName, string colourName)
     {
-        int at = 0x28;
-        foreach (int sizeAt in new[] { 0x10, 0x1C, 0x18 }) at += (BitConverter.ToInt32(terrain, sizeAt) + 3) & ~3;
-        return at + 4;
+        var t = new TerrainFile { HasGround = true };
+        string Tga(string name) => name + ".tga";
+
+        // The ground's collision: a height field of 512 × 512 samples a metre apart (the zone's 511 m),
+        // each height as a 16-bit sample of 1/32 m from -1,000 m (as the game's own).
+        const int FieldSamples = 512;
+        const float SampleOffset = -1000, SampleScale = 1 / 32f;
+        float[] field = GuerrillaGround.FieldHeights(heights, FieldSamples, Layout);
+        var samples = field.Select(h => (ushort)Math.Clamp(MathF.Round((h - SampleOffset) / SampleScale), 0, ushort.MaxValue)).ToArray();
+        float fieldStep = ZoneWidth / (FieldSamples - 1);
+        t.HeightField = TerrainHeightField.Section(FieldSamples, FieldSamples, fieldStep, 1 / fieldStep, ZoneWidth, ZoneWidth, SampleOffset, SampleScale, samples);
+        float low = samples.Min() * SampleScale + SampleOffset, high = samples.Max() * SampleScale + SampleOffset;
+        t.SubzoneSlots = new byte[9 * 4];
+
+        // The far-away meshes, from the heights as stored.
+        var (farRecords, farBlocks, farData) = FarGround.Build(samples.Select(s => s * SampleScale + SampleOffset).ToArray(), FieldSamples, fieldStep, corner, ZoneWidth);
+        t.FarRecords = farRecords;
+        t.FarBlocks.AddRange(farBlocks);
+
+        // The ground: Guerrilla's four layers, their scales, offsets and tints, and its last two constants.
+        var (groundNames, groundMaterials) = TerrainMaterials.Ground(look.Textures.Take(8).Select(n => Tga(Alias(n))).ToList(), Tga(blendName), Tga(colourName),
+            [look.Constants[0], look.Constants[2], look.Constants[4], look.Constants[6]], [look.Constants[1], look.Constants[3], look.Constants[5], look.Constants[7]],
+            look.Constants[8], look.Constants[9]);
+
+        // The cliffs, as the game's three kinds: texture A alone, A blended into B, B alone. From Guerrilla's
+        // first three cliff materials, which are those kinds in most zones (fewer: A from its first, B from
+        // its last; none: the ground's layers 0 and 3, as the game's terrain repeats them, and their tints).
+        var specular = new Vector4(1, 1, 1, 1);
+        uint xform0 = NameHashes.PropertyHash("Terrain_layer0_xform"), xform1 = NameHashes.PropertyHash("Terrain_layer1_xform");
+        uint xform2 = NameHashes.PropertyHash("Terrain_layer2_xform"), xform3 = NameHashes.PropertyHash("Terrain_layer3_xform");
+        uint tint0 = NameHashes.PropertyHash("Diffuse_color_0"), tint1 = NameHashes.PropertyHash("Diffuse_color_1");
+        ((string Colour, string Normal) Pair, Vector4[][] Xforms, Vector4 Tint, Vector4 Specular) Side(int material, bool last)
+        {
+            var g = look.Cliffs[material];
+            var pairs = look.CliffPairs(material);
+            var pair = last ? pairs[^1] : pairs[0];
+            bool second = last && pairs.Count > 1;
+            Vector4[]? Rows(uint hash) => g.Constants.TryGetValue(hash, out var rows) ? rows : null;
+            var xforms = second && Rows(xform2) is { } a && Rows(xform3) is { } b ? new[] { a, b } : new[] { Rows(xform0)!, Rows(xform1)! };
+            var tint = (second ? Rows(tint1) : null)?[0] ?? Rows(tint0)?[0] ?? Vector4.One;
+            return (pair, xforms, tint, Rows(0x984BB1F3)?[0] ?? specular);  // Guerrilla's 984BB1F3 holds what Specular_Power does
+        }
+        var withPairs = Enumerable.Range(0, look.Cliffs.Count).Where(k => look.CliffPairs(k).Count > 0 && look.Cliffs[k].Constants.ContainsKey(xform0)).Take(3).ToList();
+        ((string Colour, string Normal) Pair, Vector4[][] Xforms, Vector4 Tint, Vector4 Specular) sideA = withPairs.Count > 0 ? Side(withPairs[0], last: false)
+            : ((look.Textures[0], look.Textures[1]), TerrainMaterials.SideProjections(MathF.Abs(look.Constants[0].X) / ZoneWidth, ZoneWidth / 2), look.Constants[1], specular);
+        ((string Colour, string Normal) Pair, Vector4[][] Xforms, Vector4 Tint, Vector4 Specular) sideB = withPairs.Count > 0 ? Side(withPairs[^1], last: true)
+            : ((look.Textures[6], look.Textures[7]), TerrainMaterials.SideProjections(MathF.Abs(look.Constants[6].X) / ZoneWidth, ZoneWidth / 2), look.Constants[7], specular);
+        (string, string) Named((string Colour, string Normal) pair) => (Tga(Alias(pair.Colour)), Tga(Alias(pair.Normal)));
+        var cliffs = new List<(byte[] Names, byte[] Material)>
+        {
+            TerrainMaterials.Cliff(Named(sideA.Pair), null, Tga(blendName), Tga(colourName), sideA.Xforms, [sideA.Tint], sideA.Specular),
+            TerrainMaterials.Cliff(Named(sideA.Pair), Named(sideB.Pair), Tga(blendName), Tga(colourName), [.. sideA.Xforms, .. sideB.Xforms], [sideA.Tint, sideB.Tint], sideA.Specular),
+            TerrainMaterials.Cliff(Named(sideB.Pair), null, Tga(blendName), Tga(colourName), sideB.Xforms, [sideB.Tint], sideB.Specular),
+        };
+        t.Cliffs.Clear();
+        t.Cliffs.AddRange(cliffs);
+        t.CliffHeader = new byte[8 + cliffs.Count * 8];
+        t.Ground = new TerrainFile.MaterialSet(groundNames, new int[cliffs.Count], TerrainFile.MaterialMap(groundMaterials.Count), new byte[groundMaterials.Count * 4], groundMaterials);
+
+        // The far meshes: the zone's colour map.
+        var (farNames, farMaterial) = TerrainMaterials.Far(Tga(colourName));
+        t.FarMaterial = new TerrainFile.MaterialSet(farNames, null, TerrainFile.MaterialMap(1), [], [farMaterial]);
+
+        // No foliage; Guerrilla's barriers and layer map; nothing in the run-time slots.
+        t.FoliageMeshNames = [];
+        t.FoliageMeshCount = 0;
+        t.Foliage = null;
+        t.FoliageBuffer = null;
+        (t.BarrierRecords, t.BarrierSection) = TerrainBarriers.Parts(barriers);
+        t.StitchCollisionCount = 0;
+        t.StitchCollision = TerrainFile.EmptySection;
+        var (cells, guerrillaNames) = look.LayerMap ?? (new byte[512 * 512 / 4], new List<string> { "Terrain" });
+        if (cells.Length != 512 * 512 / 4) throw new InvalidDataException($"{zone}'s layer map is {cells.Length} bytes, not 512 × 512 cells of 2 bits");
+        // Guerrilla's names, then (so the far meshes after them start at a multiple of 16) effect materials
+        // Armageddon's rfg_effect_materials.xtbl has, which no cell uses.
+        var effectNames = TerrainFile.LayerMapPart.PaddedNames(guerrillaNames,
+            ["Terrain", "Dirt", "Ice", "Steel", "Rubber", "Concrete", "Composite", "Unobtanium", "Electronics"]);
+        t.LayerMap = new TerrainFile.LayerMapPart(cells, new byte[effectNames.Count * 4], effectNames, new byte[effectNames.Count * 4]);
+        t.Occluders = [];
+
+        // terrain_data, field by field (the box's heights the height field's).
+        var data = new byte[TerrainFile.DataSize];
+        void Word(int at, int value) => BitConverter.TryWriteBytes(data.AsSpan(at), value);
+        void Float(int at, float value) => BitConverter.TryWriteBytes(data.AsSpan(at), value);
+        Word(0x00, 1);
+        Float(0x04, corner.X); Float(0x08, low); Float(0x0C, corner.Y);
+        Float(0x10, corner.X + ZoneWidth); Float(0x14, high); Float(0x18, corner.Y + ZoneWidth);
+        Word(0x1C, FieldSamples); Word(0x20, FieldSamples);
+        Word(0x24, 0);                                  // occluders
+        Word(0x4C, t.SubzoneSlots.Length / 4);          // sub-zones
+        Word(0x58, 512); Word(0x5C, 512); Word(0x60, 2); Word(0x64, cells.Length); Word(0x6C, effectNames.Count);
+        Word(0x94, barriers.Count);
+        Word(0x9C, 0);                                  // a height field
+        Word(0xA0, cliffs.Count);
+        t.Data = data;
+
+        // The header: the textures the materials name (the dither texture is the game's own), and an id of our own.
+        var listed = new[] { groundNames }.Concat(cliffs.Select(c => c.Names))
+            .SelectMany(b => System.Text.Encoding.ASCII.GetString(b, 4, b.Length - 4).Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            .Where(n => !n.Equals("dither.tga", StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        t.TextureNames = TerrainFile.NameList(listed).Bytes;
+        t.TextureNameCount = listed.Count;
+        t.Id = (NameHashes.PropertyHash(zone) & 0xFFFF0000) | 0x20;
+        return (t.Write(), farData);
+
     }
+
+    /// <summary>
+    /// A zone's environment box, made from the game's schema (object_env_settings): every setting at the
+    /// schema's default, which affects nothing until its affects_ flag is set, then what the world needs
+    /// (the game's own world zones set these groups in their boxes too):
+    ///   the box: the whole zone, every height (BoxBottom to BoxTop, half a metre past its edges)
+    ///   visibility: the far clip 1,500 m (the open world's view; the default is 475) and the rocks'
+    ///     detail kept to 200 m (the default 125)
+    ///   fog: on, starting far past the far clip (Armageddon's fog is the box's, by distance; the
+    ///     guerrilla_world mod draws Guerrilla's height fog instead)
+    ///   HDR: on, bloom 0.2 over a height of 1 (the defaults 0.5 and 3): the bloom the world's picture was
+    ///     matched to Guerrilla's with (Exposure=1, 2026-11-01); its exposure the defaults, which
+    ///     Guerrilla's tone mapping (the mod) holds at 1 anyway
+    ///   the sky: the skybox on, in which pass the mod draws Guerrilla's sky; no camera effect
+    /// Colour, particles, wind, sound and depth of field stay off: Guerrilla's colour correction, district
+    /// tints and the rest are the mod's and the time of day's.
+    /// </summary>
+    static void ZoneEnvironment(ZoneFile zone, ZoneSchema schema, uint handle, Vector3 middle)
+    {
+        float half = ZoneWidth / 2 + 0.5f;
+        var box = zone.AddNew(NameHashes.ClassHash("object_env_settings"), handle, schema.Class("object_env_settings")!.NewObject(middle),
+                              middle + new Vector3(-half, BoxBottom, -half), middle + new Vector3(half, BoxTop, half));
+        void Number(string name, float value) => box.Property(name)!.SetValue(BitConverter.GetBytes(value));
+        void Flag(string name, bool on) => box.Property(name)!.SetValue([on ? (byte)1 : (byte)0]);
+        box.Property("bb")!.SetValue([.. new[] { -half, BoxBottom, -half, half, BoxTop, half }.SelectMany(BitConverter.GetBytes)]);
+        Flag("affects_visibility", true);
+        Number("far_clip", 1500);
+        Number("stitch_lod_distance", 200);
+        Flag("affects_fog", true);
+        Number("fog_near", BoxFogNear);
+        Number("fog_far", BoxFogNear + 1);
+        Flag("affects_hdr", true);
+        Number("bloom_amount", 0.2f);
+        Number("bloom_height", 1);
+        Flag("skybox_enable", true);
+    }
+
+    /// <summary>The first choice for an enum the schema gives no default (the zone marker's district and spawn resources: "Default", which the game's tables have).</summary>
+    static IReadOnlyList<string> DefaultChoice(SchemaPopulate table) => ["Default"];
 
     /// <summary>
     /// ruin01's navigation data (2,484 bytes, as ruin03's and world_07_11's: a flat 3 × 3 grid over the

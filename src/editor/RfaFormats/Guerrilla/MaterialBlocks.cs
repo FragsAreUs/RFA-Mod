@@ -30,39 +30,6 @@ public static class MaterialBlocks
         return count;
     }
 
-    /// <summary>
-    /// A terrain file's cliff materials (those with Terrain_layer0_xform: two textures, each projected
-    /// from the side two ways; one for the colour pass, a smaller one without colours): their two
-    /// textures' tints, and how often they repeat a metre, the xforms' rows 0 and 2 scaled to that
-    /// (their offsets with them, so they keep their centring). Returns how many there were.
-    /// </summary>
-    public static int SetCliffMaterials(byte[] terrain, Vector4 tint0, Vector4 tint1, float perMetre0, float perMetre1)
-    {
-        uint[] xforms = Enumerable.Range(0, 4).Select(k => NameHashes.PropertyHash($"Terrain_layer{k}_xform")).ToArray();
-        uint colour0 = NameHashes.PropertyHash("Diffuse_color_0"), colour1 = NameHashes.PropertyHash("Diffuse_color_1");
-        int found = 0;
-        foreach (var (hashesAt, valuesAt, constants) in ArmageddonMaterials(terrain))
-        {
-            var hashes = Enumerable.Range(0, constants).Select(c => BitConverter.ToUInt32(terrain, hashesAt + c * 4)).ToList();
-            if (!hashes.Contains(xforms[0])) continue;
-            for (int k = 0; k < 4; k++)
-            {
-                int c = hashes.IndexOf(xforms[k]);
-                if (c < 0) continue;
-                Vector4 row0 = Read(terrain, valuesAt + c * 16);
-                float now = MathF.Max(MathF.Abs(row0.X), MathF.Abs(row0.Z));
-                if (now <= 0) continue;
-                float factor = (k < 2 ? perMetre0 : perMetre1) / now;
-                Write(terrain, valuesAt + c * 16, row0 * factor);
-                Write(terrain, valuesAt + (c + 2) * 16, Read(terrain, valuesAt + (c + 2) * 16) * factor);
-            }
-            if (hashes.IndexOf(colour0) is >= 0 and var c0) Write(terrain, valuesAt + c0 * 16, tint0);
-            if (hashes.IndexOf(colour1) is >= 0 and var c1) Write(terrain, valuesAt + c1 * 16, tint1);
-            found++;
-        }
-        return found;
-    }
-
     /// <summary>A constant of the first Guerrilla material block in the file that has it (a stitch piece's, say), or null.</summary>
     public static Vector4? GuerrillaConstant(byte[] file, uint hash)
     {

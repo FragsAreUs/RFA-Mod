@@ -334,7 +334,7 @@ The world itself is built by `editor\GuerrillaWorld.exe` (code in `src\editor\Gu
 `rfg` into `overrides\build\pc\cache\` and the sky's files into `mods\guerrilla_world\`. What it
 converts:
 - **The ground** of each of Guerrilla's 102 zones, sampled whole, with its own textures and cliff
-  material, far-away meshes, and a starting point in the middle of every zone. Guerrilla cuts its
+  material, and far-away meshes. Guerrilla cuts its
   roads, and the ground around its rocks (skirts), out of the ground and lays them in as separate
   meshes in the same sub-zone files (`TerrainSubzone.Paving`); their heights are sampled with the
   ground's. The roads (road decals) are laid into our sub-zones as Armageddon lays its own
@@ -342,20 +342,26 @@ converts:
   the ground is left out under them (`GuerrillaGround.RoadHoles`). Where a rock closes the ground
   itself (a cap on a pillar, a cover on a slope), the ground is laid half a metre under the rock's
   surface.
-- **The invisible barriers**: the collision shapes each terrain file keeps that nothing draws (the
-  walls that keep the player in an area). Our terrain files are made over Armageddon's arena
-  `ruin01`'s, whose 28 arena walls would otherwise stand in every zone; each zone gets Guerrilla's
-  own instead (`TerrainBarriers`: Guerrilla's Havok 5.5 shapes written as 2010, as the chunks' are).
+- **The terrain files**, written from code part by part as the game reads them (`TerrainFile`; each
+  part checked against the game's own files): the ground's collision height field (Havok 2010,
+  `TerrainHeightField.Section`), the ground's, cliffs' and far meshes' materials (`TerrainMaterials`:
+  Guerrilla's textures, scales and tints, its cliff textures), the far-away meshes (`FarGround`),
+  Guerrilla's ground effect map (sand, stone, gravel...) and its **invisible barriers**, the collision
+  shapes nothing draws that keep the player in an area (`TerrainBarriers`: Guerrilla's Havok 5.5
+  shapes written as 2010, as the chunks' are). Nothing of another level's terrain file is used.
 - **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
   (Havok MOPP code, written from scratch) over each zone's pieces.
 - **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file
   (`.cchk_pc`, Guerrilla's version 55) is rewritten as Armageddon's version 62 (`GuerrillaChunks`):
   the mesh block, the materials moved onto Armageddon's shaders (`GuerrillaMaterials`), the
   destruction data, the Havok 5.5 collision written as 2010 (`ChunkCollision`), the object ids.
-  The zone objects are laid out as Armageddon's own movers, with Guerrilla's links between pieces
-  (kept in the objects in Guerrilla, in the zone's extra block in Armageddon) and ground anchors
-  (`GuerrillaMovers`). Each chunk file goes into the container of the sub-zone its object stands
-  in, as Armageddon keeps them.
+  The zone objects are written as Volition's tools wrote Armageddon's own movers (the same
+  properties in the same order, Armageddon's own settings at the schema's defaults), with
+  Guerrilla's placement, its links between pieces (kept in the objects in Guerrilla, in the zone's
+  extra block in Armageddon), ground anchors, script names (`display_name`), how much of a building
+  must fall for it to count as destroyed, and the header flag that keeps a free-standing building
+  among the physics' fixed objects (`GuerrillaMovers`). Each chunk file goes into the container of
+  the sub-zone its object stands in, as Armageddon keeps them.
 - **The precache**: every file more than one container would hold (the ground's texture layers,
   roads, rocks, chunk files and their textures) goes once into `rfg_precache.vpp_pc`, and each
   zone's and sub-zone's precache group in the asset list (`0p_cXXYY`, `1p_cXXYY`) names the ones
@@ -364,8 +370,13 @@ converts:
   third of the memory they did. The game picks a level's precache by the area of its start zone's
   grid place, which knows only the campaign's areas, so `guerrilla_world` makes it pick the
   world's own (below).
-- The zone files go into `zonescript_rfg.vpp_pc`, stored compressed file by file as the game's own
-  zone archive is: the game reads that archive whole into a 20 MB pool when a level loads.
+- **The zone files**, made from the game's own schema (`rfg_zonex_format.txt` in `misc.vpp_pc`,
+  which Volition's level editor used: each object's properties at their defaults, then what the
+  world needs): each zone's marker, an environment box over the whole zone (its view distance, fog,
+  bloom and sky set, everything else off), a player start (Guerrilla's own where the zone has one,
+  else the zone's middle) and the destructible objects. They go into `zonescript_rfg.vpp_pc`, stored
+  compressed file by file as the game's own zone archive is: the game reads that archive whole into
+  a 20 MB pool when a level loads.
 - **The districts and their time of day**: Guerrilla gives each of its eight districts (Parker,
   Dust, Badlands, Oasis, Eos, Manufacturing, End Game, Tutorial) its own time of day and blends
   those of the zone you are in and its neighbours by where you stand. Armageddon still works the

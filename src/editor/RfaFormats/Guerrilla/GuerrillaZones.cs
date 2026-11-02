@@ -42,7 +42,7 @@ public static class GuerrillaZones
             }
             Vector3 V(int o) => new(BitConverter.ToSingle(zone, o), BitConverter.ToSingle(zone, o + 4), BitConverter.ToSingle(zone, o + 8));
             uint U(int o) => BitConverter.ToUInt32(zone, at + o);
-            objects.Add(new GuerrillaZoneObject(U(0), U(4), V(at + 8), V(at + 20), U(36), U(40), U(44), U(48), properties));
+            objects.Add(new GuerrillaZoneObject(U(0), U(4), V(at + 8), V(at + 20), BitConverter.ToUInt16(zone, at + 32), U(36), U(40), U(44), U(48), properties));
             at += size;
         }
         return objects;
@@ -51,10 +51,14 @@ public static class GuerrillaZones
 
 /// <summary>
 /// An object in one of Guerrilla's zones: its class (hashed as Armageddon's), handle, box (world
-/// coordinates), the objects it is attached to (parent, the next sibling, its first child: 0xFFFFFFFF
-/// for none), its number in Volition's editor, and its properties by name hash.
+/// coordinates), flags (as Armageddon's in their low byte: 0x01 persistent, only in the p_ zones;
+/// 0x08 not made in the game; 0x10 streaming_fixed, set on movers attached to nothing, which the game
+/// keeps among Havok's fixed objects; 0x04 the tools', which neither game's loader reads; the high
+/// byte is left over from the tools, 0x3F, 0x7F or 0xFF), the objects it is attached to (parent, the
+/// next sibling, its first child: 0xFFFFFFFF for none), its number in Volition's editor, and its
+/// properties by name hash.
 /// </summary>
-public sealed record GuerrillaZoneObject(uint ClassHash, uint Handle, Vector3 BoundsMin, Vector3 BoundsMax, uint Parent, uint Sibling, uint Child, uint Number,
+public sealed record GuerrillaZoneObject(uint ClassHash, uint Handle, Vector3 BoundsMin, Vector3 BoundsMax, ushort Flags, uint Parent, uint Sibling, uint Child, uint Number,
                                         IReadOnlyDictionary<uint, (int Type, byte[] Value)> Properties)
 {
     /// <summary>A property's value, or null.</summary>

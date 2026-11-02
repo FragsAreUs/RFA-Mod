@@ -26,25 +26,15 @@ public static class TerrainBarriers
         return count == 0 ? [] : ChunkCollision.ReadPackfile(terrain, section + 16);
     }
 
-    /// <summary>
-    /// An Armageddon terrain file (TERR version 42) with other barriers in place of its own: the records,
-    /// the section (written as <see cref="ChunkCollision.Section"/> writes chunks' collision) and the count
-    /// in terrain_data. What follows moves along with them (the block stays a multiple of 16 long).
-    /// </summary>
-    public static byte[] WithBarriers(byte[] terrain, IReadOnlyList<ChunkShape> barriers)
+    /// <summary>Where a terrain file's barrier section ends (either game): the layer map follows, from the next multiple of 4.</summary>
+    public static int End(byte[] terrain) => Find(terrain).End;
+
+    /// <summary>The barrier records and section for <see cref="TerrainFile.BarrierRecords"/> and <see cref="TerrainFile.BarrierSection"/>: a record a barrier, and their shapes (or an empty section).</summary>
+    public static (byte[] Records, byte[] Section) Parts(IReadOnlyList<ChunkShape> barriers)
     {
-        var (records, count, _, end) = Find(terrain);
-        int countAt = DataAt(terrain) + 0x90;
-        if (BitConverter.ToInt32(terrain, countAt) != count)
-            throw new InvalidDataException($"the terrain file's barrier count ({BitConverter.ToInt32(terrain, countAt)}) isn't its {count} records");
-        var block = new List<byte>();
-        for (int i = 0; i < barriers.Count; i++) { block.AddRange(BitConverter.GetBytes(i)); block.AddRange(BitConverter.GetBytes(-1)); }
-        while (block.Count % 16 != 0) block.Add(0);
-        if (barriers.Count > 0) block.AddRange(ChunkCollision.Section(barriers));
-        else { block.AddRange("MCKH"u8.ToArray()); block.AddRange(BitConverter.GetBytes(5)); block.AddRange(BitConverter.GetBytes(16)); block.AddRange(BitConverter.GetBytes(0)); }
-        byte[] result = [.. terrain.AsSpan(0, records), .. block, .. terrain.AsSpan(end)];
-        BitConverter.TryWriteBytes(result.AsSpan(countAt), barriers.Count);
-        return result;
+        var records = new List<byte>();
+        for (int i = 0; i < barriers.Count; i++) { records.AddRange(BitConverter.GetBytes(i)); records.AddRange(BitConverter.GetBytes(-1)); }
+        return ([.. records], barriers.Count > 0 ? ChunkCollision.Section(barriers) : TerrainFile.EmptySection);
     }
 
     /// <summary>

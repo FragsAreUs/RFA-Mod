@@ -291,6 +291,20 @@ public static class GuerrillaGround
     }
 
     /// <summary>
+    /// The height field's heights from the samples: one per grid step (in the quarter layout Guerrilla's
+    /// at the even steps and the last, the drawn ground's height between them at the odd ones), laid out
+    /// as <see cref="TerrainHeightField.Heights"/>, <paramref name="fieldSamples"/> across.
+    /// </summary>
+    public static float[] FieldHeights(float[] heights, int fieldSamples, GroundLayout layout)
+    {
+        var field = new float[fieldSamples * fieldSamples];
+        for (int z = 0; z < fieldSamples; z++)
+            for (int x = 0; x < fieldSamples; x++)
+                field[z * fieldSamples + x] = HeightAt(heights, (float)x / layout.StepsPerSample, (float)z / layout.StepsPerSample, layout);
+        return field;
+    }
+
+    /// <summary>
     /// The height at a point of the square (in Guerrilla's metres from its corner), on the
     /// triangles the sub-zones make: each square of samples is cut from its corner at (x, z + 1)
     /// to the one at (x + 1, z), so the height field lies exactly on the drawn ground.
@@ -484,35 +498,5 @@ public static class GuerrillaGround
             strip.AddRange(piece);
         }
         return [.. strip];
-    }
-
-    /// <summary>
-    /// The zone's terrain file with its height field made from the samples (one per grid step: in
-    /// the quarter layout Guerrilla's at the even steps and the last, the drawn ground's height
-    /// between them at the odd ones), its samples a grid step apart (1 m in the whole layout, as
-    /// Guerrilla's), and the zone's box in its header widened to hold the heights.
-    /// </summary>
-    public static byte[] TerrainFile(byte[] terrainFile, float[] heights, GroundLayout? layout = null)
-    {
-        layout ??= GroundLayout.Quarter;
-        var field = TerrainHeightField.Find(terrainFile) ?? throw new InvalidDataException("the terrain file has no height field");
-        if (MathF.Abs(field.Step - layout.GridStep) > 1e-4f)
-        {
-            terrainFile = field.WithStep(terrainFile, layout.GridStep);
-            field = TerrainHeightField.Find(terrainFile)!;
-        }
-        var fieldHeights = new float[field.XSamples * field.ZSamples];
-        for (int z = 0; z < field.ZSamples; z++)
-            for (int x = 0; x < field.XSamples; x++)
-                fieldHeights[z * field.XSamples + x] = HeightAt(heights, (float)x / layout.StepsPerSample, (float)z / layout.StepsPerSample, layout);
-        byte[] result = field.WithHeights(terrainFile, fieldHeights);
-        // The header block's box (after the three name blocks): from x, y, z, to x, y, z.
-        static int Align4(int value) => (value + 3) & ~3;
-        int header = Align4(Align4(Align4(0x28 + BitConverter.ToInt32(result, 0x10)) + BitConverter.ToInt32(result, 0x1C)) + BitConverter.ToInt32(result, 0x18));
-        float low = MathF.Min(BitConverter.ToSingle(result, header + 0x08), fieldHeights.Min());
-        float high = MathF.Max(BitConverter.ToSingle(result, header + 0x14), fieldHeights.Max());
-        BitConverter.TryWriteBytes(result.AsSpan(header + 0x08), low);
-        BitConverter.TryWriteBytes(result.AsSpan(header + 0x14), high);
-        return result;
     }
 }

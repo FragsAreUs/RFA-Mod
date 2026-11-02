@@ -98,6 +98,25 @@ public sealed class ZoneFile
 
     public static ZoneFile Read(byte[] data) => new(data);
 
+    /// <summary>
+    /// A new, empty zone file. The header's two hashes (<see cref="NameHashes.ClassHash"/>): +0x1C the
+    /// district's name (the game's world zones and ruin01: "Default", as their obj_zone names it), +0x20
+    /// the mission's (Ruin and multiplayer zones: "none"; persistent zones 0 for both). With a relation
+    /// table (its first word 0x0112DDC8, as in every zone) unless <paramref name="relationTable"/> is
+    /// false, as mission layers are (flags 4).
+    /// </summary>
+    public static ZoneFile Create(uint districtHash, uint missionHash, bool relationTable = true)
+    {
+        var bytes = new byte[HeaderSize + (relationTable ? ZoneRelationTable.Size : 0)];
+        BitConverter.TryWriteBytes(bytes.AsSpan(0x00), Signature);
+        BitConverter.TryWriteBytes(bytes.AsSpan(0x04), Version);
+        BitConverter.TryWriteBytes(bytes.AsSpan(0x1C), districtHash);
+        BitConverter.TryWriteBytes(bytes.AsSpan(0x20), missionHash);
+        BitConverter.TryWriteBytes(bytes.AsSpan(0x24), relationTable ? 0 : 4);
+        if (relationTable) BitConverter.TryWriteBytes(bytes.AsSpan(HeaderSize), 0x0112DDC8u);
+        return new ZoneFile(bytes);
+    }
+
     /// <summary>The zone as a file, with every change made to it.</summary>
     public byte[] ToBytes()
     {
@@ -170,8 +189,17 @@ public sealed class ZoneFile
             these.GroupBy(o => o.Handle & 0xFFFF0000).OrderByDescending(g => g.Count()).Select(g => (uint?)g.Key).FirstOrDefault();
         uint prefix = MostCommonPrefix(objects.Where(o => o.ClassHash == classHash)) ?? MostCommonPrefix(objects)
                       ?? throw new InvalidOperationException("the zone has no objects to take a handle's zone and layer from");
+        return AddNew(classHash, NewHandle(prefix, taken), properties, boundsMin, boundsMax);
+    }
+
+    /// <summary>As <see cref="AddNew(uint, IReadOnlyList{NewProperty}, Vector3, Vector3, IEnumerable{uint})"/>, with a handle of the caller's (not one any object here has).</summary>
+    public ZoneObject AddNew(uint classHash, uint handle, IReadOnlyList<NewProperty> properties, Vector3 boundsMin, Vector3 boundsMax)
+    {
+        if (relationTable != null && objects.Count >= ZoneRelationTable.Entries)
+            throw new InvalidOperationException($"a zone can hold at most {ZoneRelationTable.Entries:N0} objects");
+        if (objects.Any(o => o.Handle == handle)) throw new InvalidOperationException($"another object has the handle {handle:X8}");
         uint number = objects.Count == 0 ? 0 : objects.Max(o => o.Number) + 1;
-        ZoneObject obj = ZoneObject.Create(classHash, NewHandle(prefix, taken), number, boundsMin, boundsMax, properties);
+        ZoneObject obj = ZoneObject.Create(classHash, handle, number, boundsMin, boundsMax, properties);
         objects.Add(obj);
         Renumber();
         return obj;
@@ -492,11 +520,12 @@ public sealed class ZoneObject
         ReadProperties();
     }
 
-    /// <summary>A new object: its header (no flags, attached to nothing), then its properties.</summary>
-    internal static ZoneObject Create(uint classHash, uint handle, uint number, Vector3 boundsMin, Vector3 boundsMax, IEnumerable<NewProperty> properties)
+    /// <summary>A new object: its header (attached to nothing; no flags unless given), then its properties.</summary>
+    internal static ZoneObject Create(uint classHash, uint handle, uint number, Vector3 boundsMin, Vector3 boundsMax, IEnumerable<NewProperty> properties, ushort flags = 0)
     {
         var header = new byte[HeaderSize];
         BitConverter.TryWriteBytes(header.AsSpan(0), classHash);
+        BitConverter.TryWriteBytes(header.AsSpan(32), flags);
         BitConverter.TryWriteBytes(header.AsSpan(34), (ushort)HeaderSize);
         BitConverter.TryWriteBytes(header.AsSpan(36), None);
         BitConverter.TryWriteBytes(header.AsSpan(40), None);
