@@ -108,8 +108,10 @@ foreach ($part in $parts) {
 }
 if ($Version) {
     # Which source the programs were built from, for bug reports and the GPL's offer of the source.
+    # Only changes to tracked files count: files git doesn't track yet (work in progress) are never
+    # built or packed.
     $commit = (& git -C $root rev-parse --short HEAD 2>$null)
-    $dirty = (& git -C $root status --porcelain 2>$null)
+    $dirty = (& git -C $root status --porcelain --untracked-files=no 2>$null)
     $from = if (-not $commit) { 'an unknown commit' } elseif ($dirty) { "commit $commit plus changes not yet committed" } else { "commit $commit" }
     Set-Content -LiteralPath (Join-Path $out 'version.txt') -Encoding ASCII -Value @(
         "RFA-Mod $Version, built from $from.",

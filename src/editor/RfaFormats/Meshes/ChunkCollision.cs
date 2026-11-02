@@ -25,7 +25,9 @@ public sealed record ShapeList(IReadOnlyList<ChunkShape> Children) : ChunkShape;
 /// middle +0x30, of the corners alone), an array of corners at +0x40 in blocks of four, each block
 /// four x, four y, four z (the last corner repeated to fill one), their count at +0x4C, and an array
 /// of planes (Guerrilla's at +0x50, Armageddon's at +0x58). A box (5.5): the radius at +0x10, the
-/// half-extents at +0x20, round its origin.
+/// half-extents at +0x20, round its origin. A transformed shape (hkpConvexTransformShape, both
+/// versions; in terrain files' invisible barriers): its child at +0x18 and its transform from +0x20,
+/// the rotation's three columns then the translation; it is read as its child moved into place.
 ///
 /// Armageddon's packfile, as <see cref="Section"/> writes it (str_sur_edf_lightpole_a's layout):
 /// hk_2010.2.0-r1, three sections (__classnames__ at 0xD0, 0x80 long; __types__ empty; __data__
@@ -52,10 +54,17 @@ public static class ChunkCollision
     /// <summary>The shapes of a destructible object's collision (Havok 5.5 or 2010), in the list's order; boxes as eight-cornered shapes.</summary>
     public static List<ChunkShape> Read(byte[] cFile)
     {
-        int section = BitConverter.ToInt32(cFile, 0x1C), at = section + 16;
-        if (section <= 0 || at + 0x100 > cFile.Length || Encoding.ASCII.GetString(cFile, section, 4) != "MCKH" ||
-            BitConverter.ToUInt32(cFile, at) != Magic0 || BitConverter.ToUInt32(cFile, at + 4) != Magic1)
+        int section = BitConverter.ToInt32(cFile, 0x1C);
+        if (section <= 0 || section + 16 + 0x100 > cFile.Length || Encoding.ASCII.GetString(cFile, section, 4) != "MCKH")
             throw new InvalidDataException("no Havok collision where the header says");
+        return ReadPackfile(cFile, section + 16);
+    }
+
+    /// <summary>The shapes of the Havok packfile (5.5 or 2010) at <paramref name="at"/> in a file: its top list's children, in order.</summary>
+    public static List<ChunkShape> ReadPackfile(byte[] cFile, int at)
+    {
+        if (at < 0 || at + 0x100 > cFile.Length || BitConverter.ToUInt32(cFile, at) != Magic0 || BitConverter.ToUInt32(cFile, at + 4) != Magic1)
+            throw new InvalidDataException("no Havok packfile there");
         int I(int a) => BitConverter.ToInt32(cFile, a);
         int Header(int s) => at + 0x40 + s * 0x30 + 20;
         int names = at + I(Header(0)), data = at + I(Header(2));
@@ -115,6 +124,24 @@ public static class ChunkCollision
                     var corners = Enumerable.Range(0, 8).Select(k => new Vector3((k & 1) == 0 ? -h.X : h.X, (k & 2) == 0 ? -h.Y : h.Y, (k & 4) == 0 ? -h.Z : h.Z)).ToArray();
                     Vector4[] faces = [new(1, 0, 0, -h.X), new(-1, 0, 0, -h.X), new(0, 1, 0, -h.Y), new(0, -1, 0, -h.Y), new(0, 0, 1, -h.Z), new(0, 0, -1, -h.Z)];
                     return new ConvexShape(radius, corners, faces);
+                }
+                case "hkpConvexTransformShape":
+                {
+                    if (Shape(globals[shape + 0x18]) is not ConvexShape child) throw new NotSupportedException($"the transformed shape at 0x{shape:X} holds a list");
+                    int t = data + shape + 0x20;
+                    var turn = new Matrix4x4(  // its columns as rows: points as rows times this
+                        BitConverter.ToSingle(cFile, t), BitConverter.ToSingle(cFile, t + 4), BitConverter.ToSingle(cFile, t + 8), 0,
+                        BitConverter.ToSingle(cFile, t + 16), BitConverter.ToSingle(cFile, t + 20), BitConverter.ToSingle(cFile, t + 24), 0,
+                        BitConverter.ToSingle(cFile, t + 32), BitConverter.ToSingle(cFile, t + 36), BitConverter.ToSingle(cFile, t + 40), 0,
+                        0, 0, 0, 1);
+                    var move = V(t + 48);
+                    var vertices = child.Vertices.Select(v => Vector3.Transform(v, turn) + move).ToArray();
+                    var planes = child.Planes.Select(p =>
+                    {
+                        var n = Vector3.TransformNormal(new Vector3(p.X, p.Y, p.Z), turn);
+                        return new Vector4(n, p.W - Vector3.Dot(n, move));
+                    }).ToArray();
+                    return new ConvexShape(child.Radius, vertices, planes);
                 }
                 default: throw new NotSupportedException($"the collision shape at 0x{shape:X} is a {classOf[shape]}");
             }

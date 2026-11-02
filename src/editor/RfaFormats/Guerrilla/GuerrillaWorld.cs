@@ -18,7 +18,9 @@ namespace RfaFormats.Guerrilla;
 /// all zones together (so shared edges stay equal); its nine sub-zones and the height field written
 /// from that; its far-away meshes; its ground material from Guerrilla's (its four layers' textures at
 /// Guerrilla's own scale and tints, its blend and colour maps, the cliff material from its layers 0
-/// and 3); Guerrilla's rocks where its zone places them (see <see cref="GuerrillaRocks"/>); the
+/// and 3); its invisible barriers (see <see cref="TerrainBarriers"/>: Guerrilla's own, in place of the
+/// terrain template's, ruin01's arena walls, which stood in every zone); Guerrilla's rocks where its
+/// zone places them (see <see cref="GuerrillaRocks"/>); the
 /// destructible objects asked for (its rfg_movers: buildings, walls, pipes; and general_movers: crates,
 /// boxes) where its zone places them, attached and linked as there (see <see cref="GuerrillaMovers"/>),
 /// each chunk file converted (see <see cref="GuerrillaChunks"/>); a buried
@@ -55,6 +57,7 @@ public static class GuerrillaWorld
     const float MaxPit = 60;    // no ground more than this below where its hollow spills
     const float MaxStep = 25f;  // nor more than this below a neighbouring sample, 1 m away: only the deep shafts' walls, not Guerrilla's own cliffs and retaining walls
     const float BoxBottom = -500, BoxTop = 1500;   // the environment boxes' heights
+    const float BoxFogNear = 100000;               // where the boxes' own fog would start (their far clip is 1,500 m)
     const float FloorDepth = -150;                 // the buried floor piece's height
     const string FloorPiece = "dlib_floor_flat";
     // The most chunk files (c- and g-files) one container is given. The game reads a container's
@@ -229,8 +232,10 @@ public static class GuerrillaWorld
             }
         LimitGround(zones, heights, log);
 
-        // ---- Each zone's look: its Guerrilla zone's material (four layers), blend and colour maps.
+        // ---- Each zone's look: its Guerrilla zone's material (four layers), blend and colour maps; and
+        // its invisible barriers, which take the place of the terrain template's (ruin01's arena walls).
         var looks = new Dictionary<(int, int), Look>();
+        var barriers = new Dictionary<(int, int), List<ChunkShape>>();
         foreach (var (col, row) in zones)
         {
             string zoneName = $"terr01_{col:00}_{row:00}";
@@ -243,7 +248,9 @@ public static class GuerrillaWorld
                 return peg.Decode(peg.Textures[0]);
             }
             looks[(col, row)] = new Look(textures, constants, Map(zoneName + "_alpha00", 1_000_000), Map(zoneName + "comb", 1000));
+            barriers[(col, row)] = TerrainBarriers.Read(terrain);
         }
+        log($"Invisible barriers: Guerrilla's own, {barriers.Values.Sum(b => b.Count):N0} in {barriers.Values.Count(b => b.Count > 0)} of {zones.Count} zones");
         static string Alias(string texture) => "rfg_" + NameHashes.PropertyHash(texture).ToString("x8");
         // A Guerrilla texture's header made again under its new name: its size, format and flags as
         // Guerrilla's, and its mip levels, but a compressed one's only down to 4 x 4. Guerrilla sizes
@@ -427,6 +434,32 @@ public static class GuerrillaWorld
         var layer1 = new List<(string Name, byte[] Data)>();
         var zonescript = new List<(string Name, byte[] Data)>();
         uint Class(string name) => NameHashes.ClassHash(name);
+
+        // Where "level rfg_CC_RR" starts in a zone: Guerrilla's own player start there if the zone has
+        // one (the one nearest the zone's middle; its world's zones have 155), its place and facing.
+        var guerrillaStarts = new Dictionary<(int, int), (Vector3 Position, Matrix4x4 Rotation)>();
+        {
+            var rfgZoneScripts = Packfile.Open(Path.Combine(rfgCache, "zonescript_terr01.vpp_pc"));
+            foreach (var (col, row) in zones)
+            {
+                if (rfgZoneScripts.Find($"terr01_{col:00}_{row:00}.rfgzone_pc") is not { } entry) continue;
+                var corner = Corner(col, row);
+                var middle = new Vector2(corner.X + ZoneWidth / 2, corner.Y + ZoneWidth / 2);
+                var starts = GuerrillaZones.Objects(rfgZoneScripts.Read(entry))
+                    .Where(o => o.ClassHash == Class("player_start") && o.Value("oP") is { Length: 48 })
+                    .Select(o =>
+                    {
+                        byte[] op = o.Value("oP")!;
+                        float F(int i) => BitConverter.ToSingle(op, i * 4);
+                        return (Position: new Vector3(F(0), F(1), F(2)), Rotation: new Matrix4x4(F(3), F(4), F(5), 0, F(6), F(7), F(8), 0, F(9), F(10), F(11), 0, 0, 0, 0, 1));
+                    })
+                    .OrderBy(s => Vector2.Distance(new Vector2(s.Position.X, s.Position.Z), middle))
+                    .ToList();
+                if (starts.Count > 0) guerrillaStarts[(col, row)] = starts[0];
+            }
+            log($"Player starts: Guerrilla's own in {guerrillaStarts.Count} of {zones.Count} zones, the zone's middle in the rest");
+        }
+
         foreach (var (col, row) in zones)
         {
             string zone = $"{World}_{col:00}_{row:00}";
@@ -448,7 +481,7 @@ public static class GuerrillaWorld
                     cliff[z * S + x] = blend.Pixels[(Math.Min(z, blend.Height - 1) * blend.Width + Math.Min(x, blend.Width - 1)) * 4];
             var subzones = GuerrillaGround.Subzones(h, corner, null, cliff, Layout, holes[(col, row)], roadsIn[(col, row)]);
             // (Without the template's foliage, Junction's rubble and trash; Guerrilla's is still to port.)
-            byte[] terrain = ZoneFoliage.WithoutPieces(GuerrillaGround.TerrainFile(terrainTemplate, h, Layout));
+            byte[] terrain = TerrainBarriers.WithBarriers(ZoneFoliage.WithoutPieces(GuerrillaGround.TerrainFile(terrainTemplate, h, Layout)), barriers[(col, row)]);
             int box = HeaderBox(terrain);
             BitConverter.TryWriteBytes(terrain.AsSpan(box), corner.X);
             BitConverter.TryWriteBytes(terrain.AsSpan(box + 8), corner.Y);
@@ -480,9 +513,10 @@ public static class GuerrillaWorld
             byte[] colourData = TextureCodec.EncodeWithMips(TextureFormat.Dxt1, look.Colour, colourLevels);
 
             // Objects: the marker, the environment box (over the whole zone, every height) and a player
-            // start in the middle of the zone (so "level rfg_CC_RR" starts on the ground in any zone, as
-            // each of Armageddon's world zones has one), and in the start zone the multiplayer marker,
-            // from ruin01's zone.
+            // start (so "level rfg_CC_RR" starts in any zone, as each of Armageddon's world zones has
+            // one: Guerrilla's own where the zone has one, else the zone's middle on the ground, which
+            // can be inside a rock or a building), and in the start zone the multiplayer marker, from
+            // ruin01's zone.
             var zoneFile = ZoneFile.Read(zoneTemplate);
             var originals = zoneFile.Objects.ToList();
             var kept = originals.Where(o => o.ClassHash == Class("obj_zone") || o.Handle == templateBox).ToList();
@@ -492,8 +526,18 @@ public static class GuerrillaWorld
             zoneFile.Remove(originals);
             for (int k = 0; k < copies.Count; k++) zoneFile.Insert(k, copies[k]);
             Vector3 startAt = new(zoneMiddle.X, GuerrillaGround.HeightAt(h, ZoneWidth / 2, ZoneWidth / 2, Layout) + 1, zoneMiddle.Z);
+            Matrix4x4? startTurn = null;
+            if (guerrillaStarts.TryGetValue((col, row), out var guerrillaStart))
+            {
+                // (Never below the ground: lifted onto it if it were.)
+                float ground = GuerrillaGround.HeightAt(h, guerrillaStart.Position.X - corner.X, guerrillaStart.Position.Z - corner.Y, Layout);
+                startAt = guerrillaStart.Position with { Y = Math.Max(guerrillaStart.Position.Y, ground + 0.5f) };
+                startTurn = guerrillaStart.Rotation;
+            }
             foreach (var (o, copy) in kept.Zip(copies))
                 copy.MoveTo(copy.ClassHash == Class("player_start") ? startAt : o.Placement.Position + (zoneMiddle - templateMiddle));
+            if (startTurn is { } turn)
+                foreach (var copy in copies.Where(c => c.ClassHash == Class("player_start"))) copy.TurnTo(turn);
             copies.Single(o => o.ClassHash == Class("obj_zone")).Property("terrain_file_name")!.SetText(zone);
             // The destructible objects, attached and linked as in Guerrilla's zone.
             byte[] links = [];
@@ -508,6 +552,11 @@ public static class GuerrillaWorld
             var environment = copies.Single(o => o.Handle == (prefix | (templateBox & 0xFFFFFF)));
             environment.Property("cam_effect_1")!.SetText("none");
             environment.Property("affects_coloration")!.SetValue([0]);
+            // Armageddon's fog is the box's, by distance (ruin01's: an orange haze from 0 to 150 m); the
+            // guerrilla_world mod draws Guerrilla's height fog over the world instead, so the box's starts
+            // far past the far clip and never shows.
+            environment.Property("fog_near")!.SetValue(BitConverter.GetBytes(BoxFogNear));
+            environment.Property("fog_far")!.SetValue(BitConverter.GetBytes(BoxFogNear + 1));
             float half = ZoneWidth / 2 + 0.5f;
             environment.Property("Bb")!.SetValue([.. new[] { -half, BoxBottom, -half, half, BoxTop, half }.SelectMany(BitConverter.GetBytes)]);
             byte[] zoneBytes = GuerrillaMovers.WithLinks(zoneFile.ToBytes(), links);
@@ -518,6 +567,7 @@ public static class GuerrillaWorld
             {
                 var playerStart = ZoneFile.Copy(persistentStart, prefix | 0x000004);
                 playerStart.MoveTo(startAt);
+                if (startTurn is { } persistentTurn) playerStart.TurnTo(persistentTurn);
                 persistentCopies.Add(playerStart);
             }
             persistent.Remove(persistentOriginals);

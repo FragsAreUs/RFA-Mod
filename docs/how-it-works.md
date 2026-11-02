@@ -291,6 +291,26 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
   half-way-vector exponent and Armageddon's a reflection one (× 5.12), about a quarter of it for
   the same highlight, so the world builder writes Guerrilla's `Specular_Power` / 20.48. The ground's
   shader ignores the shine.
+- **The fog**: Armageddon's fog is each environment box's, by distance only; it keeps the time of
+  day's fog curves but never draws with them. Guerrilla's is height fog, thicker low down and far
+  away. The world builder writes Guerrilla's fog curves into each district's set (colour, density,
+  fall-off with height, ground, offset) and moves the zones' boxes' own fog out of reach. The mod
+  then draws Guerrilla's fog over what the world has drawn, before the sky: each pixel's distance
+  and height from the G-buffer's depth (noted during the light pass), and the fog worked out there
+  as Guerrilla's shaders do per vertex, `1 − 2^−(term × distance × density − offset)` with
+  `term = (1 − e^−k·dy)/(k·dy)`. As in Guerrilla's world, the fog's ground follows the camera (131 m
+  below it), so the density at the camera stays the same. `Fog=` scales it, live.
+- **The tone mapping** (`ToneMapping=`): Armageddon turns its picture into what's shown with a
+  fixed exposure held between its time of day's limits, a curve that glares on bright light, and
+  its colour grading. In our worlds the mod holds Armageddon's exposure at 1 (wrapping the call
+  that sets its constants, `0xC45130`) and, after Armageddon's last pass (`0xC46C10` / `0xC471C0`),
+  draws Guerrilla's own from the scene it read: the eye's brightness `L` measured on a grid of the
+  scene (4.5 × its luminance) and eased toward at the district's `iris_rate`; the exposure
+  `E = range / max(1 + offset × (base + amount × (L − base)), 0.1)` from the time of day's
+  `tonemap_lum_range`, `tonemap_lum_offset`, `eye_adaption_base` and `eye_adaption_amount`, which
+  the world builder writes; then `1 − e^(−E × (colour + bloom))` and the sRGB curve. `Exposure=`
+  scales `E` (1 is Guerrilla's). The sky's brightness setting is a fifth under it, since Guerrilla's
+  sky goes through the same exposure.
 - **The colour correction**: Guerrilla multiplies its whole picture by its time of day's tint
   (`color_correct_tint`, divided by its brightest channel); its light is pink and the tint bluish,
   so its colours need both. Armageddon doesn't colour its picture by that tint, so the mod
@@ -322,6 +342,10 @@ converts:
   the ground is left out under them (`GuerrillaGround.RoadHoles`). Where a rock closes the ground
   itself (a cap on a pillar, a cover on a slope), the ground is laid half a metre under the rock's
   surface.
+- **The invisible barriers**: the collision shapes each terrain file keeps that nothing draws (the
+  walls that keep the player in an area). Our terrain files are made over Armageddon's arena
+  `ruin01`'s, whose 28 arena walls would otherwise stand in every zone; each zone gets Guerrilla's
+  own instead (`TerrainBarriers`: Guerrilla's Havok 5.5 shapes written as 2010, as the chunks' are).
 - **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
   (Havok MOPP code, written from scratch) over each zone's pieces.
 - **The destructible objects** (Guerrilla's `rfg_mover`s and `general_mover`s). Each chunk file

@@ -62,6 +62,18 @@
 // by Guerrilla's colour correction (color_correct_tint, ColourCorrection=), which Guerrilla applies
 // to its whole picture and Armageddon to none of it.
 //
+// The fog: Armageddon's is each environment box's, by distance only, and it keeps the time of day's
+// fog curves without drawing with them. Guerrilla's is height fog, thicker low down and far away,
+// from its districts' curves. In our worlds the mod draws Guerrilla's over what the world has drawn,
+// before the sky, from the depth the light pass reads (Fog=, thickness; the world builder turns the
+// boxes' own fog off there).
+//
+// The tone mapping: Armageddon turns its picture into the final one with an exposure the environment
+// box sets (3 in our zones), a curve that clips its highlights and a colour table. In our worlds the
+// mod holds that exposure at 1 and draws Guerrilla's tone mapping over the result instead: its eye
+// adapting to the picture's brightness, its exposure from the time of day's curves, and its curve that
+// rolls the highlights off (ToneMapping=, Exposure=).
+//
 // And it leaves out the game's "invalid mission info hash" report for our worlds' zones, which
 // carry no mission (one line a zone at every load).
 //
@@ -233,6 +245,25 @@ constexpr size_t kLightPassPrologue = 5;  // push ebp / mov ebp,esp / push -1
 using LightPassFn = void(__fastcall*)(void* renderer, void* unused);
 LightPassFn g_lightPass;
 
+// The exposure: Armageddon's tone mapping (rl_hdr) adapts its exposure toward Desired_brightness ÷
+// the picture's brightness, held between Exposure_min and _max; its tone-mapping step (0xD22C60, the
+// renderer in ECX, wrapped by the console mod) uploads them from the renderer's +0xAD8, +0xAE0 and
+// +0xAE4, which the environment boxes set (ruin01's holds it at 3). The step's one caller (0xC45130,
+// the compositor's tone-mapping constants, the same renderer in ECX) is wrapped here instead.
+constexpr DWORD kToneMappingConstants = 0xC45130;
+constexpr size_t kToneMappingConstantsPrologue = 6;  // push ebp / mov ebp,esp / sub esp,3Ch
+using ToneMappingConstantsFn = void(__fastcall*)(void* renderer, void* unused);
+ToneMappingConstantsFn g_toneMappingConstants;
+
+// The compositor's last step, one of two (0xC46C10, 0xC471C0; the frame runs one, a method with one
+// flag): the picture tone-mapped into its final target (8-bit; from the scene, 16-bit float, at t0, the
+// bloom at t5, and with 0xC46C10 its colour table at t6). After it, in our worlds, the mod draws
+// Guerrilla's tone mapping over its picture.
+constexpr DWORD kFinalComposite[2] = {0xC46C10, 0xC471C0};
+constexpr size_t kFinalCompositePrologue = 5;  // push ebp / mov ebp,esp / push -1
+using FinalCompositeFn = void(__fastcall*)(void* compositor, void* unused, int flag);
+FinalCompositeFn g_finalComposite[2];
+
 // A small check the light pass makes once all that is bound: in each lamp's drawing and after the
 // last lamp (0xD574A0: is a lighting debug view on). Where the mod notes the light buffer and normals.
 constexpr DWORD kLightCheck = 0xD574A0;
@@ -378,8 +409,67 @@ void ColourCorrection(float (&out)[3]) {
     for (int i = 0; i < 3; ++i) out[i] = tint[i] / brightest;
 }
 
+// Guerrilla's fog, from the time of day's curves (in our sets as Guerrilla's): its colour, its
+// density, the density's fall-off with height (atmosphere scale), the fog's ground, an offset into
+// the distance, and the range that ground is held to around the camera. How thick it is: the density
+// times Fog= (0: none; read again whenever rfa_mods.ini is saved).
+constexpr size_t kFogColour = 0x2700, kFogGround = 0x30C0, kFogAtmosphereScale = 0x31B4, kFogDensity = 0x32A8,
+                 kFogDensityOffset = 0x339C, kFogCameraMin = 0x6E04, kFogCameraMax = 0x6EF8;
+float g_fog = 1.0f;
+bool g_tellFog = true;  // log the fog at its next draw
+
+void ReadFog() {
+    const float fog = static_cast<float>(_wtof(rfa::IniString(L"GuerrillaWorld", L"Fog", L"1").c_str()));
+    g_fog = fog >= 0 ? fog : 1.0f;
+}
+
+// Guerrilla's tone mapping in our worlds (ToneMapping=1): Armageddon's exposure is held at 1, so the
+// picture holds Guerrilla's own values, and the mod turns it into the final picture as Guerrilla does
+// (see DrawToneMapping), from the time of day's curves (in our sets as Guerrilla's). Exposure=
+// multiplies Guerrilla's exposure (1 = Guerrilla's). ToneMapping=0 leaves Armageddon's own (the
+// environment box's exposure, its curve and colour table). Both read again whenever rfa_mods.ini is saved.
+constexpr size_t kLumRange = 0x44C4, kLumOffset = 0x45B8, kEyeAdaptionBase = 0x3B3C, kEyeAdaptionAmount = 0x3C30, kIrisRate = 0x376C,
+                 kLuminanceMin = 0x3954, kLuminanceMax = 0x3860, kBloomAmount = 0x40F4;
+bool g_toneMapping = true;
+bool g_toneMappingFailed = false;
+float g_exposure = 1;
+
+void ReadToneMapping() {
+    g_toneMapping = rfa::IniInt(L"GuerrillaWorld", L"ToneMapping", 1) != 0;
+    const float exposure = static_cast<float>(_wtof(rfa::IniString(L"GuerrillaWorld", L"Exposure", L"1").c_str()));
+    g_exposure = exposure > 0 ? exposure : 1;
+}
+
+bool GuerrillaToneMapping() { return g_toneMapping && !g_toneMappingFailed; }
+
+// How bright the sky, clouds and backdrop are drawn: their time-of-day colours times Brightness=; with
+// Guerrilla's tone mapping the picture holds Guerrilla's own values, so there the default 5 is
+// Guerrilla's own level (× 1).
+float SkyBrightness() { return GuerrillaToneMapping() ? g_brightness / kDefaultBrightness : g_brightness; }
+
+// The fog's numbers now, as Guerrilla works them out each frame (game_render_setup_frame): x the
+// density's fall-off with height k (the atmosphere scale, never quite 0); y the density at the
+// camera's height, in powers of two (× 1/ln 2), e^(−k × the camera's height over the fog's ground)
+// times the density, held to 0–1000; w the offset. Guerrilla's world (its terr01.gtodx,
+// fog_camera_follow) keeps the fog's ground at the camera's height plus fog_ground, held between
+// fog_camera_min and _max, so the camera's own height drops out.
+void FogNumbers(float (&out)[4]) {
+    const float k = TodNumber(kFogAtmosphereScale) + 0.00001f;
+    float ground = TodNumber(kFogGround);
+    const float lowest = TodNumber(kFogCameraMin), highest = TodNumber(kFogCameraMax);
+    if (ground > highest) ground = highest;
+    if (ground < lowest) ground = lowest;
+    float density = TodNumber(kFogDensity) * g_fog * 1.442695f * expf(k * ground);
+    if (density < 0) density = 0;
+    if (density > 1000) density = 1000;
+    out[0] = k;
+    out[1] = density;
+    out[2] = 0;
+    out[3] = TodNumber(kFogDensityOffset);
+}
+
 // Once a second: if rfa_mods.ini was saved since, read the brightness, ambient light, sun, colour
-// correction and clock speed again.
+// correction, fog, exposure and clock speed again.
 void CheckSettings() {
     const ULONGLONG now = GetTickCount64();
     if (now - g_lastIniCheck < 1000) return;
@@ -412,8 +502,22 @@ void CheckSettings() {
     ReadColourCorrection();
     if (g_colourCorrection != correctionBefore) {
         rfa::Log("Colour correction (Guerrilla's tint) %s", g_colourCorrection ? "on" : "off");
-        g_tellAmbient = g_tellColours = true;
+        g_tellAmbient = g_tellColours = g_tellFog = true;
     }
+    const float fogBefore = g_fog;
+    ReadFog();
+    if (g_fog != fogBefore) {
+        rfa::Log("Fog: thickness times %.3g (was %.3g)", g_fog, fogBefore);
+        g_tellFog = true;
+    }
+    const float exposureBefore = g_exposure;
+    const bool toneMappingBefore = g_toneMapping;
+    ReadToneMapping();
+    if (g_toneMapping != toneMappingBefore) {
+        rfa::Log("Tone mapping: %s", g_toneMapping ? "Guerrilla's" : "Armageddon's own");
+        g_tellColours = true;
+    }
+    if (g_exposure != exposureBefore) rfa::Log("Tone mapping: exposure times %.3g (was %.3g)", g_exposure, exposureBefore);
     const float clockBefore = g_clockSpeed;
     ReadClockSpeed();
     if (g_clockSpeed != clockBefore && g_clockOurs) {
@@ -845,6 +949,106 @@ float4 LightPixel(float4 position : SV_Position) : SV_Target
 }
 )";
 
+// Guerrilla's fog over what the world has drawn: for each pixel its surface's distance and height
+// from the camera (the G-buffer's depth, turned into a distance with the numbers the game's lamps use,
+// IR_Similarity_Data in its constants vc4), and the fog there as Guerrilla's shaders work it out per
+// vertex (rfg-nodecal_s and the rest): term = (1 − e^(−k·dy)) / (k·dy), 1 when nearly level; fog =
+// 1 − min(2^(−(term × distance × density − offset)), 1). Blended over the picture by that amount, as
+// Guerrilla's surfaces mix in Fog_color. Pixels with nothing drawn (depth at the far plane) are the sky's.
+constexpr char kFogShader[] = R"(
+cbuffer Fog : register(b0)
+{
+    float4 FogColour;   // the fog's colour (times the colour correction)
+    float4 FogNumbers;  // x the fall-off with height, y the density at the camera's height (powers of two a metre), w the offset
+    float4 UpToward;    // straight up, in the camera's space; w the depth buffer's value at the far plane
+    float4 TargetSize;  // the picture's width and height, and the tangents of half the field of view across and up
+};
+
+cbuffer Game : register(b1)
+{
+    float4 Unused[12];
+    float4 SimilarityData;  // zw: the camera's distance ahead = 1 / (z × depth + w)
+};
+
+Texture2D Depth : register(t0);
+SamplerState Nearest : register(s0);
+
+float4 FogVertex(uint id : SV_VertexID) : SV_Position
+{
+    float2 corner = float2((id << 1) & 2, id & 2);
+    return float4(corner * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float4 FogPixel(float4 position : SV_Position) : SV_Target
+{
+    float2 at = position.xy / TargetSize.xy;
+    float depth = Depth.Sample(Nearest, at).x;
+    if (abs(depth - UpToward.w) < 0.0000001) discard;
+    float ahead = 1 / (SimilarityData.z * depth + SimilarityData.w);
+    float3 offset = float3((at * float2(2, -2) + float2(-1, 1)) * TargetSize.zw, 1) * ahead;  // the surface, from the camera
+    float dy = dot(offset, UpToward.xyz);
+    float kh = dy * FogNumbers.x;
+    float term = abs(dy) > 0.01 ? (1 - exp2(kh * -1.442695)) / kh : 1;
+    float fog = 1 - min(exp2(-(term * length(offset) * FogNumbers.y - FogNumbers.w)), 1);
+    return float4(FogColour.rgb, saturate(fog));
+}
+)";
+
+// Guerrilla's tone mapping (its rl_hdr passes 11-13, 12 and 21), drawn over Armageddon's final picture
+// from the scene it was made from (held at exposure 1, so Guerrilla's own values). AdaptPixel, into a
+// 1 x 1 target: the picture's brightness as Guerrilla measures it, 4.5 × each sample's luminance
+// (Rec. 709; its scene buffer keeps the picture ÷ 8 and its measure takes 36 ×), each held to
+// luminance_min-max, averaged over a grid, and the eye's brightness eased toward it, by
+// 1 − 2^(−0.8744 × the frame's time × iris_rate). ToneMapPixel: the exposure, lum_range ÷ max(1 +
+// lum_offset × (base + amount × (adapted − base)), 0.1) (eye_adaption_base, _amount), times Exposure=;
+// the picture 1 − e^(−exposure × (scene + bloom × bloom_amount)), encoded for the screen (sRGB:
+// Guerrilla's display gamma, 2.4).
+constexpr char kToneMappingShader[] = R"(
+cbuffer ToneMapping : register(b0)
+{
+    float4 Adapt;     // x how far the eye moves toward the measure this frame (1: all the way), y z the range each sample is held to
+    float4 Exposure;  // x lum_range, y lum_offset, z eye_adaption_base, w eye_adaption_amount
+    float4 Picture;   // x Exposure=, y bloom_amount, z w the picture's width and height
+};
+
+Texture2D Scene : register(t0);
+Texture2D Bloom : register(t1);
+Texture2D Adapted : register(t2);  // 1 x 1: the brightness the eye has adapted to
+SamplerState Smooth : register(s0);
+
+float4 ToneVertex(uint id : SV_VertexID) : SV_Position
+{
+    float2 corner = float2((id << 1) & 2, id & 2);
+    return float4(corner * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+float4 AdaptPixel(float4 position : SV_Position) : SV_Target
+{
+    float total = 0;
+    for (int y = 0; y < 18; ++y)
+        for (int x = 0; x < 32; ++x)
+        {
+            int2 at = int2((x + 0.5) * Picture.z / 32, (y + 0.5) * Picture.w / 18);
+            float3 colour = max(Scene.Load(int3(at, 0)).rgb, 0);
+            total += clamp(4.5 * dot(colour, float3(0.2125, 0.7154, 0.0721)), Adapt.y, Adapt.z);
+        }
+    float measured = total / 576;
+    float before = Adapted.Load(int3(0, 0, 0)).r;
+    return float4(Adapt.x >= 1 ? measured : before + (measured - before) * Adapt.x, 0, 0, 1);
+}
+
+float4 TonePixel(float4 position : SV_Position) : SV_Target
+{
+    float3 colour = max(Scene.Load(int3(position.xy, 0)).rgb, 0);
+    float3 bloom = max(Bloom.Sample(Smooth, position.xy / Picture.zw).rgb, 0) * Picture.y;
+    float adapted = Adapted.Load(int3(0, 0, 0)).r;
+    float exposure = Exposure.x / max(1 + Exposure.y * (Exposure.z + Exposure.w * (adapted - Exposure.z)), 0.1) * Picture.x;
+    float3 picture = saturate(1 - exp(-exposure * (colour + bloom)));
+    float3 encoded = picture <= 0.0031308 ? picture * 12.92 : 1.055 * pow(picture, 1 / 2.4) - 0.055;
+    return float4(encoded, 1);
+}
+)";
+
 // ---- Drawing
 
 struct LightConstants {
@@ -852,6 +1056,13 @@ struct LightConstants {
     float fromBelow[4];
     float sunColour[4];
     float sunToward[4];
+    float upToward[4];
+    float targetSize[4];
+};
+
+struct FogConstants {
+    float fogColour[4];
+    float fogNumbers[4];
     float upToward[4];
     float targetSize[4];
 };
@@ -1026,6 +1237,150 @@ bool MakeLightObjects() {
     sampler.MaxLOD = D3D11_FLOAT32_MAX;
     ok = ok && SUCCEEDED(g_device->CreateSamplerState(&sampler, &g_lightSampler));
     if (!ok) rfa::Log("Could not make the light pass's shaders or states; the ground keeps the game's lamps only");
+    return ok;
+}
+
+// The fog's shaders and states.
+ID3D11VertexShader* g_fogVertex = nullptr;
+ID3D11PixelShader* g_fogPixel = nullptr;
+ID3D11Buffer* g_fogConstants = nullptr;
+ID3D11BlendState* g_fogBlend = nullptr;
+ID3D11DepthStencilState* g_fogDepthTest = nullptr;
+ID3D11RasterizerState* g_fogRaster = nullptr;
+ID3D11SamplerState* g_fogSampler = nullptr;
+bool g_fogFailed = false;
+
+bool MakeFogObjects() {
+    if (!LoadCompiler()) return false;
+    ID3DBlob* vertex = Compile(kFogShader, sizeof(kFogShader) - 1, "FogVertex", "vs_4_0");
+    ID3DBlob* pixel = Compile(kFogShader, sizeof(kFogShader) - 1, "FogPixel", "ps_4_0");
+    bool ok = vertex && pixel &&
+              SUCCEEDED(g_device->CreateVertexShader(vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &g_fogVertex)) &&
+              SUCCEEDED(g_device->CreatePixelShader(pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr, &g_fogPixel));
+    if (vertex) vertex->Release();
+    if (pixel) pixel->Release();
+
+    D3D11_BUFFER_DESC buffer = {};
+    buffer.ByteWidth = sizeof(FogConstants);
+    buffer.Usage = D3D11_USAGE_DYNAMIC;
+    buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ok = ok && SUCCEEDED(g_device->CreateBuffer(&buffer, nullptr, &g_fogConstants));
+
+    // The picture becomes the fog's colour by the fog's amount; its alpha is left as it is.
+    D3D11_BLEND_DESC blend = {};
+    blend.RenderTarget[0].BlendEnable = TRUE;
+    blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+    blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+    ok = ok && SUCCEEDED(g_device->CreateBlendState(&blend, &g_fogBlend));
+
+    D3D11_DEPTH_STENCIL_DESC depth = {};  // no depth test: the depth is read as a texture
+    depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    depth.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    ok = ok && SUCCEEDED(g_device->CreateDepthStencilState(&depth, &g_fogDepthTest));
+
+    D3D11_RASTERIZER_DESC raster = {};
+    raster.FillMode = D3D11_FILL_SOLID;
+    raster.CullMode = D3D11_CULL_NONE;
+    raster.DepthClipEnable = TRUE;
+    ok = ok && SUCCEEDED(g_device->CreateRasterizerState(&raster, &g_fogRaster));
+
+    D3D11_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    ok = ok && SUCCEEDED(g_device->CreateSamplerState(&sampler, &g_fogSampler));
+    if (!ok) rfa::Log("Could not make the fog's shaders or states; no fog");
+    return ok;
+}
+
+// Guerrilla's tone mapping: its shaders, the eye's brightness (two 1 x 1 textures, last frame's and
+// this frame's, swapped each frame), a copy of it to read back for the log, and its states.
+struct ToneConstants {
+    float adapt[4];
+    float exposure[4];
+    float picture[4];
+};
+
+ID3D11VertexShader* g_toneVertex = nullptr;
+ID3D11PixelShader* g_adaptPixel = nullptr;
+ID3D11PixelShader* g_tonePixel = nullptr;
+ID3D11Buffer* g_toneConstants = nullptr;
+ID3D11Texture2D* g_eye[2] = {};
+ID3D11RenderTargetView* g_eyeTarget[2] = {};
+ID3D11ShaderResourceView* g_eyeView[2] = {};
+ID3D11Texture2D* g_eyeReadback = nullptr;
+ID3D11BlendState* g_eyeBlend = nullptr;   // written as it is
+ID3D11BlendState* g_toneBlend = nullptr;  // the picture's red, green and blue
+ID3D11SamplerState* g_toneSampler = nullptr;
+ID3D11DepthStencilState* g_toneDepth = nullptr;
+ID3D11RasterizerState* g_toneRaster = nullptr;
+
+bool MakeToneMappingObjects() {
+    if (!LoadCompiler()) return false;
+    ID3DBlob* vertex = Compile(kToneMappingShader, sizeof(kToneMappingShader) - 1, "ToneVertex", "vs_4_0");
+    ID3DBlob* adapt = Compile(kToneMappingShader, sizeof(kToneMappingShader) - 1, "AdaptPixel", "ps_4_0");
+    ID3DBlob* tone = Compile(kToneMappingShader, sizeof(kToneMappingShader) - 1, "TonePixel", "ps_4_0");
+    bool ok = vertex && adapt && tone &&
+              SUCCEEDED(g_device->CreateVertexShader(vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr, &g_toneVertex)) &&
+              SUCCEEDED(g_device->CreatePixelShader(adapt->GetBufferPointer(), adapt->GetBufferSize(), nullptr, &g_adaptPixel)) &&
+              SUCCEEDED(g_device->CreatePixelShader(tone->GetBufferPointer(), tone->GetBufferSize(), nullptr, &g_tonePixel));
+    for (ID3DBlob* blob : {vertex, adapt, tone})
+        if (blob) blob->Release();
+
+    D3D11_BUFFER_DESC buffer = {};
+    buffer.ByteWidth = sizeof(ToneConstants);
+    buffer.Usage = D3D11_USAGE_DYNAMIC;
+    buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ok = ok && SUCCEEDED(g_device->CreateBuffer(&buffer, nullptr, &g_toneConstants));
+
+    D3D11_TEXTURE2D_DESC eye = {};
+    eye.Width = eye.Height = 1;
+    eye.MipLevels = eye.ArraySize = 1;
+    eye.Format = DXGI_FORMAT_R32_FLOAT;
+    eye.SampleDesc.Count = 1;
+    eye.Usage = D3D11_USAGE_DEFAULT;
+    eye.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    const float zero = 0;
+    const D3D11_SUBRESOURCE_DATA start = {&zero, sizeof(zero), 0};
+    for (int i = 0; i < 2 && ok; ++i)
+        ok = SUCCEEDED(g_device->CreateTexture2D(&eye, &start, &g_eye[i])) &&
+             SUCCEEDED(g_device->CreateRenderTargetView(g_eye[i], nullptr, &g_eyeTarget[i])) &&
+             SUCCEEDED(g_device->CreateShaderResourceView(g_eye[i], nullptr, &g_eyeView[i]));
+    eye.Usage = D3D11_USAGE_STAGING;
+    eye.BindFlags = 0;
+    eye.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ok = ok && SUCCEEDED(g_device->CreateTexture2D(&eye, nullptr, &g_eyeReadback));
+
+    D3D11_BLEND_DESC blend = {};
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    ok = ok && SUCCEEDED(g_device->CreateBlendState(&blend, &g_eyeBlend));
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+    ok = ok && SUCCEEDED(g_device->CreateBlendState(&blend, &g_toneBlend));
+
+    D3D11_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    ok = ok && SUCCEEDED(g_device->CreateSamplerState(&sampler, &g_toneSampler));
+
+    D3D11_DEPTH_STENCIL_DESC depth = {};  // no depth test
+    depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    depth.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    ok = ok && SUCCEEDED(g_device->CreateDepthStencilState(&depth, &g_toneDepth));
+
+    D3D11_RASTERIZER_DESC raster = {};
+    raster.FillMode = D3D11_FILL_SOLID;
+    raster.CullMode = D3D11_CULL_NONE;
+    raster.DepthClipEnable = TRUE;
+    ok = ok && SUCCEEDED(g_device->CreateRasterizerState(&raster, &g_toneRaster));
+    if (!ok) rfa::Log("Could not make the tone mapping's shaders or states; Armageddon's own tone mapping stays");
     return ok;
 }
 
@@ -1205,7 +1560,7 @@ void SkyColours(float (&hemisphere)[10][4]) {
     for (int c = 0; c < 10; ++c) {
         float colour[3];
         TodColour(kSkyCurves[c], colour);
-        for (int i = 0; i < 3; ++i) hemisphere[c][i] = colour[i] * g_brightness * tint[i];
+        for (int i = 0; i < 3; ++i) hemisphere[c][i] = colour[i] * SkyBrightness() * tint[i];
         hemisphere[c][3] = 1;
     }
 }
@@ -1259,9 +1614,9 @@ void DrawClouds(const SkyConstants& sky) {
         float colour[3];
         if (part.kind == 2) {
             TodColour(kMountainFront, colour);
-            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness * tint[i];
+            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * SkyBrightness() * tint[i];
             TodColour(kMountainBack, colour);
-            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness * tint[i];
+            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * SkyBrightness() * tint[i];
             TodColour(kMountainFog, colour);  // mixed into the picture before it is lit
             for (int i = 0; i < 3; ++i) constants.strengths[i] = colour[i];
             constants.strengths[3] = TodNumber(kMountainFogDensity);
@@ -1271,9 +1626,9 @@ void DrawClouds(const SkyConstants& sky) {
                          constants.strengths[0], constants.strengths[1], constants.strengths[2], constants.strengths[3]);
         } else {
             TodColour(kCloudFront[part.kind], colour);
-            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * g_brightness * tint[i];
+            for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * SkyBrightness() * tint[i];
             TodColour(kCloudRear[part.kind], colour);
-            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * g_brightness * tint[i];
+            for (int i = 0; i < 3; ++i) constants.rear[i] = colour[i] * SkyBrightness() * tint[i];
             for (int i = 0; i < 4; ++i) constants.strengths[i] = TodNumber(kCloudLayers[part.kind][i]);
             constants.shape[0] = part.fade;
             constants.shape[1] = part.full > part.fade ? part.full : part.fade + 0.01f;
@@ -1304,7 +1659,7 @@ const char* FormatName(DXGI_FORMAT format) {
     }
 }
 
-// Everything on the device context the sky and clouds change, to put back afterwards.
+// Everything on the device context the sky, clouds, fog and tone mapping change, to put back afterwards.
 struct SavedState {
     D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
     ID3D11InputLayout* layout = nullptr;
@@ -1317,8 +1672,8 @@ struct SavedState {
     ID3D11PixelShader* pixelShader = nullptr;
     ID3D11GeometryShader* geometryShader = nullptr;
     ID3D11Buffer* vertexConstants = nullptr;
-    ID3D11Buffer* pixelConstants = nullptr;
-    ID3D11ShaderResourceView* pixelResources[2] = {};
+    ID3D11Buffer* pixelConstants[2] = {};
+    ID3D11ShaderResourceView* pixelResources[3] = {};
     ID3D11SamplerState* pixelSampler = nullptr;
     ID3D11BlendState* blend = nullptr;
     float blendFactor[4] = {};
@@ -1334,8 +1689,8 @@ struct SavedState {
         g_context->PSGetShader(&pixelShader, nullptr, nullptr);
         g_context->GSGetShader(&geometryShader, nullptr, nullptr);
         g_context->VSGetConstantBuffers(0, 1, &vertexConstants);
-        g_context->PSGetConstantBuffers(0, 1, &pixelConstants);
-        g_context->PSGetShaderResources(0, 2, pixelResources);
+        g_context->PSGetConstantBuffers(0, 2, pixelConstants);
+        g_context->PSGetShaderResources(0, 3, pixelResources);
         g_context->PSGetSamplers(0, 1, &pixelSampler);
         g_context->OMGetBlendState(&blend, blendFactor, &sampleMask);
         g_context->RSGetState(&raster);
@@ -1350,15 +1705,15 @@ struct SavedState {
         g_context->PSSetShader(pixelShader, nullptr, 0);
         g_context->GSSetShader(geometryShader, nullptr, 0);
         g_context->VSSetConstantBuffers(0, 1, &vertexConstants);
-        g_context->PSSetConstantBuffers(0, 1, &pixelConstants);
-        g_context->PSSetShaderResources(0, 2, pixelResources);
+        g_context->PSSetConstantBuffers(0, 2, pixelConstants);
+        g_context->PSSetShaderResources(0, 3, pixelResources);
         g_context->PSSetSamplers(0, 1, &pixelSampler);
         g_context->OMSetBlendState(blend, blendFactor, sampleMask);
         g_context->RSSetState(raster);
         for (IUnknown* held : {static_cast<IUnknown*>(layout), static_cast<IUnknown*>(vertexBuffer), static_cast<IUnknown*>(indexBuffer),
                                static_cast<IUnknown*>(vertexShader), static_cast<IUnknown*>(pixelShader), static_cast<IUnknown*>(geometryShader),
-                               static_cast<IUnknown*>(vertexConstants), static_cast<IUnknown*>(pixelConstants),
-                               static_cast<IUnknown*>(pixelResources[0]), static_cast<IUnknown*>(pixelResources[1]),
+                               static_cast<IUnknown*>(vertexConstants), static_cast<IUnknown*>(pixelConstants[0]), static_cast<IUnknown*>(pixelConstants[1]),
+                               static_cast<IUnknown*>(pixelResources[0]), static_cast<IUnknown*>(pixelResources[1]), static_cast<IUnknown*>(pixelResources[2]),
                                static_cast<IUnknown*>(pixelSampler), static_cast<IUnknown*>(blend), static_cast<IUnknown*>(raster)})
             if (held) held->Release();
     }
@@ -1526,9 +1881,254 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
     if (gameDepth) gameDepth->Release();
 }
 
+// For the fog, drawn later in the frame (at the sky step): the G-buffer's depth (t14) and the game's
+// own constants (vc4, whose IR_Similarity_Data turns depth into distance), noted during the light pass.
+bool g_noteFog = false;
+ID3D11ShaderResourceView* g_fogDepth = nullptr;
+ID3D11Buffer* g_gameConstants = nullptr;
+
+void DropFogInputs() {
+    if (g_fogDepth) g_fogDepth->Release();
+    if (g_gameConstants) g_gameConstants->Release();
+    g_fogDepth = nullptr;
+    g_gameConstants = nullptr;
+}
+
+// Draws Guerrilla's fog over what the world has drawn into the game's current target, and puts the
+// device context back as it was.
+void DrawFog() {
+    ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ID3D11DepthStencilView* depthView = nullptr;
+    g_context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, targets, &depthView);
+    ID3D11DepthStencilState* gameDepth = nullptr;
+    UINT stencilRef = 0;
+    g_context->OMGetDepthStencilState(&gameDepth, &stencilRef);
+    D3D11_DEPTH_STENCIL_DESC gameDepthDesc = {};
+    gameDepthDesc.DepthFunc = D3D11_COMPARISON_LESS;  // what no state means
+    if (gameDepth) gameDepth->GetDesc(&gameDepthDesc);
+    const bool reversed = gameDepthDesc.DepthFunc == D3D11_COMPARISON_GREATER || gameDepthDesc.DepthFunc == D3D11_COMPARISON_GREATER_EQUAL;
+    D3D11_VIEWPORT viewport = {};
+    UINT viewports = 1;
+    g_context->RSGetViewports(&viewports, &viewport);
+    D3D11_BUFFER_DESC gameConstantsDesc = {};
+    g_gameConstants->GetDesc(&gameConstantsDesc);
+
+    FogConstants constants = {};
+    float colour[3], tint[3];
+    TodColour(kFogColour, colour);
+    ColourCorrection(tint);
+    for (int i = 0; i < 3; ++i) constants.fogColour[i] = colour[i] * tint[i];
+    FogNumbers(constants.fogNumbers);
+    // The camera's space: x along its right, y its up, z its forward (its rows in the world).
+    const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};
+    for (int i = 0; i < 3; ++i) constants.upToward[i] = axes[i][1];
+    constants.upToward[3] = reversed ? 0.0f : 1.0f;
+    constants.targetSize[0] = viewport.Width;
+    constants.targetSize[1] = viewport.Height;
+    constants.targetSize[3] = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    constants.targetSize[2] = viewport.Height > 0 ? constants.targetSize[3] * viewport.Width / viewport.Height : 0;
+    if (g_tellFog) {
+        g_tellFog = false;
+        rfa::Log("Fog at %.2f h: colour %.4f %.4f %.4f, fall-off %.4f, density at the camera %.5f, offset %.3f (Fog=%.3g)",
+                 g_timeOfDay, constants.fogColour[0], constants.fogColour[1], constants.fogColour[2], constants.fogNumbers[0],
+                 constants.fogNumbers[1], constants.fogNumbers[3], g_fog);
+    }
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (!targets[0] || viewport.Width <= 0 || viewport.Height <= 0 || gameConstantsDesc.ByteWidth < 13 * 16) {
+        RFA_LOG_FIRST(1, "Fog: nothing to draw into, or the game's constants are not the ones expected (%u bytes); no fog",
+                      gameConstantsDesc.ByteWidth);
+    } else if (SUCCEEDED(g_context->Map(g_fogConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        memcpy(mapped.pData, &constants, sizeof(constants));
+        g_context->Unmap(g_fogConstants, 0);
+        SavedState saved;
+        saved.Save();
+        g_context->OMSetRenderTargets(1, &targets[0], nullptr);  // the depth is read, so it can't stay bound for testing
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->IASetInputLayout(nullptr);
+        g_context->VSSetShader(g_fogVertex, nullptr, 0);
+        g_context->PSSetShader(g_fogPixel, nullptr, 0);
+        g_context->GSSetShader(nullptr, nullptr, 0);
+        ID3D11Buffer* buffers[2] = {g_fogConstants, g_gameConstants};
+        g_context->PSSetConstantBuffers(0, 2, buffers);
+        g_context->PSSetShaderResources(0, 1, &g_fogDepth);
+        g_context->PSSetSamplers(0, 1, &g_fogSampler);
+        const float noFactor[4] = {1, 1, 1, 1};
+        g_context->OMSetBlendState(g_fogBlend, noFactor, 0xFFFFFFFF);
+        g_context->OMSetDepthStencilState(g_fogDepthTest, 0);
+        g_context->RSSetState(g_fogRaster);
+        g_context->Draw(3, 0);
+        saved.Restore();
+        g_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, targets, depthView);
+        g_context->OMSetDepthStencilState(gameDepth, stencilRef);
+    }
+    for (ID3D11RenderTargetView* target : targets)
+        if (target) target->Release();
+    if (depthView) depthView->Release();
+    if (gameDepth) gameDepth->Release();
+}
+
+// Guerrilla's tone mapping, drawn over Armageddon's final picture (its target, 8-bit) from the scene it
+// was made from (16-bit float, at exposure 1) and its bloom: the eye's brightness eased toward this
+// frame's measure, then the picture. Puts the device context back as it was.
+int g_eyeNow = 0;           // which of the two textures holds the eye's brightness
+bool g_eyeFresh = true;     // start the eye at the measure (the first frame, or after a gap)
+LARGE_INTEGER g_toneLast = {};
+ULONGLONG g_lastEyeLog = 0;
+bool g_eyeReadPending = false;
+
+void DrawToneMapping(ID3D11RenderTargetView* target, ID3D11ShaderResourceView* scene, ID3D11ShaderResourceView* bloom, UINT width, UINT height) {
+    // The frame's time, for the eye (a new start after a gap of more than a second).
+    LARGE_INTEGER now, frequency;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    float seconds = g_toneLast.QuadPart ? static_cast<float>(now.QuadPart - g_toneLast.QuadPart) / frequency.QuadPart : 0;
+    g_toneLast = now;
+    if (seconds > 1) g_eyeFresh = true;
+    if (seconds > 0.25f) seconds = 0.25f;
+
+    ToneConstants constants = {};
+    constants.adapt[0] = g_eyeFresh ? 1.0f : 1 - exp2f(-0.87439f * seconds * TodNumber(kIrisRate));
+    constants.adapt[1] = TodNumber(kLuminanceMin);
+    constants.adapt[2] = TodNumber(kLuminanceMax);
+    if (constants.adapt[2] < constants.adapt[1]) constants.adapt[2] = constants.adapt[1];
+    constants.exposure[0] = TodNumber(kLumRange);
+    constants.exposure[1] = TodNumber(kLumOffset);
+    constants.exposure[2] = TodNumber(kEyeAdaptionBase);
+    constants.exposure[3] = TodNumber(kEyeAdaptionAmount);
+    constants.picture[0] = g_exposure;
+    constants.picture[1] = TodNumber(kBloomAmount);
+    constants.picture[2] = static_cast<float>(width);
+    constants.picture[3] = static_cast<float>(height);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (FAILED(g_context->Map(g_toneConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    memcpy(mapped.pData, &constants, sizeof(constants));
+    g_context->Unmap(g_toneConstants, 0);
+    g_eyeFresh = false;
+    const int next = 1 - g_eyeNow;
+
+    SavedState saved;
+    saved.Save();
+    ID3D11RenderTargetView* gameTargets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ID3D11DepthStencilView* gameDepthView = nullptr;
+    g_context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, gameTargets, &gameDepthView);
+    ID3D11DepthStencilState* gameDepth = nullptr;
+    UINT stencilRef = 0;
+    g_context->OMGetDepthStencilState(&gameDepth, &stencilRef);
+    D3D11_VIEWPORT gameViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+    UINT viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    g_context->RSGetViewports(&viewportCount, gameViewports);
+
+    const float noFactor[4] = {1, 1, 1, 1};
+    g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_context->IASetInputLayout(nullptr);
+    g_context->VSSetShader(g_toneVertex, nullptr, 0);
+    g_context->GSSetShader(nullptr, nullptr, 0);
+    g_context->PSSetConstantBuffers(0, 1, &g_toneConstants);
+    g_context->PSSetSamplers(0, 1, &g_toneSampler);
+    g_context->OMSetDepthStencilState(g_toneDepth, 0);
+    g_context->RSSetState(g_toneRaster);
+
+    // The eye: this frame's measure, and last frame's brightness eased toward it.
+    const D3D11_VIEWPORT one = {0, 0, 1, 1, 0, 1};
+    g_context->OMSetRenderTargets(1, &g_eyeTarget[next], nullptr);
+    g_context->RSSetViewports(1, &one);
+    ID3D11ShaderResourceView* eyeInputs[3] = {scene, nullptr, g_eyeView[g_eyeNow]};
+    g_context->PSSetShaderResources(0, 3, eyeInputs);
+    g_context->PSSetShader(g_adaptPixel, nullptr, 0);
+    g_context->OMSetBlendState(g_eyeBlend, noFactor, 0xFFFFFFFF);
+    g_context->Draw(3, 0);
+
+    // The picture, over Armageddon's.
+    const D3D11_VIEWPORT whole = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+    g_context->OMSetRenderTargets(1, &target, nullptr);
+    g_context->RSSetViewports(1, &whole);
+    ID3D11ShaderResourceView* pictureInputs[3] = {scene, bloom, g_eyeView[next]};
+    g_context->PSSetShaderResources(0, 3, pictureInputs);
+    g_context->PSSetShader(g_tonePixel, nullptr, 0);
+    g_context->OMSetBlendState(g_toneBlend, noFactor, 0xFFFFFFFF);
+    g_context->Draw(3, 0);
+
+    ID3D11ShaderResourceView* none[3] = {};
+    g_context->PSSetShaderResources(0, 3, none);
+    g_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, gameTargets, gameDepthView);
+    g_context->RSSetViewports(viewportCount, gameViewports);
+    g_context->OMSetDepthStencilState(gameDepth, stencilRef);
+    saved.Restore();
+    for (ID3D11RenderTargetView* gameTarget : gameTargets)
+        if (gameTarget) gameTarget->Release();
+    if (gameDepthView) gameDepthView->Release();
+    if (gameDepth) gameDepth->Release();
+    g_eyeNow = next;
+
+    // Every 10 seconds, the eye's brightness read back (a frame or two later, never waiting) for the log.
+    if (g_eyeReadPending) {
+        D3D11_MAPPED_SUBRESOURCE eye;
+        if (SUCCEEDED(g_context->Map(g_eyeReadback, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &eye))) {
+            const float adapted = *static_cast<const float*>(eye.pData);
+            g_context->Unmap(g_eyeReadback, 0);
+            g_eyeReadPending = false;
+            float lit = 1 + constants.exposure[1] * (constants.exposure[2] + constants.exposure[3] * (adapted - constants.exposure[2]));
+            if (lit < 0.1f) lit = 0.1f;
+            static int told = 0;
+            if (told++ < 60)
+                rfa::Log("Tone mapping at %.2f h: the eye's brightness %.3f, exposure %.3f (range %.3g, offset %.3g, base %.3g, amount %.3g, "
+                         "Exposure=%.3g)", g_timeOfDay, adapted, constants.exposure[0] / lit * g_exposure, constants.exposure[0],
+                         constants.exposure[1], constants.exposure[2], constants.exposure[3], g_exposure);
+        }
+    } else if (GetTickCount64() - g_lastEyeLog >= 10000) {
+        g_lastEyeLog = GetTickCount64();
+        g_context->CopyResource(g_eyeReadback, g_eye[g_eyeNow]);
+        g_eyeReadPending = true;
+    }
+}
+
+// The texture behind a view (false if none or not a 2D texture).
+bool TextureOf(ID3D11View* view, D3D11_TEXTURE2D_DESC& desc) {
+    desc = {};
+    if (!view) return false;
+    ID3D11Resource* resource = nullptr;
+    view->GetResource(&resource);
+    ID3D11Texture2D* texture = nullptr;
+    const bool ok = resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)));
+    if (texture) {
+        texture->GetDesc(&desc);
+        texture->Release();
+    }
+    if (resource) resource->Release();
+    return ok;
+}
+
+// Right after Armageddon's last composite step in our worlds: its target and the scene (t0) and bloom
+// (t5) it drew from, still bound, then Guerrilla's tone mapping over its picture.
+void ToneMapAfterComposite() {
+    if (!GuerrillaToneMapping() || !g_context || !g_device) return;
+    ID3D11RenderTargetView* target = nullptr;
+    g_context->OMGetRenderTargets(1, &target, nullptr);
+    ID3D11ShaderResourceView* scene = nullptr;
+    ID3D11ShaderResourceView* bloom = nullptr;
+    g_context->PSGetShaderResources(0, 1, &scene);
+    g_context->PSGetShaderResources(5, 1, &bloom);
+    D3D11_TEXTURE2D_DESC targetDesc, sceneDesc, bloomDesc;
+    if (TextureOf(target, targetDesc) && TextureOf(scene, sceneDesc) && TextureOf(bloom, bloomDesc) &&
+        sceneDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && sceneDesc.Width == targetDesc.Width && sceneDesc.Height == targetDesc.Height) {
+        if (!g_toneVertex && !MakeToneMappingObjects()) {
+            g_toneMappingFailed = true;
+        } else {
+            RFA_LOG_FIRST(1, "Tone mapping: Guerrilla's, over the final picture in world \"%s\" (%u x %u)", WorldName(), targetDesc.Width,
+                          targetDesc.Height);
+            DrawToneMapping(target, scene, bloom, targetDesc.Width, targetDesc.Height);
+        }
+    } else {
+        RFA_LOG_FIRST(1, "Tone mapping: the last composite step left no picture, scene and bloom of the kinds expected; Armageddon's own stays");
+    }
+    for (ID3D11View* view : {static_cast<ID3D11View*>(target), static_cast<ID3D11View*>(scene), static_cast<ID3D11View*>(bloom)})
+        if (view) view->Release();
+}
+
 // During the light pass in our worlds, the first time its check runs (all is bound by then), the
-// mod notes the light buffer it draws into and the G-buffer's normals; once the pass is done it adds
-// its light there.
+// mod notes the light buffer it draws into and the G-buffer's normals (and, for the fog, its depth and
+// the game's constants); once the pass is done it adds its light there.
 bool g_inLightPass = false;
 ID3D11RenderTargetView* g_lightBuffer = nullptr;
 ID3D11ShaderResourceView* g_lightNormals = nullptr;
@@ -1538,12 +2138,20 @@ bool __cdecl LightCheck() {
         g_context->OMGetRenderTargets(1, &g_lightBuffer, nullptr);
         g_context->PSGetShaderResources(13, 1, &g_lightNormals);
     }
+    if (g_noteFog && !g_fogDepth) {
+        g_context->PSGetShaderResources(14, 1, &g_fogDepth);
+        g_context->PSGetConstantBuffers(4, 1, &g_gameConstants);
+    }
     return g_lightCheck();
 }
 
 void __fastcall LightPass(void* renderer, void* unused) {
-    g_inLightPass = g_lightOn && g_context && !g_lightFailed && InOurWorld();
+    const bool ours = g_context && InOurWorld();
+    g_inLightPass = ours && g_lightOn && !g_lightFailed;
+    DropFogInputs();
+    g_noteFog = ours && g_fog > 0 && !g_fogFailed;
     g_lightPass(renderer, unused);
+    g_noteFog = false;
     if (g_inLightPass) {
         g_inLightPass = false;
         if (!g_lightVertex && !MakeLightObjects()) {
@@ -1561,8 +2169,8 @@ void __fastcall LightPass(void* renderer, void* unused) {
     g_lightNormals = nullptr;
 }
 
-// Replaces the scene renderer's sky step: the game's own, then, in our worlds, the clock and
-// Guerrilla's sky.
+// Replaces the scene renderer's sky step: the game's own, then, in our worlds, the clock,
+// Guerrilla's fog over what the world has drawn, and Guerrilla's sky behind it.
 void __fastcall RenderSkybox(void* renderer, void* unused) {
     g_renderSkybox(renderer, unused);
     RFA_LOG_FIRST(1, "Sky: the game's sky step runs (world \"%s\")", WorldName());
@@ -1573,6 +2181,17 @@ void __fastcall RenderSkybox(void* renderer, void* unused) {
     }
     RunClock(ours);
     RunStreaming(ours);
+    if (ours && g_fog > 0 && !g_fogFailed && g_context) {
+        if (!g_fogDepth || !g_gameConstants) {
+            RFA_LOG_FIRST(1, "Fog: the light pass showed no depth or constants (this is logged once); no fog");
+        } else if (!g_fogVertex && !MakeFogObjects()) {
+            g_fogFailed = true;
+        } else {
+            RFA_LOG_FIRST(1, "Fog: drawing Guerrilla's fog in world \"%s\"", WorldName());
+            DrawFog();
+        }
+    }
+    DropFogInputs();
     if (!ours || !g_skyOn || g_drawingFailed || !g_context) return;
     if (!g_skyVertex) {
         if (!MakeSkyObjects()) {
@@ -1583,6 +2202,81 @@ void __fastcall RenderSkybox(void* renderer, void* unused) {
     }
     RFA_LOG_FIRST(1, "Sky: drawing Guerrilla's sky in world \"%s\"", WorldName());
     DrawSky();
+}
+
+// Replaces the compositor's tone-mapping constants: in our worlds with Guerrilla's tone mapping, the
+// exposure range the game uploads is held at 1 for the call (so the picture holds Guerrilla's own
+// values), and the renderer's own put back after.
+void __fastcall ToneMappingConstants(void* renderer, void* unused) {
+    float* exposure = reinterpret_cast<float*>(static_cast<BYTE*>(renderer) + 0xAD8);  // desired brightness, -, min, max
+    const bool ours = InOurWorld();
+    if (ours)
+        RFA_LOG_FIRST(1, "Exposure: the game's own in world \"%s\": desired brightness %.3g, held between %.3g and %.3g", WorldName(),
+                      exposure[0], exposure[2], exposure[3]);
+    if (!ours || !GuerrillaToneMapping()) {
+        g_toneMappingConstants(renderer, unused);
+        return;
+    }
+    const float before[2] = {exposure[2], exposure[3]};
+    exposure[2] = exposure[3] = 1;
+    g_toneMappingConstants(renderer, unused);
+    exposure[2] = before[0];
+    exposure[3] = before[1];
+}
+
+// A view's texture, for the log: its format, size and mip levels.
+void DescribeView(ID3D11View* view, char* out, size_t size) {
+    ID3D11Resource* resource = nullptr;
+    view->GetResource(&resource);
+    ID3D11Texture2D* texture = nullptr;
+    D3D11_TEXTURE2D_DESC desc = {};
+    if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+        texture->GetDesc(&desc);
+        texture->Release();
+    }
+    if (resource) resource->Release();
+    sprintf_s(out, size, "%s (format %d), %u x %u, %u mip levels", FormatName(desc.Format), static_cast<int>(desc.Format), desc.Width,
+              desc.Height, desc.MipLevels);
+}
+
+// Logs, once, what the compositor's last step drew into and what it left bound to draw from (the
+// picture at t0, the bloom at t5, ...), to place Guerrilla's own tone mapping there.
+void TellComposite(int which) {
+    static bool told = false;
+    if (told || !g_context) return;
+    told = true;
+    char text[160];
+    ID3D11RenderTargetView* target = nullptr;
+    g_context->OMGetRenderTargets(1, &target, nullptr);
+    if (target) {
+        DescribeView(target, text, sizeof(text));
+        target->Release();
+    } else {
+        sprintf_s(text, "none");
+    }
+    rfa::Log("Composite: the last step (0x%X) drew into %s", kFinalComposite[which], text);
+    ID3D11ShaderResourceView* views[8] = {};
+    g_context->PSGetShaderResources(0, 8, views);
+    for (int slot = 0; slot < 8; ++slot) {
+        if (!views[slot]) continue;
+        DescribeView(views[slot], text, sizeof(text));
+        rfa::Log("Composite: t%d left bound: %s", slot, text);
+        views[slot]->Release();
+    }
+}
+
+void __fastcall FinalComposite0(void* compositor, void* unused, int flag) {
+    g_finalComposite[0](compositor, unused, flag);
+    if (!InOurWorld()) return;
+    TellComposite(0);
+    ToneMapAfterComposite();
+}
+
+void __fastcall FinalComposite1(void* compositor, void* unused, int flag) {
+    g_finalComposite[1](compositor, unused, flag);
+    if (!InOurWorld()) return;
+    TellComposite(1);
+    ToneMapAfterComposite();
 }
 
 // ---- The game's device
@@ -1639,6 +2333,8 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     ReadAmbient();
     ReadSun();
     ReadColourCorrection();
+    ReadFog();
+    ReadToneMapping();
     // Our worlds' zone size (and a physics world wide enough for them), and the streaming radii held
     // to what the game can track.
     if (g_zoneWidth > 0) {
@@ -1662,22 +2358,36 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     if (!g_debugPrint) rfa::Log("Could not hook the game's debug print; what it says while loading our worlds isn't logged");
     g_precacheArea = reinterpret_cast<PrecacheAreaFn>(rfa::HookFunction(kPrecacheArea, kPrecacheAreaPrologue, reinterpret_cast<void*>(&PrecacheArea)));
     if (!g_precacheArea) rfa::Log("Could not hook the game's precache areas; our worlds' shared files won't be found");
-    if (!g_skyOn && !g_lightOn && g_clockSpeed <= 0) {
-        rfa::Log("Guerrilla's sky, light and clock are off (Sky=0, Light=0, ClockSpeed=0)");
+    if (!g_skyOn && !g_lightOn && g_fog <= 0 && g_clockSpeed <= 0) {
+        rfa::Log("Guerrilla's sky, light, fog and clock are off (Sky=0, Light=0, Fog=0, ClockSpeed=0)");
         return;
     }
-    if ((g_skyOn || g_lightOn) &&
+    if ((g_skyOn || g_lightOn || g_fog > 0) &&
         !rfa::HookImport(GetModuleHandleW(nullptr), "d3d11.dll", "D3D11CreateDevice", &CreateDevice, &g_createDevice)) {
-        rfa::Log("Could not watch for the game's Direct3D device; no sky or light");
+        rfa::Log("Could not watch for the game's Direct3D device; no sky, light or fog");
         g_skyOn = g_lightOn = false;
+        g_fogFailed = true;
     }
-    if (g_lightOn) {
+    // The light pass, for the light and for the depth the fog reads (Fog= can be raised from 0 while
+    // playing, so it is wrapped either way; it only passes through when neither is wanted).
+    if (g_lightOn || !g_fogFailed) {
         g_lightPass = reinterpret_cast<LightPassFn>(rfa::HookFunction(kLightPass, kLightPassPrologue, reinterpret_cast<void*>(&LightPass)));
         g_lightCheck = reinterpret_cast<LightCheckFn>(rfa::HookFunction(kLightCheck, kLightCheckPrologue, reinterpret_cast<void*>(&LightCheck)));
         if (!g_lightPass || !g_lightCheck) {
-            rfa::Log("Could not hook the game's light pass; no light added");
+            rfa::Log("Could not hook the game's light pass; no light added and no fog");
             g_lightOn = false;  // (a hook that did go in only passes through)
+            g_fogFailed = true;
         }
+    }
+    g_toneMappingConstants = reinterpret_cast<ToneMappingConstantsFn>(
+        rfa::HookFunction(kToneMappingConstants, kToneMappingConstantsPrologue, reinterpret_cast<void*>(&ToneMappingConstants)));
+    g_finalComposite[0] = reinterpret_cast<FinalCompositeFn>(
+        rfa::HookFunction(kFinalComposite[0], kFinalCompositePrologue, reinterpret_cast<void*>(&FinalComposite0)));
+    g_finalComposite[1] = reinterpret_cast<FinalCompositeFn>(
+        rfa::HookFunction(kFinalComposite[1], kFinalCompositePrologue, reinterpret_cast<void*>(&FinalComposite1)));
+    if (!g_toneMappingConstants || !g_finalComposite[0] || !g_finalComposite[1]) {
+        rfa::Log("Could not hook the game's tone mapping; Armageddon's own stays in those worlds");
+        g_toneMappingFailed = true;  // (the hooks that did go in only pass through then)
     }
     g_renderSkybox = reinterpret_cast<RenderSkyboxFn>(
         rfa::HookFunction(kRenderSkybox, kRenderSkyboxPrologue, reinterpret_cast<void*>(&RenderSkybox)));
@@ -1689,6 +2399,10 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
         rfa::Log(g_cloudsOn ? "Guerrilla's sky and clouds are drawn in the worlds named by Worlds= in [GuerrillaWorld]"
                             : "Guerrilla's sky is drawn (no clouds) in the worlds named by Worlds= in [GuerrillaWorld]");
     if (g_lightOn) rfa::Log("The sky's light and the sun light those worlds (Light=; Ambient=%.3g, Sun=%.3g)", g_ambient, g_sun);
+    if (!g_fogFailed) rfa::Log("Guerrilla's fog is drawn in those worlds (Fog=%.3g)", g_fog);
+    if (!g_toneMappingFailed)
+        rfa::Log(g_toneMapping ? "Guerrilla's tone mapping draws those worlds' picture (ToneMapping=1, Exposure=%.3g)"
+                               : "Armageddon's own tone mapping in those worlds (ToneMapping=0)", g_exposure);
     if (g_clockSpeed > 0) rfa::Log("The game clock runs at %.3g game seconds a second in those worlds (ClockSpeed=)", g_clockSpeed);
     if (g_streamRadius > 0) rfa::Log("Those worlds' zones stay loaded %.0f m around the player (StreamRadius=)", g_streamRadius);
 }

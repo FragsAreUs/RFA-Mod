@@ -19,15 +19,15 @@ namespace RfaFormats.Guerrilla;
 /// loading &lt;world&gt;_&lt;district&gt;.dtodx for each. The games read most curves on other scales (Guerrilla's
 /// fog density 15 where Armageddon's are 0.0001, its sky colours about a twentieth of Armageddon's):
 /// a Guerrilla set as it is gave a black world. So each set is Armageddon's own (world_default:
-/// exposure, fog), with the district's sky and clouds as they are (the guerrilla_world mod draws them,
+/// exposure), with the district's sky and clouds as they are (the guerrilla_world mod draws them,
 /// and sets their brightness itself), its sun's light (which the mod draws; world_default's is black
 /// at noon), its ambient light from above and below with each key's brightness folded into its colour
 /// (see <see cref="Linear"/>), which the mod's light pass lights the ground with, the colour of its
 /// colour correction, which the mod applies and which turns Guerrilla's coloured light into its
-/// colours (see <see cref="GuerrillaTint"/>), and its fog's colour over the day, as bright at noon as
-/// world_default's (see <see cref="MatchedAtNoon"/>: world_default's fog is grey, brighter by night
-/// than by day, and teal at noon). Its density and ground height are still world_default's: Guerrilla
-/// reads them on another scale (density 15 where Armageddon's is 0.0001) not yet worked out.
+/// colours (see <see cref="GuerrillaTint"/>), and its fog as it is: colour, density, fall-off with
+/// height, ground and offset (see <see cref="Fog"/>), and its tone mapping (see <see cref="ToneMapping"/>).
+/// Armageddon keeps those fog curves but never draws with them (its fog is the environment boxes', by
+/// distance); the mod draws Guerrilla's height fog and its tone mapping from them.
 /// </summary>
 public static class GuerrillaTimeOfDay
 {
@@ -37,6 +37,26 @@ public static class GuerrillaTimeOfDay
     static readonly string[] AsTheyAre = ["cloud_layer01_speed", "cloud_layer23_speed", "cloud_backlight_power", "cloud_backlight_strength",
                                           "overhead_layer0_strength", "overhead_layer1_strength", "overhead_layer2_strength", "overhead_layer3_strength",
                                           "horizon_layer0_strength", "horizon_layer1_strength", "horizon_layer2_strength", "horizon_layer3_strength"];
+
+    /// <summary>
+    /// Guerrilla's fog numbers, and Guerrilla's own value for one a set leaves empty or out (its
+    /// tod_district_parameters::set_defaults): the density, its fall-off with height (atmosphere scale),
+    /// the fog's ground below the camera, an offset into the distance, and the range that ground is
+    /// held to. Its districts all have density 15, fall-off 0.057 and ground −131, and leave the range
+    /// empty (−1000 to 3).
+    /// </summary>
+    static readonly (string Name, float Default)[] Fog =
+        [("fog_density_new", 0.007f), ("fog_atmosphere_scale", 0.001f), ("fog_ground", 0), ("fog_density_offset", 0), ("fog_camera_min", -1000), ("fog_camera_max", 3)];
+
+    /// <summary>
+    /// Guerrilla's tone mapping, which the guerrilla_world mod draws the picture with: the exposure's
+    /// range and offset (every district leaves them empty: 3 and 10), the eye's adaption base and
+    /// amount, how fast it adapts (iris rate), the range each measured sample is held to, and the
+    /// bloom; Guerrilla's own value where a set leaves one empty or out.
+    /// </summary>
+    static readonly (string Name, float Default)[] ToneMapping =
+        [("tonemap_lum_range", 3), ("tonemap_lum_offset", 10), ("eye_adaption_base", 0.2f), ("eye_adaption_amount", 0.3f), ("iris_rate", 3),
+         ("luminance_min", 0.001f), ("luminance_max", 4), ("bloom_amount", 1)];
 
     /// <summary>
     /// The orbitals file and the sets of curves, from Armageddon's and Guerrilla's misc.vpp_pc: one
@@ -52,28 +72,33 @@ public static class GuerrillaTimeOfDay
             .Replace("<effect_name>env_sun_corona_a</effect_name>", "<effect_name>env_sun_corona</effect_name>")
             .Replace(".cvbm_pc</map_name>", "</map_name>");
         string armageddon = Text(armageddonMisc, "world_default.dtodx");
-        string reference = Text(guerrillaMisc, "terr01_default.dtodx");
         var sets = new List<(string, byte[])>();
         foreach (var (name, theirs) in districts.Prepend(("Default", "Default")))
         {
             string guerrilla = Text(guerrillaMisc, $"terr01_{theirs.ToLowerInvariant().Replace(' ', '_')}.dtodx");
-            sets.Add((name, Encoding.Latin1.GetBytes(Set(armageddon, guerrilla, reference))));
+            sets.Add((name, Encoding.Latin1.GetBytes(Set(armageddon, guerrilla))));
         }
         return (Encoding.Latin1.GetBytes(orbitals), sets);
     }
 
     /// <summary>One district's set: Armageddon's world_default with the district's curves as above.</summary>
-    static string Set(string armageddon, string guerrilla, string reference)
+    static string Set(string armageddon, string guerrilla)
     {
         string day = armageddon;
         foreach (string curve in Sky.Concat(WithSky).Concat(AsTheyAre).Append("tod_light_color")) day = Replace(day, curve, Block(guerrilla, curve));
         float ldrMax = Constant(day, "ldr_max") ?? throw new InvalidDataException("world_default's ldr_max changes over the day");
         if (Constant(day, "ldr_min") != 0) throw new InvalidDataException("world_default's ldr_min isn't 0");
         foreach (string curve in new[] { "ambient_color", "back_ambient_color" }) day = Replace(day, curve, Linear(guerrilla, curve, ldrMax));
-        day = Replace(day, "fog_color", MatchedAtNoon(day, guerrilla, reference, "fog_color"));
+        day = Replace(day, "fog_color", Block(guerrilla, "fog_color"));
+        foreach (var (curve, value) in Fog.Concat(ToneMapping)) day = Replace(day, curve, NumberOr(guerrilla, curve, value));
         day = Replace(day, "color_correct_tint", GuerrillaTint(day, guerrilla));
         return day;
     }
+
+    /// <summary>A number curve as a set has it, or, if the set leaves it empty or out, one key holding <paramref name="value"/> all day.</summary>
+    static string NumberOr(string file, string name, float value) =>
+        Pattern(name).Match(file) is { Success: true } m && m.Value.Contains("<key>") ? m.Value
+            : $"<{name}>\n\t\t<key>\n\t\t\t<time>24</time>\n\t\t\t<value>{value.ToString("F6", CultureInfo.InvariantCulture)}</value>\n\t\t</key>\n\t</{name}>";
 
     // Curves in a set: <name><key><time>t</time><value>...</value></key>...</name>. A colour's value is
     // red, green, blue and a brightness that multiplies them.
@@ -109,39 +134,6 @@ public static class GuerrillaTimeOfDay
             v[3] = brightness;
             return "<value>" + string.Join(" ", v.Select(x => x.ToString("F6", CultureInfo.InvariantCulture))) + "</value>";
         });
-
-    /// <summary>
-    /// Guerrilla's colour curve, every key's colour times one number: the one that makes Guerrilla's
-    /// default set's curve (<paramref name="reference"/>) as bright at noon (time 24) as Armageddon's
-    /// (luminance times the fourth number, the brightness), the same for every district so they keep
-    /// their brightness to each other. For a curve the games read on other scales, as the fog's
-    /// (Guerrilla's colours about a sixth as bright): Guerrilla's colours and how they change over
-    /// the day, at Armageddon's level.
-    /// </summary>
-    static string MatchedAtNoon(string armageddon, string guerrilla, string reference, string name)
-    {
-        static float Luminance(float[] c) => 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
-        // A curve's brightness at a time, straight from one key to the next.
-        static float BrightnessAt(List<(float Time, float[] Value)> keys, float time)
-        {
-            float Of(float[] v) => Luminance(v) * v[3];
-            if (keys.Count == 0) throw new InvalidDataException("a colour curve without keys");
-            if (time <= keys[0].Time) return Of(keys[0].Value);
-            for (int k = 1; k < keys.Count; k++)
-                if (time <= keys[k].Time)
-                    return Of(keys[k - 1].Value) + (Of(keys[k].Value) - Of(keys[k - 1].Value)) * (time - keys[k - 1].Time) / (keys[k].Time - keys[k - 1].Time);
-            return Of(keys[^1].Value);
-        }
-        string theirs = Block(guerrilla, name);
-        float scale = BrightnessAt(Keys(Block(armageddon, name)), 24) / BrightnessAt(Keys(Block(reference, name)), 24);
-        return Regex.Replace(theirs, @"<value>([^<]*)</value>", m =>
-        {
-            float[] v = Values(m.Groups[1].Value);
-            if (v.Length != 4) throw new InvalidDataException($"{name} isn't a colour curve");
-            for (int i = 0; i < 3; i++) v[i] *= scale;
-            return "<value>" + string.Join(" ", v.Select(x => x.ToString("F6", CultureInfo.InvariantCulture))) + "</value>";
-        });
-    }
 
     /// <summary>
     /// The colour correction, color_correct_tint: Guerrilla's red, green and blue with Armageddon's
