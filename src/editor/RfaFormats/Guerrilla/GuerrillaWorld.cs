@@ -29,8 +29,7 @@ namespace RfaFormats.Guerrilla;
 /// the time of day (<see cref="GuerrillaTimeOfDay"/>) and the clouds and backdrop for the mod (<see
 /// cref="GuerrillaSky"/>).
 ///
-/// What still comes from Armageddon's files, written over: the rocks' template (ter_sur_blder) and the
-/// roads' material (world_10_07_2's).
+/// What still comes from Armageddon's files, written over: the roads' material (world_10_07_2's).
 /// Terrain files (see ZoneTerrain), zone files (their objects, the destructible ones too, made from the
 /// game's schema), navigation files (Guerrilla's own meshes: see GuerrillaNavigation), sub-zones,
 /// textures, containers, archives, stitch lists and asset lists are written from nothing.
@@ -167,8 +166,6 @@ public static class GuerrillaWorld
         var rockTextures = new Dictionary<string, (string Name, byte[] Data)[]>(StringComparer.OrdinalIgnoreCase);
         var rocksIn = zones.ToDictionary(z => z, _ => new List<StitchPieceToWrite>());
         var rockPlacements = zones.ToDictionary(z => z, _ => new List<GuerrillaRocks.Placement>());
-        var whiteFiles = GuerrillaRocks.WhiteTextureFiles();
-        byte[] rockHeader = Pre(GuerrillaRocks.TemplatePiece + ".cstch_pc"), rockData = Pre(GuerrillaRocks.TemplatePiece + ".gstch_pc");
         float third = ZoneWidth / 3;
         foreach (var (col, row) in zones)
         {
@@ -180,10 +177,15 @@ public static class GuerrillaWorld
                 {
                     byte[] h = RfgFile(col, row, p.Name + ".cstch_pc") ?? throw new InvalidDataException($"no {p.Name}.cstch_pc");
                     byte[] g = RfgFile(col, row, p.Name + ".gstch_pc", 16) ?? throw new InvalidDataException($"no {p.Name}.gstch_pc");
-                    var piece = GuerrillaRocks.Convert(rockHeader, rockData, h, g, Alias);
+                    var piece = GuerrillaRocks.Convert(h, g, Alias);
                     rockPieces[p.Name] = piece;
-                    foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(t => !rockTextures.ContainsKey(t)))
+                    foreach (string texture in piece.Textures.Where(t => !rockTextures.ContainsKey(t)))
                     {
+                        if (GuerrillaBuiltIns.Files(texture, Alias(texture)) is { } builtIn)
+                        {
+                            rockTextures[texture] = builtIn;
+                            continue;
+                        }
                         byte[] th = RfgFile(col, row, texture + ".cvbm_pc") ?? throw new InvalidDataException($"no {texture}.cvbm_pc");
                         byte[] tg = RfgFile(col, row, texture + ".gvbm_pc", 1000) ?? throw new InvalidDataException($"no {texture}.gvbm_pc");
                         rockTextures[texture] = [(Alias(texture) + ".cvbm_pc", Repacked(th, tg, Alias(texture))), (Alias(texture) + ".gvbm_pc", tg)];
@@ -621,10 +623,8 @@ public static class GuerrillaWorld
                 var piece = rockPieces[name];
                 files.Add((name + ".cstch_pc", piece.Header));
                 files.Add((name + ".gstch_pc", piece.Data));
-                foreach (string texture in new[] { piece.Diffuse, piece.Normal }.Select(Path.GetFileNameWithoutExtension).OfType<string>())
-                    files.AddRange(rockTextures[texture]);
+                foreach (string texture in piece.Textures) files.AddRange(rockTextures[texture]);
             }
-            if (rocks.Count > 0) files.AddRange(whiteFiles);
             AddChunks(files, zoneChunks);
             files = files.DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
             files.AddRange(new (string Name, byte[] Data)[]
@@ -729,8 +729,7 @@ public static class GuerrillaWorld
         foreach (var (name, piece) in rockPieces)
         {
             var pieceFiles = new List<(string Name, byte[] Data)> { (name + ".cstch_pc", piece.Header), (name + ".gstch_pc", piece.Data) };
-            foreach (var texture in new[] { piece.Normal, piece.Diffuse }.Select(t => rockTextures[Path.GetFileNameWithoutExtension(t)])) pieceFiles.AddRange(texture);
-            pieceFiles.AddRange(whiteFiles);
+            foreach (string texture in piece.Textures) pieceFiles.AddRange(rockTextures[texture]);
             var group = new AsmContainer { Name = name + ".rfgstitchx", Type = 14, Flags = 0x300 };
             group.Primitives.AddRange(pieceFiles.Where(f => f.Name.EndsWith(".cstch_pc") || f.Name.EndsWith(".cvbm_pc")).Select(f => PrimitiveOf(f.Name, pieceFiles)));
             asm.Containers.Add(group);

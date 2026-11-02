@@ -154,19 +154,6 @@ public static class ChunkCollision
     {
         if (shapes.Count == 0) throw new ArgumentException("a collision needs at least one shape");
 
-        // Class names.
-        var names = new List<byte>();
-        var nameAt = new Dictionary<string, int>();
-        foreach (var (signature, name) in Classes)
-        {
-            names.AddRange(BitConverter.GetBytes(signature));
-            names.Add(0x09);
-            nameAt[name] = names.Count;
-            names.AddRange(Encoding.ASCII.GetBytes(name));
-            names.Add(0);
-        }
-        Pad(names, 0xFF);
-
         // __data__: the list, its children's entries, each child (a list with its own after it).
         var d = new List<byte>();
         var locals = new List<(int From, int To)>();
@@ -233,55 +220,6 @@ public static class ChunkCollision
         }
 
         List(shapes);
-        Pad(d, 0);
-        int dataLength = d.Count;
-        foreach (var (f, t) in locals) { d.AddRange(BitConverter.GetBytes(f)); d.AddRange(BitConverter.GetBytes(t)); }
-        Pad(d, 0xFF);
-        int globalAt = d.Count;
-        foreach (var (f, t) in globals) { d.AddRange(BitConverter.GetBytes(f)); d.AddRange(BitConverter.GetBytes(2)); d.AddRange(BitConverter.GetBytes(t)); }
-        Pad(d, 0xFF);
-        int virtualAt = d.Count;
-        foreach (var (at, name) in objects) { d.AddRange(BitConverter.GetBytes(at)); d.AddRange(BitConverter.GetBytes(0)); d.AddRange(BitConverter.GetBytes(nameAt[name])); }
-        Pad(d, 0xFF);
-        int end = d.Count;
-
-        // The packfile: header, three section headers, class names, data.
-        const int namesAt = 0xD0;
-        int dataAt = namesAt + names.Count;
-        var pack = new List<byte>();
-        pack.AddRange(BitConverter.GetBytes(Magic0)); pack.AddRange(BitConverter.GetBytes(Magic1));
-        pack.AddRange(BitConverter.GetBytes(0)); pack.AddRange(BitConverter.GetBytes(8));          // user tag, file version
-        pack.AddRange([4, 1, 0, 1]);                                                                // layout: pointers 4 bytes, little-endian, reuse padding, empty base class
-        pack.AddRange(BitConverter.GetBytes(3)); pack.AddRange(BitConverter.GetBytes(2)); pack.AddRange(BitConverter.GetBytes(0));  // sections, contents section and offset
-        pack.AddRange(BitConverter.GetBytes(0)); pack.AddRange(BitConverter.GetBytes(nameAt["hkpListShape"]));                     // contents class name
-        byte[] version = new byte[16];
-        Encoding.ASCII.GetBytes("hk_2010.2.0-r1").CopyTo(version, 0);
-        version[15] = 0xFF;
-        pack.AddRange(version);
-        pack.AddRange(BitConverter.GetBytes(0)); pack.AddRange(BitConverter.GetBytes(-1));
-        void SectionHeader(string name, int start, int length, int localAt, int globalOffset, int virtualOffset, int endOffset)
-        {
-            byte[] n = new byte[20];
-            Encoding.ASCII.GetBytes(name).CopyTo(n, 0);
-            n[19] = 0xFF;
-            pack.AddRange(n);
-            foreach (int v in new[] { start, localAt, globalOffset, virtualOffset, endOffset, endOffset, endOffset }) pack.AddRange(BitConverter.GetBytes(v));
-            _ = length;
-        }
-        SectionHeader("__classnames__", namesAt, names.Count, names.Count, names.Count, names.Count, names.Count);
-        SectionHeader("__types__", dataAt, 0, 0, 0, 0, 0);
-        SectionHeader("__data__", dataAt, dataLength, dataLength, globalAt, virtualAt, end);
-        pack.AddRange(names);
-        pack.AddRange(d);
-
-        var result = new List<byte>();
-        result.AddRange(Encoding.ASCII.GetBytes("MCKH"));
-        result.AddRange(BitConverter.GetBytes(5));
-        result.AddRange(BitConverter.GetBytes(16 + pack.Count));
-        result.AddRange(BitConverter.GetBytes(shapes.Count));
-        result.AddRange(pack);
-        return [.. result];
+        return Havok2010Packfile.Section(Havok2010Packfile.Write(Classes, "hkpListShape", d, locals, globals, objects), shapes.Count);
     }
-
-    static void Pad(List<byte> bytes, byte with) { while (bytes.Count % 16 != 0) bytes.Add(with); }
 }

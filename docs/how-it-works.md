@@ -349,8 +349,12 @@ converts:
   Guerrilla's ground effect map (sand, stone, gravel...) and its **invisible barriers**, the collision
   shapes nothing draws that keep the player in an area (`TerrainBarriers`: Guerrilla's Havok 5.5
   shapes written as 2010, as the chunks' are). Nothing of another level's terrain file is used.
-- **The rocks** (Guerrilla's stitch pieces), with their own collision meshes and a collision tree
-  (Havok MOPP code, written from scratch) over each zone's pieces. A zone without rocks gets an
+- **The rocks** (Guerrilla's stitch pieces). A piece is the same kind of file as a destructible
+  object's chunk file, so it is converted the same way (`GuerrillaChunks`, below): its own mesh,
+  its material on Armageddon's shaders, and its collision mesh under a Havok MOPP tree written from
+  nothing in Armageddon's layout (`PieceCollision`; checked against the game's own 930 stitch pieces
+  of that layout). Each zone's stitch list places them, with a collision tree of ours over the
+  zone's pieces. A zone without rocks gets an
   empty stitch list, with no tree, which the game's loader skips (Armageddon's own levels put a
   floor piece in such zones; Guerrilla has none).
 - **The navigation meshes** the AI walks and drives on. Armageddon's `.navdata_pc` is Guerrilla's

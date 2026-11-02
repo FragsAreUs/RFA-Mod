@@ -21,7 +21,8 @@ namespace RfaFormats.Guerrilla;
 ///                               98% of its links, Guerrilla's always 0) and each piece's run-time
 ///                               state (36 → 40 bytes: +0 −1 → 0, +24 → 0, +34 0xFF → 0, four 0s
 ///                               more), with the offsets in that run-time block moved on to match
-///   collision (64)              Havok 5.5 → 2010 (<see cref="ChunkCollision"/>)
+///   collision (64)              Havok 5.5 → 2010 (<see cref="ChunkCollision"/>; a stitch piece's one
+///                               triangle mesh under a tree written from nothing: <see cref="PieceCollision"/>)
 ///   script points (64)          the same, 116 bytes each
 ///   object ids (64)             520 → 808 bytes: uid, name, number, breakable, snap point count
 ///                               (40 bytes), then room for 16 snap points (48 bytes each: rotation,
@@ -137,9 +138,15 @@ public static class GuerrillaChunks
         o.Put(0x2C, o.Count - destruction);
         if (Align(destructionEnd, 64) != I(0x1C)) throw new InvalidDataException("the destruction data doesn't end where the collision starts");
 
-        // The collision.
+        // The collision: a destructible object's shapes, or a stitch piece's one triangle mesh under a tree.
         o.Align(64);
-        byte[] collision = ChunkCollision.Section(ChunkCollision.Read(g));
+        byte[] collision;
+        if (PieceCollision.IsMesh(g))
+        {
+            var (vertices, triangles) = PieceCollision.Read(g);
+            collision = PieceCollision.Section(vertices, triangles);
+        }
+        else collision = ChunkCollision.Section(ChunkCollision.Read(g));
         o.Put(0x1C, o.Count);
         o.Put(0x20, collision.Length);
         o.Add(collision);
