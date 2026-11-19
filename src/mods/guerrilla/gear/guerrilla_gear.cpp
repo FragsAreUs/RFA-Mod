@@ -1185,6 +1185,7 @@ void LookAheadStill() {
 }
 
 void KeepHammer(BYTE* player);  // (Mason's sledgehammer, below)
+void KeepSprint();              // (Guerrilla's sprint, below)
 void AfterCarriedThrow(BYTE* player);  // (a carried thing thrown, below)
 void AfterCarriedPickup(BYTE* player); // (and picked up)
 void LogItemPreload();          // (room for the preloaded items, below)
@@ -1204,6 +1205,7 @@ void __cdecl HeadingStep(BYTE* human) {
     }
     AfterCarriedThrow(player);
     AfterCarriedPickup(player);
+    KeepSprint();
     upgrades::Step(player);
     backpacks::Step(player);
     KeepAmmoCapacity();
@@ -1251,7 +1253,54 @@ void __cdecl HeadingStep(BYTE* human) {
     }
 }
 
+// Guerrilla's sprint: no limit. Guerrilla's control_gameplay_process (RM 0x701772) clears the player's sprinting flag
+// (+0xDCC, 0x40) each frame and sets it again while the sprint button is held, unless an action stops it: no meter, no
+// cooldown (its two sprint timestamps, +0x24B8 and +0x24BC, only hold off firing after a sprint and mark its start;
+// Sprint_duration is a stat). Armageddon runs a meter (player +0x27D8, 1 full; 0x8B68F0): sprinting takes
+// Player_sprint_decay_rate (0.1) a second, so 10 s, and at 0 he stops; it refills at Player_sprint_regen_rate (0.5)
+// a second after Player_sprint_regen_delay_ms (2000). Its own Player_unlimited_sprint (a byte, 0x22714C1; the console
+// command unlimited_sprint) keeps the meter full. Both top out at Player_max_sprint_speed 8. The user: "turn on the
+// infinite sprinting as it was intended as this is a open world they only limited the sprinting in RFA due to it
+// being linear". So in the Guerrilla worlds ([GuerrillaWorld] Worlds=, rfg) the switch is on; elsewhere it is what it
+// was (the console's, or off), so Armageddon's levels keep their limit.
+constexpr DWORD kUnlimitedSprint = 0x22714C1;
+std::vector<std::string> g_sprintWorlds;
+int g_sprintInOurWorld = -1;   // last step's answer (-1 before the first)
+BYTE g_sprintSwitchWas = 0;    // the switch as it was before our world turned it on
+
+void ReadSprintWorlds() {
+    std::string current;
+    for (wchar_t c : rfa::IniString(L"GuerrillaWorld", L"Worlds", L"rfg") + L",") {
+        if (c == L',' || c == L' ' || c == L'\t') {
+            if (!current.empty()) g_sprintWorlds.push_back(current);
+            current.clear();
+        } else {
+            current += static_cast<char>(c);
+        }
+    }
+}
+
+void KeepSprint() {
+    const char* world = reinterpret_cast<const char*>(kWorld) + 0x29EA;  // the world's name: "rfg", "world", ...
+    bool ours = false;
+    for (const std::string& name : g_sprintWorlds)
+        if (_stricmp(world, name.c_str()) == 0) ours = true;
+    BYTE& unlimited = *reinterpret_cast<BYTE*>(kUnlimitedSprint);
+    if (static_cast<int>(ours) != g_sprintInOurWorld) {
+        if (ours) {
+            g_sprintSwitchWas = unlimited;
+            rfa::Log("Sprint: world %s: as long as he likes, as Guerrilla's (Armageddon's limit off)", world);
+        } else if (g_sprintInOurWorld == 1) {
+            unlimited = g_sprintSwitchWas;
+            rfa::Log("Sprint: world %s: Armageddon's limit %s", world, unlimited ? "off (as it was set)" : "back");
+        }
+        g_sprintInOurWorld = ours;
+    }
+    if (ours) unlimited = 1;
+}
+
 void PlayerMovement() {
+    ReadSprintWorlds();
     g_headingStep = reinterpret_cast<HeadingStepFn>(
         rfa::HookFunction(kHeadingStep, kHeadingStepPrologue, reinterpret_cast<void*>(&HeadingStep)));
     if (!g_headingStep) rfa::Log("Movement: could not wrap the heading step; the player faces the camera as Armageddon has it");

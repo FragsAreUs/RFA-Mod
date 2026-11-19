@@ -105,6 +105,17 @@ static class TableCheck
                      ? $"({GuerrillaSoundBanks.GameBankLimit - banks} left)"
                      : $"({banks - GuerrillaSoundBanks.GameBankLimit} too many: the game would load no sound at all; {GuerrillaSoundBanks.BankTable} in mods\\guerrilla_world\\)"));
         if (banks > GuerrillaSoundBanks.GameBankLimit) bad++;
+        // The interface's sheet table against the sheets and pictures the game takes from it (guerrilla_hud's raised limits).
+        string sheetTable = Path.Combine(setup.Cache, RfaFormats.Interface.GuerrillaHud.SheetTableName + ".xtbl");
+        if (File.Exists(sheetTable))
+        {
+            var (sheets, pictures) = RfaFormats.Interface.GuerrillaHud.SheetTableCounts(Encoding.Latin1.GetString(File.ReadAllBytes(sheetTable)));
+            bool fits = sheets <= RfaFormats.Interface.GuerrillaHud.SheetLimit && pictures <= RfaFormats.Interface.GuerrillaHud.PictureLimit;
+            log.Line($"Picture sheet check: {sheets} of the {RfaFormats.Interface.GuerrillaHud.SheetLimit} sheets and {pictures} of the " +
+                     $"{RfaFormats.Interface.GuerrillaHud.PictureLimit} pictures the game takes are used in {Path.GetFileName(sheetTable)}" +
+                     (fits ? "" : ": too many, the game would drop the last ones (minimap zones, HUD and handbook pictures)"));
+            if (!fits) bad++;
+        }
         if (!DistanceCheck(setup, log)) bad++;
         log.Line(bad == 0
             ? $"Table check: none of the {checkedTables} tables lacks a field the game requires" + (doubtful > 0 ? $"; {doubtful} have values to look into (above)" : "")

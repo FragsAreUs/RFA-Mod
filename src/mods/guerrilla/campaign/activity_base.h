@@ -36,6 +36,22 @@ public:
     virtual bool LockAlertLevel() const { return false; }
     virtual HudInfo Hud() const { return {}; }
 
+    // A free kind starts itself (activity_base_free::activity_start RM 0x7ACB30): unless it is offered or running
+    // already, it must be able to initialize, and it runs in the player's district, straight to RUNNING.
+    bool StartFree();
+    // Guerrilla's damage listeners (its table of four, RM 0x12DB0C4: riding shotgun, mayhem, killing spree, area
+    // defense): told of every death while not disabled or suspended, even while not running (activity_register_death
+    // RM 0x759DB0, from human_died: the victim and its killer, a human or the object that killed it).
+    virtual bool Listens() const { return false; }
+    virtual void RegisterDeath(void* victim, void* killer) {}
+    // The diversions panel (hud_ui_missions_process_diversion_info RM 0x8C56A0): the kind's title, a string tag
+    // (activity_get_name: get_title), and its text and number (activity_get_ui_text: get_ui_display_info; the number
+    // is the time left in ms, the icon flashing under 6 s), false for none.
+    virtual const char* Title() const { return ""; }
+    virtual bool UiText(std::string& text, int& number) const { return false; }
+    Interface GetInterface() const { return interface_; }
+    float InterfaceTime() const { return interfaceTime_; }  // seconds since the interface state changed
+
 protected:
     // Guerrilla's steps (the virtual functions of activity_base, in its order).
     virtual bool Initialize();     // LOADING finished: READY (offered)
@@ -83,6 +99,20 @@ Mode CurrentMode();
 void SetCurrentMode(Mode mode);
 // After a modal run ends, no other is offered for a while (Guerrilla's cooldown).
 void StartCooldown();
+
+// activity_register_damage_is_player_controlled (RM 0x785790): whether something was the player's doing: the
+// player; his vehicle, or the one he last drove for 40 s after he left it (while no one else has driven it); a
+// turret he operates; an item he owns. (Guerrilla's marks, an object the player hurt by 100 or more in the last
+// 20-40 s, come with the damage listeners, step 5b.) Armageddon's objects.
+bool PlayerControlled(const void* object);
+// Guerrilla's team dispositions (human_teams_get_disposition RM 0xA0D560): how the victim's team takes the
+// player's (0 hostile .. 3 friendly, 4 allied), as Armageddon's table holds them.
+int DispositionToPlayer(const void* human);
+// A human died (district_sources' wrap of Armageddon's human death): each listener is told, once a death.
+void ReportDeath(void* victim, void* killer);
+
+// Killing spree (killing_spree.cpp).
+Activity* MakeKillingSpree();
 
 // Demolitions master (demolitions_master.cpp).
 Activity* MakeDemolitionsMaster();

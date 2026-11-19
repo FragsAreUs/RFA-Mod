@@ -180,7 +180,7 @@ public static partial class GuerrillaHud
 
     // Our sheet table, in place of the game's bitmap_sheets. Not named rfg_..., so that taking the
     // world's rfg_* files away never takes it with them (see Remove).
-    internal const string SheetTableName = "guerrilla_hud_sheets";
+    public const string SheetTableName = "guerrilla_hud_sheets";
     const string WholeSheetSuffix = "_sheet";                // a whole-texture picture's texture, made a sheet of one
     const string AlwaysLoaded = "interface-backend";  // in Armageddon's project, loaded from start-up
 
@@ -920,6 +920,25 @@ public static partial class GuerrillaHud
             foreach (string picture in pictureNames.Skip(1)) sheetOf.TryAdd(picture, pictureNames[0]);
         }
         return sheetOf;
+    }
+
+    /// <summary>
+    /// The most sheets and pictures the game takes from the sheet table, once guerrilla_hud has raised its own 196 and 1,536
+    /// at start-up (MovePictureTables). The game's reader drops whatever is past them without a word: with 215 sheets and
+    /// 1,581 pictures, four zones' minimap pictures and the last handbook pages were missing (2026-11-19).
+    /// </summary>
+    public const int SheetLimit = 512, PictureLimit = 4096;
+
+    /// <summary>How many sheets, and pictures on them, a sheet table has.</summary>
+    public static (int Sheets, int Pictures) SheetTableCounts(string sheetsText)
+    {
+        int sheets = 0, pictures = 0;
+        foreach (Match sheet in SheetBlocks().Matches(sheetsText))
+        {
+            sheets++;
+            pictures += Math.Max(0, NameTags().Matches(sheet.Value).Count - 1);  // the first name is the sheet's
+        }
+        return (sheets, pictures);
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 -- Red Faction: Guerrilla's corner panel for its missions and activities in Armageddon's Guerrilla world: while an
 -- activity runs, its icon and name, what to do, and its own parts (demolitions master: the time left, or so far, and the
--- building's structure: UNSTABLE, CRITICAL). Nothing shows while none runs.
+-- building's structure: UNSTABLE, CRITICAL). Nothing shows while none runs. Below it, the diversions: the free activities
+-- that run (killing spree: KILLING SPREE STARTED, then the kills; ENDED once it's over).
 --
 -- Part of the guerrilla_hud mod. The document this drives, rfg_ui_hud_missions, is Guerrilla's own, and so is its
 -- script, both from your copy of Guerrilla: GuerrillaBuilder.exe packs our shims, Guerrilla's script (its init and
@@ -41,10 +42,69 @@ local function text(tag)
 	return rfg_guerrilla_text(tag) or ""
 end
 
+-- DiversionInfo: the free activities that run or just ended (killing spree, mayhem, car bomb), as the campaign works
+-- them out (rfg_diversions, rfg_diversion: which_one, diversion_type, fade_this_in, flash_this, header_text,
+-- status_text, value_text). Each item is a table handed to Guerrilla's diversion_info ("insert", then "update"
+-- whenever it changes) and to its diversion_remove once it goes, as Guerrilla's data group told its subscribers: the
+-- removals first, then the new and changed items, as its hud_ui_missions_determine_diversion_items and
+-- process_diversion_info did each frame.
+local Diversions = {}	-- by the campaign's item id: { values = the table handed over, key = its values joined }
+
+local function tell(callback, name, values, event)
+	local ok, problem = pcall(callback, values, event)
+	if not ok and not Failed[name] then
+		Failed[name] = true
+		log(name .. ": " .. tostring(problem))
+	end
+end
+
+local function follow_diversions()
+	if _GetAnyGlobalSilent("rfg_diversions") == nil then
+		return
+	end
+	local items = {}
+	for i = 1, rfg_diversions() do
+		local id, which_one, kind, fade_in, flash, header, status, value = rfg_diversion(i)
+		if id ~= nil then
+			items[#items + 1] = { id = id, values = { which_one, kind, fade_in, flash, header, status, value, n = 7 } }
+		end
+	end
+	local listed = {}
+	for _, item in ipairs(items) do
+		listed[item.id] = true
+	end
+	for id, shown in pairs(Diversions) do
+		if not listed[id] then
+			Diversions[id] = nil
+			tell(diversion_remove, "diversion_remove", shown.values, "remove")
+			log("a diversion gone")
+		end
+	end
+	for _, item in ipairs(items) do
+		local v = item.values
+		local key = tostring(v[1]) .. "|" .. tostring(v[2]) .. "|" .. tostring(v[3]) .. "|" .. tostring(v[4]) .. "|" ..
+			tostring(v[5]) .. "|" .. tostring(v[6]) .. "|" .. tostring(v[7])
+		local shown = Diversions[item.id]
+		if shown == nil then
+			Diversions[item.id] = { values = v, key = key }
+			tell(diversion_info, "diversion_info", v, "insert")
+			log("a diversion: " .. tostring(v[5]) .. " (type " .. tostring(v[2]) .. ")")
+		elseif shown.key ~= key then
+			-- the same table (Guerrilla's script keeps mayhem's to know it at its removal), its values new
+			for i = 1, 7 do
+				shown.values[i] = v[i]
+			end
+			shown.key = key
+			tell(diversion_info, "diversion_info", shown.values, "update")
+		end
+	end
+end
+
 -- MissionInfo: type, title, objective, activity info, txt1-3 (demolitions master: the structure's indicator, the time,
 -- the structure's title and label).
 local function follow()
 	while true do
+		follow_diversions()
 		local screen, version, mode, title, subtitle, body, objective, timer, result, failure, limit, par, best, elapsed,
 			status = rfg_activity()
 		local values = nil
@@ -81,6 +141,7 @@ function rfg_ui_hud_missions_init()
 	call(mission_info, "mission_info", { LUA_INVALID_TYPE, "", "", 0, "", "", "", n = 7 })
 	call(timer_update, "timer_update", { false, "", n = 2 })
 	Shown = ""
+	Diversions = {}
 	if _GetAnyGlobalSilent("rfg_activity") == nil then
 		log("no rfg_activity (an older guerrilla_hud.dll?): the corner panel stays hidden")
 		return

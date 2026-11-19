@@ -989,18 +989,20 @@ void RunTransitionCells() {  // each second in our worlds: zones streamed in sin
 // worlds as in Guerrilla, see MatchGuerrillaAvoidTime). The budget stays the game's.
 //
 // The check walks the same cells as the game's search (the start's and goal's cells by the game's own lookup, 0x5B9AA0;
-// switched-on cells only, from edge midpoint to edge midpoint, a step dropped once its way so far plus 0.75 x its
-// straight distance to the goal passes the budget), with no costs of its own, so it never finds less than the game's
-// would. It turns a goal down only when it is sure: both cells found, in one zone's layer and on one island of it, no
-// edge of that zone met on the way (the walk might go on through the next one), and the goal not reached within the
-// game's budget as it is (no room added: the Eos walk was 241 m by edge midpoints against a budget of about 211, so
-// even 15 % more would have let it through). Anything else goes to the game as before, and a walk the game still can't
-// find is still reported. A layer's cells (36 bytes): neighbours +0x00/+0x04/+0x08 (pointers, -1 none), vertex numbers +0x14/+0x16/
-// +0x18 (into the layer's vertices, +0x0C), flags +0x1F (0x08 and 0x10 switched off), island +0x20; the layer's outer
-// edges (+0x20, their count a word at +0x1C; 8 bytes, the cell's number first) are where it meets the next zone.
-constexpr DWORD kLayerVertices = 0x0C, kLayerOuterEdgeCount = 0x1C, kLayerOuterEdges = 0x20, kOuterEdgeSize = 8;
+// from edge midpoint to edge midpoint, a step dropped once its way so far plus 0.75 x its straight distance to the goal
+// passes the budget), by the search's own rules (the A* 0x5BE3B0): it goes on only through a cell's neighbours (a
+// missing one is a wall, 0x5BE538), walks no further from a cell with flag 0x08 (switched off) or 0x04 though either can
+// be the goal (the goal is tested first, 0x5BE461), and walks through every other cell (0x10 included). It adds none of
+// the search's costs (x 1.01 and + 0.5 m a step on some cells, 0x5BE5E5), so it never finds less than the game's would.
+// It turns a goal down only when it is sure: both cells found in loaded people's layers, nothing met on the way that
+// it can't follow (a neighbour in no loaded layer), and the goal not reached within the game's own budget for a person
+// (no room added: the Eos walk was 241 m by edge midpoints against a budget of about 211, so even 15 % more would have
+// let it through). Anything else goes to the game as before, and a walk the game still can't find is still reported.
+// A layer's cells (36 bytes): neighbours +0x00/+0x04/+0x08 (pointers, null or -1 none), vertex numbers +0x14/+0x16/+0x18
+// (into the layer's vertices, +0x0C), flags +0x1F, island +0x20.
+constexpr DWORD kLayerVertices = 0x0C;
 constexpr DWORD kCellVertices = 0x14, kCellFlags = 0x1F, kCellIsland = 0x20;
-constexpr BYTE kCellSwitchedOff = 0x18;
+constexpr BYTE kCellNotWalkedThrough = 0x08 | 0x04;  // the search walks on from neither (0x5BE472, 0x5BE482)
 constexpr float kLongestWalkLogged = 3000.0f;  // how far the log's walk is measured
 constexpr size_t kCellQuerySize = 0x30;
 using CellQueryFn = void(__fastcall*)(BYTE* query, void*, const float* place, bool vehicles);   // 0x42C1A0
@@ -1044,7 +1046,7 @@ BYTE* LayerOfCell(const BYTE* cell) {
 //   - bb_pf_find_closest_point_on_nav_mesh_slow (0xB0EDB0), for pick_desired_reinforcement_group (0x771250: Flyer when the
 //     nearest point is 15 m or more away, or none): every loaded zone's people's layer, every open cell, only its border
 //     edges (no neighbour across, or a closed one), the nearest point on each edge; the nearest of all.
-constexpr BYTE kCellClosed = 0x08;  // Guerrilla's test (ours elsewhere also treats 0x10 as off)
+constexpr BYTE kCellClosed = 0x08;  // Guerrilla's test (Armageddon's search also walks on from no cell with 0x04)
 
 const float* CellVertex(const BYTE* layer, const BYTE* cell, int k) {
     return *reinterpret_cast<const float* const*>(layer + kLayerVertices) + 3 * *reinterpret_cast<const WORD*>(cell + kCellVertices + 2 * k);
@@ -1123,20 +1125,28 @@ float NearestNavMeshEdge(const float* point) {
 
 struct WalkResult {
     bool reached = false;     // the goal's cell reached within the limit
-    bool undecided = false;   // the walk met the zone's edge or left its layer: the game's search may still go on
+    bool undecided = false;   // the walk met a neighbour in no loaded people's layer: the game's search may still go on
     float length = 0;         // the walk's length (edge midpoint to edge midpoint) when reached
 };
 
-// The shortest walk from a place in one cell to a place in another over the loaded zones' switched-on people's cells,
-// by edge midpoints. With a budget, a step whose way so far plus 0.75 x its straight distance to the goal passes it is
-// dropped (the game's search's rule); without one (budget 0), the walk is measured up to kLongestWalkLogged.
+// The shortest walk from a place in one cell to a place in another over the loaded zones' people's cells, by edge
+// midpoints and the game's search's rules (above). With a budget, a step whose way so far plus 0.75 x its straight
+// distance to the goal passes it is dropped (the game's search's rule); without one (budget 0), the walk is measured up
+// to kLongestWalkLogged.
 // The same walk over every loaded zone's people's layer (2026-11-13, the user's Oasis run: "Failed pathfind ... from
 // (1246.0, 34.0, 768.9) to (1321.3, 1.9, 788.4)" and "Pathfinding ran out of nav heap objects": a squad's chase of
 // 77 m straight whose walk is 395 m, past the game's budget of 266 m; the walk above stopped at the zone's edge,
 // "undecided", so the game was asked and searched until its nav heap (at most 4,096 nodes, 0x5ECA20) ran out). A cell's
-// neighbour may be in another zone's layer: the walk follows it there. It still stops, undecided, at an open edge of a
-// border cell (no neighbour across) or a neighbour in no loaded layer, where the game's own search could go on.
-struct LoadedLayer { const BYTE* cells; int count; const float* vertices; std::vector<char> border; };
+// neighbour may be in another zone's layer: the walk follows it there. It stops, undecided, only at a neighbour in no
+// loaded layer.
+// A missing neighbour is a wall, on a zone's border cell too (2026-11-19, the user's Parker run, 15:12: four "Failed
+// pathfind ... from: nch: 0x00004a00002004f3, pos (-1566.9, 35.7, -1252.6) to: nch: 0x00004a0000201725, pos (-1579.1,
+// 40.0, -1200.1)"): the walk used to give up, undecided, on any border cell (one of the zone's outer edges, where the
+// next zone's mesh may join) with a side that has no neighbour. There one 33 m east, cell 0x00BB of 04_10, whose
+// other open side is a plain wall, so the game was asked for a 51 m goal whose walk is 245 m against its budget of
+// about 226 m. The game's search goes on only through a cell's neighbours, so a side with none ends it there as well.
+// The walk also skipped Guerrilla's cells with flag 0x10 (2,099 of 04_10's 13,628), which the search walks through.
+struct LoadedLayer { const BYTE* cells; int count; const float* vertices; };
 
 WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goalCell, const float* goal, float budget) {
     WalkResult result;
@@ -1148,16 +1158,9 @@ WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goa
         const BYTE* layer = zone ? *reinterpret_cast<BYTE* const*>(zone + kZonePeopleLayer) : nullptr;
         if (!layer) continue;
         LoadedLayer l{*reinterpret_cast<BYTE* const*>(layer + kLayerCells), *reinterpret_cast<const WORD*>(layer + kLayerCellCount),
-                      *reinterpret_cast<const float* const*>(layer + kLayerVertices), {}};
+                      *reinterpret_cast<const float* const*>(layer + kLayerVertices)};
         if (!l.cells || !l.vertices || l.count <= 0) continue;
-        l.border.assign(l.count, 0);
-        const BYTE* outer = *reinterpret_cast<BYTE* const*>(layer + kLayerOuterEdges);
-        const int outerCount = *reinterpret_cast<const WORD*>(layer + kLayerOuterEdgeCount);
-        for (int e = 0; outer && e < outerCount; ++e) {
-            const int cell = *reinterpret_cast<const WORD*>(outer + e * kOuterEdgeSize);
-            if (cell < l.count) l.border[cell] = 1;
-        }
-        layers.push_back(std::move(l));
+        layers.push_back(l);
     }
     auto LayerOf = [&](const BYTE* cell) -> const LoadedLayer* {
         for (const LoadedLayer& l : layers)
@@ -1187,20 +1190,16 @@ WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goa
             result.length = way + Distance(at[cell].data(), goal);
             return result;
         }
+        if (cell[kCellFlags] & kCellNotWalkedThrough) continue;  // the search walks no further from it (it can still be the goal)
         const LoadedLayer& l = *LayerOf(cell);
-        const bool onBorder = l.border[(cell - l.cells) / kNavCellSize] != 0;
         for (int k = 0; k < 3; ++k) {
             const BYTE* next = *reinterpret_cast<BYTE* const*>(cell + 4 * k);
-            if (next == reinterpret_cast<const BYTE*>(-1) || !next) {
-                if (onBorder && budget > 0) { result.undecided = true; return result; }  // the zone's edge, joined to nothing here
-                continue;
-            }
+            if (next == reinterpret_cast<const BYTE*>(-1) || !next) continue;  // a wall, as for the game's search
             const LoadedLayer* nextLayer = LayerOf(next);
             if (!nextLayer) {
                 if (budget > 0) { result.undecided = true; return result; }  // into a zone not loaded: the game's search may go on there
                 continue;
             }
-            if (next[kCellFlags] & kCellSwitchedOff) continue;
             // The edge they share: the midpoint of the two vertices both have (else the next cell's middle).
             float through[3] = {0, 0, 0};
             int shared = 0;
@@ -1232,11 +1231,26 @@ WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goa
     return result;
 }
 
+// The NPC's own two answers the human's path query asks for (0x5C0C06, 0x5C0C1D), both from the flags of its character's
+// info (npc 0x8AB530: +0x1718, else the default; its flags +0x58): bit 20 (the object's virtual +0xA4, the npc's
+// 0x8A9AA0) and bit 5 (0x8AA160). Bit 20 goes to the search as its vehicle flag (the vehicles' cells, and the larger cap
+// of the budget: 500 m, not 350), bit 5 lets it walk on from switched-off cells (the A*'s +0x24).
+constexpr DWORD kNpcInfoFlags = 0x58, kInfoVehicleSearch = 1u << 20, kInfoOverSwitchedOff = 1u << 5;
+using NpcInfoFn = BYTE*(__fastcall*)(BYTE* npc, void*);
+auto const NpcInfo = reinterpret_cast<NpcInfoFn>(0x8AB530);
+
 // Whether the walk from a place in one cell to a place in another can't be found within the game's search budget (and
 // the log line when it can't); `moved` when the places are the ones the game's query moved onto the mesh.
 bool OutOfReach(BYTE* human, BYTE* startCell, const float* from, BYTE* goalCell, const float* goal, bool moved) {
-    // The game's budget, as its search asks it for a person (the larger of its two caps, so the check never asks less).
-    const float budget = std::max(SearchBudget(startCell, from, goalCell, goal, false, false), SearchBudget(startCell, from, goalCell, goal, true, false));
+    // An NPC whose search isn't a person's plain one is left to the game.
+    const BYTE* info = NpcInfo(human, nullptr);
+    if (!info || (*reinterpret_cast<const DWORD*>(info + kNpcInfoFlags) & (kInfoVehicleSearch | kInfoOverSwitchedOff))) return false;
+    // The game's budget, as its search asks it for a person (2026-11-19, the user's Parker run, 15:20: "Failed pathfind
+    // ... from: nch: 0x00004a0000201cb4, pos (-1775.4, 28.9, -1431.1) to: nch: 0x00004a0000200057, pos (-1877.9, -0.0,
+    // -1246.7)", 211 m straight, a walk of 363 m). The check used the larger of its two caps (500 m), "so it never asks
+    // less", and let that one through at about 472 m; but the query passes the NPC's bit 20 (above) as the cap's flag
+    // (0x5C1129 → 0x5BCCD0 → 0x5BD200 → 0x5BDF60), so a person's search is capped at 350 m.
+    const float budget = SearchBudget(startCell, from, goalCell, goal, false, false);
     if (!(budget > 0)) return false;
     const WalkResult withinBudget = WalkAcross(startCell, from, goalCell, goal, budget);
     if (withinBudget.reached || withinBudget.undecided) return false;
@@ -1247,7 +1261,7 @@ bool OutOfReach(BYTE* human, BYTE* startCell, const float* from, BYTE* goalCell,
         BYTE* squad = SquadOfNpc(human);
         char walked[64];
         if (walk.reached) sprintf_s(walked, "the walk %.0f m", walk.length);
-        else sprintf_s(walked, "no walk within %.0f m in this zone", kLongestWalkLogged);
+        else sprintf_s(walked, "no walk within %.0f m over the loaded zones", kLongestWalkLogged);
         rfa::LogDetail("Goals: NPC 0x%08X (squad 0x%08X) asked for a way from (%.1f, %.1f, %.1f) to (%.1f, %.1f, %.1f)%s: %.0f m straight, %s, past the search's "
                  "budget of %.0f m; not searched for (its action goes on as when no way is found, as Guerrilla's) (%d so far)",
                  ObjectHandle(human, nullptr), squad ? ObjectHandle(squad, nullptr) : kNoHandle, from[0], from[1], from[2], goal[0], goal[1], goal[2],

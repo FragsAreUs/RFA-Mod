@@ -16,9 +16,13 @@
 // running. A state change tells the scripts (activity_status_change). A run in progress isn't
 // saved (Guerrilla warns when saving during one); each node keeps its own progress.
 //
+// The free kinds start themselves and show in the diversions panel (killing spree so far): Guerrilla's
+// damage listeners hear every death (ReportDeath), and "the player's doing" is its own test
+// (PlayerControlled).
+//
 // Not ported yet: natural spawning (only courier, convoy and activity_spawn.xtbl's raids and
-// deliveries spawn by themselves), the activity layers and script groups, the voice and music,
-// the vehicle and human reservations.
+// deliveries spawn by themselves: with them, step 8), the script groups, the voice and music, the
+// vehicle and human reservations, the listeners' damage, building and explosion reports (step 5b).
 #define RFA_MOD_NAME "guerrilla_campaign"
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
@@ -33,6 +37,9 @@
 #include "world_objects.h"
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
+#include <cstddef>
+#include <unordered_set>
 
 namespace campaign::activities {
 namespace {
@@ -87,6 +94,100 @@ int ReadyCount() {
     for (Activity* activity : g_activities)
         if (activity && activity->Modal() && activity->GetState() == State::Ready) ++ready;
     return ready;
+}
+
+// ---- Armageddon's objects, for "the player's doing" (PlayerControlled) and the deaths reported
+//
+// An object's handle +0x68, its type +0x7A (both games' object_type: 0 a human, 1 an item, 2 a mover, 3 a vehicle,
+// 6 a turret), a human's vehicle +0x1160 (-1 none) and team +0x13B4, an item's owner +0x164 (gear's reading), a
+// turret's gunner +0x9C (guerrilla_vehicles' turrets.cpp); the world's people (0x43A860 how many, 0x43A8B0 each),
+// whether one drives the vehicle he is in (0x8695D0), how one team takes another (0x8A0460: the first team's
+// disposition towards the second, Guerrilla's Current_human_team_dispositions[team][other]).
+void* const kWorld = reinterpret_cast<void*>(0x1870630);
+using CountFn = int(__fastcall*)(void* world, void* unused);
+using AtFn = BYTE*(__fastcall*)(void* world, void* unused, int index);
+auto const HumanCount = reinterpret_cast<CountFn>(0x43A860);
+auto const HumanAt = reinterpret_cast<AtFn>(0x43A8B0);
+auto const Driving = reinterpret_cast<bool(__cdecl*)(BYTE* human)>(0x8695D0);
+auto const Disposition = reinterpret_cast<int(__cdecl*)(int team, int other)>(0x8A0460);
+constexpr DWORD kHandle = 0x68, kObjectType = 0x7A, kInVehicle = 0x1160, kTeam = 0x13B4, kItemOwner = 0x164, kGunner = 0x9C;
+constexpr int kHumanType = 0, kItemType = 1, kVehicleType = 3, kTurretType = 6;
+constexpr DWORD kNoHandle = 0xFFFFFFFF;
+// Guerrilla's vehicle::most_recent_driver and most_recent_driver_exit_time: a vehicle counts as the player's for
+// 40 s after he left it (activity_register_damage_is_player_controlled's 40000 ms).
+constexpr int kLeftVehicleMs = 40000;
+DWORD g_lastVehicle = kNoHandle;  // the vehicle the player drove last (Armageddon has no most-recent-driver field)
+int g_leftVehicleAt = -1;         // when he got out of it (game clock), -1 while he is in it
+
+DWORD HandleOf(const void* object) { return *reinterpret_cast<const DWORD*>(static_cast<const BYTE*>(object) + kHandle); }
+int TypeOf(const void* object) { return static_cast<signed char>(static_cast<const BYTE*>(object)[kObjectType]); }
+
+// Who drives the vehicle now (a person in it, driving), other than the player: Guerrilla's most recent driver changes.
+bool SomeoneElseDrives(DWORD vehicle, const BYTE* player) {
+    const int count = HumanCount(kWorld, nullptr);
+    for (int i = 0; i < count; ++i) {
+        BYTE* human = HumanAt(kWorld, nullptr, i);
+        if (human && human != player && *reinterpret_cast<const DWORD*>(human + kInVehicle) == vehicle && Driving(human)) return true;
+    }
+    return false;
+}
+
+// Each frame: the vehicle the player is in, and when he left the last one.
+void FollowPlayersVehicle() {
+    const BYTE* player = static_cast<const BYTE*>(Player());
+    if (!player) return;
+    const DWORD vehicle = *reinterpret_cast<const DWORD*>(player + kInVehicle);
+    if (vehicle != kNoHandle) {
+        g_lastVehicle = vehicle;
+        g_leftVehicleAt = -1;
+    } else if (g_lastVehicle != kNoHandle && g_leftVehicleAt < 0) {
+        g_leftVehicleAt = GameTime();
+    }
+}
+
+std::unordered_set<DWORD> g_deathsReported;  // each human's death once (Armageddon may call its death again)
+
+// ---- The diversions panel (hud_ui_missions_determine_diversion_items RM 0x8C5490 and process_diversion_info
+// 0x8C56A0): each free kind but mission vrail and continuous attack whose interface is RUNNING is listed (8 at most,
+// farray<diversion_data,8>); a listed one that stops running shows ENDED, then goes once its interface state is more
+// than 1 s old. Each frame every item is worked out again in list order (its place, which_one, its index + 1).
+struct Diversion {
+    Mode mode = ModeNone;
+    bool ended = false;
+    std::string value;  // its value text, kept from frame to frame (Guerrilla's item buffer +0x8C)
+    int id = 0;         // ours, for the HUD to tell items apart
+};
+std::vector<Diversion> g_diversions;
+int g_nextDiversionId = 1;
+constexpr size_t kMostDiversions = 8;
+constexpr float kDiversionShift = 1.0f;     // the first second shows STARTED; ENDED shows a second before it goes
+constexpr int kDiversionFlashMs = 6000;     // Fade_diversion_time_ms: the icon flashes under 6 s left
+
+void FollowDiversions() {
+    for (size_t i = 0; i < g_diversions.size();) {
+        Activity* activity = Get(g_diversions[i].mode);
+        if (!activity || !activity->IsActive()) {
+            if (!activity || activity->InterfaceTime() > kDiversionShift) {
+                g_diversions.erase(g_diversions.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            g_diversions[i].ended = true;
+        } else {
+            g_diversions[i].ended = false;
+        }
+        ++i;
+    }
+    for (Activity* activity : g_activities) {
+        if (!activity || activity->Modal() || activity->GetMode() == MissionVrail || activity->GetMode() == ContinuousAttack) continue;
+        if (activity->GetInterface() != Interface::Running) continue;
+        bool listed = false;
+        for (const Diversion& item : g_diversions) listed = listed || item.mode == activity->GetMode();
+        if (listed || g_diversions.size() >= kMostDiversions) continue;
+        Diversion item;
+        item.mode = activity->GetMode();
+        item.id = g_nextDiversionId++;
+        g_diversions.push_back(item);
+    }
 }
 
 // ---- The game's console: a command to try an activity before the game can offer it.
@@ -255,6 +356,18 @@ void Activity::RecordVictory(const Rewards& rewards) {
 
 void Activity::RecordLoss() { ChangeInterface(Interface::Loss); }
 
+bool Activity::StartFree() {
+    if (modal_) return false;
+    // activity_base_free::activity_start: unless it was initialized already (offered or running), it must be able to
+    // initialize, then start_activity_spawn(no node, the player's district) and activity_base::activity_start.
+    if (!WasInitialized()) {
+        if (!CanInitialize()) return false;
+        Reset();
+        district_ = liberation::PlayerDistrict();
+    }
+    return Start();
+}
+
 void Activity::ChangeState(State state) {
     state_ = state;
     stateTime_ = 0.0f;
@@ -332,10 +445,47 @@ const BaseData* FindBaseData(const std::string& name) {
     return nullptr;
 }
 
+bool PlayerControlled(const void* object) {
+    const BYTE* player = static_cast<const BYTE*>(Player());
+    if (!object || !player) return false;
+    const DWORD playerHandle = HandleOf(player);
+    switch (TypeOf(object)) {
+    case kHumanType:
+        return object == player;
+    case kItemType:
+        return *reinterpret_cast<const DWORD*>(static_cast<const BYTE*>(object) + kItemOwner) == playerHandle;
+    case kVehicleType: {
+        const DWORD vehicle = HandleOf(object);
+        if (*reinterpret_cast<const DWORD*>(player + kInVehicle) == vehicle) return true;
+        return vehicle == g_lastVehicle && g_leftVehicleAt >= 0 && GameTime() - g_leftVehicleAt < kLeftVehicleMs &&
+               !SomeoneElseDrives(vehicle, player);
+    }
+    case kTurretType:
+        return *reinterpret_cast<const DWORD*>(static_cast<const BYTE*>(object) + kGunner) == playerHandle;
+    default:
+        return false;
+    }
+}
+
+int DispositionToPlayer(const void* human) {
+    const BYTE* player = static_cast<const BYTE*>(Player());
+    if (!human || !player) return 2;  // TEAM_DISPOSITION_NONE
+    return Disposition(*reinterpret_cast<const int*>(static_cast<const BYTE*>(human) + kTeam), *reinterpret_cast<const int*>(player + kTeam));
+}
+
+void ReportDeath(void* victim, void* killer) {
+    // human_died tells the activities of a non-player human's death (activity_register_death).
+    if (!victim || victim == Player() || TypeOf(victim) != kHumanType) return;
+    if (!g_deathsReported.insert(HandleOf(victim)).second) return;
+    for (Activity* activity : g_activities)
+        if (activity && activity->Listens() && !activity->Disabled()) activity->RegisterDeath(victim, killer);
+}
+
 void Init() {
     managed_layers::Init();
     LoadBaseData();
     Register(MakeDemolitionsMaster());
+    Register(MakeKillingSpree());
 }
 
 void Enter() {
@@ -346,12 +496,17 @@ void Enter() {
                         &StartCommand);
     }
     g_cooldown = 0.0f;
+    g_lastVehicle = kNoHandle;
+    g_leftVehicleAt = -1;
+    g_deathsReported.clear();
+    g_diversions.clear();
     for (Activity* activity : g_activities)
         if (activity) activity->LevelInit();
 }
 
 void Update(float seconds) {
     if (g_cooldown > 0.0f) g_cooldown -= seconds;
+    FollowPlayersVehicle();
     // At ORANGE or RED, offered modal activities are withdrawn when none is running (Guerrilla
     // spares Guerrilla Express).
     if (liberation::AlertLevel() >= handles::AlertOrange && g_current == ModeNone)
@@ -359,6 +514,7 @@ void Update(float seconds) {
             if (activity && activity->Modal() && activity->GetMode() != Delivery) activity->Withdraw();
     for (Activity* activity : g_activities)
         if (activity) activity->DoFrame(seconds);
+    FollowDiversions();
 }
 
 bool AnyRunning() {
@@ -467,6 +623,64 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     info->outOfRange = g_shown.outOfRange;
     info->salvage = g_shown.salvage;
     return 1;
+}
+
+// The diversions panel's items now (hud_ui_missions_process_diversion_info RM 0x8C56A0), in list order: the header
+// is the kind's title; while it runs, its text (activity_get_ui_text) and the icon flashing under 6 s left, and in its
+// first second STARTED (MISS_DIVERSION_STARTED_FEMININE for killing spree and mayhem) fading in; a car bomb shows
+// ACT_BOMB_INSTALLED in its first second and ACT_BOMB_ARMED while its text is "t", with no value; after it stops,
+// ENDED (_FEMININE for those two; nothing new for a car bomb). Texts are upper-cased, as Guerrilla's.
+namespace {
+std::vector<std::string> g_diversionTexts;  // what the last call gave (the items' texts point into it)
+}  // namespace
+
+int GuerrillaCampaign_Diversions(GuerrillaCampaignDiversion* items, int most) {
+    using namespace campaign::activities;
+    if (!items || most <= 0 || !guerrilla_campaign::Running() || !campaign::Playing()) return 0;
+    const int count = static_cast<int>(g_diversions.size()) < most ? static_cast<int>(g_diversions.size()) : most;
+    g_diversionTexts.assign(static_cast<size_t>(count) * 2, std::string());
+    for (int i = 0; i < count; ++i) {
+        Diversion& item = g_diversions[static_cast<size_t>(i)];
+        const Activity* activity = Get(item.mode);
+        GuerrillaCampaignDiversion& out = items[i];
+        out = {};
+        out.id = item.id;
+        out.whichOne = i + 1;
+        out.type = item.mode == Mayhem ? 1 : item.mode == KillingSpree ? 3 : item.mode == CarBomb ? 5 : 0;  // LUA_DIVERSION_*
+        const bool feminine = item.mode == KillingSpree || item.mode == Mayhem;
+        std::string status;
+        if (activity && activity->GetInterface() == Interface::Running) {
+            const float shown = activity->InterfaceTime();
+            if (shown <= 0.0f) item.value.clear();
+            std::string text;
+            int number = 0;
+            if (activity->UiText(text, number)) {
+                item.value = text;
+                out.flash = number < kDiversionFlashMs ? 1 : 0;
+            }
+            if (item.mode == CarBomb) {
+                if (shown < kDiversionShift) {
+                    status = "ACT_BOMB_INSTALLED";
+                    out.fadeIn = 1;
+                }
+                if (!item.value.empty() && item.value[0] == 't') status = "ACT_BOMB_ARMED";
+                item.value.clear();
+            } else if (shown < kDiversionShift) {
+                status = feminine ? "MISS_DIVERSION_STARTED_FEMININE" : "MISS_DIVERSION_STARTED";
+                out.fadeIn = 1;
+            }
+        } else if (item.mode != CarBomb) {
+            status = feminine ? "MISS_DIVERSION_ENDED_FEMININE" : "MISS_DIVERSION_ENDED";
+        }
+        for (char& c : status) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+        for (char& c : item.value) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+        g_diversionTexts[static_cast<size_t>(i) * 2] = status;
+        g_diversionTexts[static_cast<size_t>(i) * 2 + 1] = item.value;
+        out.header = activity ? activity->Title() : "";
+        out.status = g_diversionTexts[static_cast<size_t>(i) * 2].c_str();
+        out.value = g_diversionTexts[static_cast<size_t>(i) * 2 + 1].c_str();
+    }
+    return count;
 }
 
 // The HUD's answer: the briefing, 1 accept or 0 cancel; the results, anything closes them.

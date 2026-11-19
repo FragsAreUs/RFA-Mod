@@ -61,6 +61,21 @@ struct GuerrillaCampaignMapRing {
 // red (200, 50, 50, 255) while the 5 s back into it are counting, and its target. How many were written.
 int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most);
 
+// One item of Guerrilla's diversions panel (its DiversionInfo data item: which_one, diversion_type, fade_this_in,
+// flash_this, header_text, status_text, value_text), worked out as hud_ui_missions_process_diversion_info (RM 0x8C56A0)
+// did, for the free activities that run (killing spree, mayhem, car bomb).
+struct GuerrillaCampaignDiversion {
+    int id;              // the item's own number, kept while it is listed (for telling items apart)
+    int whichOne;        // its place in the panel, from 1 (the items move up as one goes)
+    int type;            // Guerrilla's LUA_DIVERSION_*: 1 mayhem, 3 killing spree, 5 car bomb; 0 another kind
+    int fadeIn, flash;   // fade_this_in (its first second), flash_this (its icon, under 6 s left)
+    const char* header;  // Guerrilla's string tags (ACT_KILLING_SPREE); valid until the next call
+    const char* status;  // a tag (MISS_DIVERSION_STARTED_FEMININE, ACT_BOMB_ARMED), "" for none
+    const char* value;   // its text as shown (the kills, the millions)
+};
+// The panel's items now, in order: how many were written (at most `most`; Guerrilla's panel holds 8).
+int GuerrillaCampaign_Diversions(GuerrillaCampaignDiversion* items, int most);
+
 // ---- The districts and the campaign's state (campaign_state.cpp)
 
 // For guerrilla_hud's control and morale meters: one district (Guerrilla's MoraleUpdate data item has these). Times

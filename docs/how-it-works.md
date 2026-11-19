@@ -937,9 +937,14 @@ opened and closed with `MapKey=`).
   (its 14 references and its one-byte counts); the interface's lists of document handles (16 each,
   `0x133A1A0`) to 256; the pools every element comes from (one per type: bitmaps 1,300, tweens 820,
   ...; an element that doesn't fit is left out, and a menu page missing its parts can crash) to
-  three times as many, with their memory pool "vint_perm" from 640 KB to 4 MB; and the interface's
-  memory (`0xA45600`: 10 MB) to 48 MB, which the game's own menus and loading screens share with
-  Guerrilla's map.
+  three times as many, with their memory pool "vint_perm" from 640 KB to 4 MB; the pictures by name
+  (the sheet table's sheets, 196 at `0x28BBD68`, and the pictures on them, 1,536 at `0x28B2D68`; the
+  reader drops whatever is past them without a word, so with Guerrilla's 102 zone pictures and the
+  handbook's pages the last zones of Parker drew the coarse world picture on the minimap) to 512 and
+  4,096, by moving both tables (their 22 references) and giving their name dictionary 8,192 places
+  and its string pool 96 KB; and the interface's memory (`0xA45600`: 10 MB) to 48 MB, which the
+  game's own menus and loading screens share with Guerrilla's map. The Guerrilla builder's check
+  counts the sheet table against those 512 and 4,096.
 - Script errors in the interface's Lua (which the game otherwise only keeps, so a broken menu just
   stays empty) are written to `logs\rfa_mods.log` by the loader ("Lua error: ...").
 - What the scripts need each frame, the mod gives them through Lua functions of its own, added

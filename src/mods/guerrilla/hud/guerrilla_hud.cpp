@@ -373,9 +373,91 @@ void RaiseElementPools() {
              3 * 0x118ul, 3 * 0x16Cul, 3 * 0xC4ul, kVintPermOurs / (1024 * 1024));
 }
 
+// The interface's pictures by name (vint_bms): at start-up the project's sheet table (guerrilla_hud_sheets.xtbl) is read
+// (0xC4F340) into two static tables, its sheets (12 bytes each: the texture's name "<sheet>.tga", its texture slot, a
+// mark) at 0x28BBD68 and the pictures on them (24 bytes: name, sheet, x, y, width, height; 0xC4F520) at 0x28B2D68, their
+// counts at 0x28BC698 and 0x28BC69C. Each reader stops taking entries without a word once its table is full: 196 sheets
+// (cmp [count],0C4h) and 1,536 pictures (cmp [count],600h). Their names go into a dictionary of 2,304 places (0x28BC6A0,
+// 0x900 places in 0x2400 bytes; open addressing, the place found by the hash modulo its count at +4) and a 48 KB string
+// pool (0x28BC6B8), both made by 0xC4F160 out of interface_perm (0x26AF3BC, 7 MB). With Guerrilla's HUD sheets, its
+// 102 zone pictures and the handbook's pages the table has 215 sheets and 1,581 pictures, so the last ones were dropped:
+// the zones 05_10, 05_11, 02_12 and 03_12 had no picture (FindPicture -1) and the minimap drew Guerrilla's world picture
+// there, six times coarser (2026-11-19: half the minimap blurry and dark beside a sharp zone), and the last handbook
+// pages had none. So both tables move to ours (every use of them in the game's code is the address of a field of the
+// first entry, all in 0xC4F2B0 to 0xC4FAC0), their limits rise, and the dictionary and the pool get room to match;
+// every value is checked first. Nothing else in the game's code touches the tables (their counts are saved and put
+// back by 0x517610 and 0x5626A0; that stays as it is).
+constexpr DWORD kPictureTable = 0x28B2D68;
+constexpr DWORD kPictureEntrySize = 0x18;
+constexpr DWORD kGamePictures = 0x600;
+constexpr DWORD kMaxPictures = 4096;
+constexpr DWORD kPictureTableReferences[] = {0xC4F2B8, 0xC4F2C9, 0xC4F5AA, 0xC4F5E0, 0xC4F602, 0xC4F624, 0xC4F646,
+                                             0xC4F668, 0xC4F765, 0xC4F7D3, 0xC4F81B, 0xC4F85E, 0xC4F8B9, 0xC4FABB};
+constexpr DWORD kPictureTableLimits[] = {0xC4F582};  // cmp [0x28BC69C],600h
+BYTE g_pictureTable[kMaxPictures * kPictureEntrySize];
+
+constexpr DWORD kSheetTable = 0x28BBD68;
+constexpr DWORD kSheetEntrySize = 0xC;
+constexpr DWORD kGameSheets = 0xC4;
+constexpr DWORD kMaxSheets = 512;
+constexpr DWORD kSheetTableReferences[] = {0xC4F30A, 0xC4F31F, 0xC4F439, 0xC4F46C, 0xC4F77D, 0xC4F7E5, 0xC4F82C, 0xC4F883};
+constexpr DWORD kSheetTableLimits[] = {0xC4F3E1};  // cmp [0x28BC698],0C4h
+BYTE g_sheetTable[kMaxSheets * kSheetEntrySize];
+DWORD g_sheetTableAt = kSheetTable;  // where the sheets are now (TieSheetAgain reads them)
+
+constexpr DWORD kPictureCounts = 0x28BC698;  // sheets, then pictures
+constexpr DWORD kPictureNamePlaces = 0xC4F168;      // push 900h: the dictionary's places
+constexpr DWORD kPictureNamePlaceBytes = 0xC4F173;  // push 2400h: its memory, 4 bytes a place
+constexpr DWORD kGamePictureNamePlaces = 0x900;
+constexpr DWORD kPictureNamePlacesOurs = 0x2000;    // well over the sheets and pictures together, as the game's were
+constexpr DWORD kPictureNamePool[] = {0xC4F195, 0xC4F1A0};  // push 0C000h: the pool's memory, then its size
+constexpr DWORD kGamePictureNamePool = 0xC000;
+constexpr DWORD kPictureNamePoolOurs = 0x18000;     // the 1,796 names take about 41 KB
+
+void MovePictureTables() {
+    const bool sheets = rfa::MoveTable("Interface picture sheets", kSheetTable, kSheetEntrySize, kGameSheets,
+                                       kSheetTableReferences, kSheetTableLimits, g_sheetTable, kMaxSheets);
+    if (sheets) g_sheetTableAt = reinterpret_cast<DWORD>(g_sheetTable);
+    const bool pictures = rfa::MoveTable("Interface pictures", kPictureTable, kPictureEntrySize, kGamePictures,
+                                         kPictureTableReferences, kPictureTableLimits, g_pictureTable, kMaxPictures);
+    if (!sheets && !pictures) return;  // MoveTable says why; the dictionary and the pool are enough for the game's own
+    if (rfa::CodeValue(kPictureNamePlaces) != kGamePictureNamePlaces ||
+        rfa::CodeValue(kPictureNamePlaceBytes) != kGamePictureNamePlaces * 4) {
+        rfa::Log("Interface picture names: the game's code at 0x%08lX isn't as expected; the dictionary keeps its %lu places",
+                 kPictureNamePlaces, kGamePictureNamePlaces);
+    } else {
+        const DWORD bytes = kPictureNamePlacesOurs * 4;
+        rfa::PatchCode(reinterpret_cast<void*>(kPictureNamePlaces), &kPictureNamePlacesOurs, sizeof(kPictureNamePlacesOurs));
+        rfa::PatchCode(reinterpret_cast<void*>(kPictureNamePlaceBytes), &bytes, sizeof(bytes));
+        rfa::Log("Interface picture names: the dictionary has %lu places (the game's %lu)", kPictureNamePlacesOurs, kGamePictureNamePlaces);
+    }
+    bool poolAsExpected = true;
+    for (DWORD at : kPictureNamePool) poolAsExpected = poolAsExpected && rfa::CodeValue(at) == kGamePictureNamePool;
+    if (poolAsExpected) {
+        for (DWORD at : kPictureNamePool) rfa::PatchCode(reinterpret_cast<void*>(at), &kPictureNamePoolOurs, sizeof(kPictureNamePoolOurs));
+        rfa::Log("Interface picture names: %lu KB for them (the game's %lu KB)", kPictureNamePoolOurs / 1024, kGamePictureNamePool / 1024);
+    } else {
+        rfa::Log("Interface picture names: the game's code at 0x%08lX isn't as expected; they keep the game's %lu KB",
+                 kPictureNamePool[0], kGamePictureNamePool / 1024);
+    }
+}
+
+// How many sheets and pictures the interface took from the sheet table (logged once, in our world).
+void LogPictureCounts() {
+    static bool logged = false;
+    if (logged) return;
+    logged = true;
+    const unsigned* counts = reinterpret_cast<const unsigned*>(kPictureCounts);
+    const DWORD sheetRoom = g_sheetTableAt == kSheetTable ? kGameSheets : kMaxSheets;
+    const DWORD pictureRoom = rfa::CodeValue(kPictureTableLimits[0]);
+    rfa::Log("Interface pictures: %u sheets (room for %lu), %u pictures (room for %lu)%s", counts[0], sheetRoom, counts[1],
+             pictureRoom, counts[0] >= sheetRoom || counts[1] >= pictureRoom ? ": FULL, the last ones are missing" : "");
+}
+
 void RaiseDocumentLimits() {
     RaiseElementPools();
     MoveDocumentSlots();
+    MovePictureTables();
     if (!rfa::MoveTable("Interface project documents", kProjectTable, kProjectRecordSize, kGameMaxDocuments,
                         kProjectTableReferences, kProjectTableLimits, g_projectTable, kMaxDocuments))
         return;  // MoveTable says why; the game keeps all its 128s
@@ -1170,6 +1252,7 @@ void FollowTheWorld() {
     const bool ours = InOurWorld();
     if (static_cast<int>(ours) != g_inOurWorld) {
         rfa::Log(ours ? "World %s: Guerrilla's HUD" : "World %s: Armageddon's own HUD", WorldName());
+        if (ours) LogPictureCounts();
         g_inOurWorld = ours;
         if (!ours) CloseMap("another world");
     }
@@ -2749,7 +2832,8 @@ bool PauseMenuDocumentsOpen() {
 
 // A picture sheet tied to its texture again. Armageddon ties each sheet of its sheet tables to a texture once, as it
 // reads them at start-up (0xC4F2E0: for each sheet, 0xCAFD90 finds the texture by its name "<sheet>.tga", or makes it
-// an empty slot, and keeps the slot at the sheet's +4; sheets at 0x28BBD68, 12 bytes each, the count at 0x28BC698).
+// an empty slot, and keeps the slot at the sheet's +4; sheets at 0x28BBD68, moved to ours by MovePictureTables, 12 bytes
+// each, the count at 0x28BC698).
 // The zones' pictures load once and fill those slots; a handbook picture's document is loaded and unloaded as its
 // entry is picked and left, and a texture loaded again needn't land in the slot the sheet kept: its picture then came
 // out a small grey box, the same for every entry (2026-11-12, at image_holder's corner). So once a picture's document
@@ -2761,8 +2845,8 @@ struct SheetEntry {
     int rest;          // not used here
 };
 static_assert(sizeof(SheetEntry) == 12, "Armageddon's sheet entries are 12 bytes");
-auto* const kSheets = reinterpret_cast<SheetEntry*>(0x28BBD68);
-auto& g_sheetCount = *reinterpret_cast<unsigned*>(0x28BC698);
+SheetEntry* Sheets() { return reinterpret_cast<SheetEntry*>(g_sheetTableAt); }
+auto& g_sheetCount = *reinterpret_cast<unsigned*>(kPictureCounts);
 auto const FindBitmapByName = reinterpret_cast<int(__cdecl*)(const char* name)>(0xCAF200);
 
 // Whether a sheet entry's name is this sheet's, with or without ".tga".
@@ -2774,7 +2858,7 @@ bool SheetNamed(const char* name, const std::string& sheet) {
 void TieSheetAgain(const std::string& sheet) {
     static int logged = 0;
     for (unsigned i = 0; i < g_sheetCount; ++i) {
-        SheetEntry& entry = kSheets[i];
+        SheetEntry& entry = Sheets()[i];
         if (!SheetNamed(entry.name, sheet)) continue;
         const int now = FindBitmapByName(entry.name);
         if (logged < 40) {
@@ -4702,6 +4786,42 @@ int __cdecl LuaActivityWeapon(lua_State* L) {
     return 2;
 }
 
+// rfg_diversions() -> how many: Guerrilla's diversions panel now (the campaign's free activities that run or just
+//   ended: GuerrillaCampaign_Diversions, its hud_ui_missions_process_diversion_info); then
+// rfg_diversion(n) -> id, which_one, diversion_type, fade_this_in, flash_this, header_text, status_text, value_text
+//   for item n (1 ..) of that call: its DiversionInfo values, the header and status Guerrilla's texts for their tags.
+constexpr int kMostDiversions = 8;  // Guerrilla's panel holds 8 (farray<diversion_data,8>)
+GuerrillaCampaignDiversion g_diversionItems[kMostDiversions];
+std::string g_diversionHeaders[kMostDiversions], g_diversionStatuses[kMostDiversions];
+int g_diversionCount = 0;
+
+int __cdecl LuaDiversions(lua_State* L) {
+    using namespace rfa::game;
+    g_diversionCount = GuerrillaCampaign_Diversions(g_diversionItems, kMostDiversions);
+    for (int i = 0; i < g_diversionCount; ++i) {
+        g_diversionHeaders[i] = GuerrillaText(g_diversionItems[i].header);
+        g_diversionStatuses[i] = GuerrillaText(g_diversionItems[i].status);
+    }
+    lua_pushnumber(L, g_diversionCount);
+    return 1;
+}
+
+int __cdecl LuaDiversion(lua_State* L) {
+    using namespace rfa::game;
+    const int index = static_cast<int>(lua_tonumber(L, 1)) - 1;
+    if (index < 0 || index >= g_diversionCount) return 0;
+    const GuerrillaCampaignDiversion& item = g_diversionItems[index];
+    lua_pushnumber(L, item.id);
+    lua_pushnumber(L, item.whichOne);
+    lua_pushnumber(L, item.type);
+    lua_pushboolean(L, item.fadeIn != 0);
+    lua_pushboolean(L, item.flash != 0);
+    lua_pushstring(L, g_diversionHeaders[index].c_str());
+    lua_pushstring(L, g_diversionStatuses[index].c_str());
+    lua_pushstring(L, item.value ? item.value : "");
+    return 8;
+}
+
 // rfg_screen_input(on): Guerrilla's rfg_enable_button_input, from the screen's script (off while its animation
 //   plays): the activity-complete screen's while it's open (its hints come up with the keys), else the activity
 //   screen's.
@@ -5392,6 +5512,8 @@ void guerrilla_hud::RegisterLua(rfa::game::lua_State* L) {
     rfa::game::lua_register(L, "rfg_liberation_step_done", LuaLiberationStepDone);
     rfa::game::lua_register(L, "rfg_activity", LuaActivity);
     rfa::game::lua_register(L, "rfg_activity_weapon", LuaActivityWeapon);
+    rfa::game::lua_register(L, "rfg_diversions", LuaDiversions);
+    rfa::game::lua_register(L, "rfg_diversion", LuaDiversion);
     rfa::game::lua_register(L, "rfg_screen_input", LuaScreenInput);
     rfa::game::lua_register(L, "rfg_activity_complete", LuaActivityComplete);
     rfa::game::lua_register(L, "rfg_activity_complete_tallys", LuaActivityCompleteTallys);

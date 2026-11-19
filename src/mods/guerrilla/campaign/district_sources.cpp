@@ -305,6 +305,8 @@ void __cdecl Died(BYTE* damage) {
     g_died(damage);
     if (!Playing()) return;
     HumanKilled(victim, attacker);
+    // The activities that listen (human_died -> activity_register_death): killing spree.
+    activities::ReportDeath(victim, attacker);
     // The spontaneous rising, when the EDF killed a civilian (human_died -> converts).
     if (victim && attacker && HumanByHandle(kWorld, nullptr, HandleOf(attacker)) == attacker) converts::HumanKilled(victim, attacker);
 }
