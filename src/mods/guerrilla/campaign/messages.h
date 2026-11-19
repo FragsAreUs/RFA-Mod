@@ -12,5 +12,7 @@ void MinorCount(const char* tag, int count);
 // ui_tool_tips_add_tip: a tool tip by its name in Guerrilla's tool_tips.xtbl ("Civilian_Death"), for so
 // many milliseconds.
 void Tip(const char* name, int ms);
+// hud_message_add: a primary HUD message, Guerrilla's string tag (HM_BFTP_GET_A_CAR).
+void Primary(const char* tag);
 
 }  // namespace campaign::messages

@@ -2125,6 +2125,71 @@ void SetGuerrillaDispositions() {
     rfa::Log("Sides: Guerrilla's (the EDF and the Marauders hostile to the player's side, civilians friendly to it and unfriendly to the EDF, the Marauders hostile to all)");
 }
 
+// ---- Who may hurt whom (2026-11-19, the user's run of 16:53: "could not test killing a civ as the game is protecting
+// them and marking them as friendly making them invarnable to my damage ... I shot them and threw explosives at them")
+//
+// Armageddon's human damage (0x85E0C0) gives no damage between the player and a friend: when the victim is the player
+// and there is an attacker, or the attacker is the player (the player casts 0x476F20, 0x85E478-0x85E48B), it asks
+// whether the two are friends (0x46FE80, cdecl: 0x8A04D0's disposition of one human's team to the other's, 3 friendly
+// or better), and when the damage's source object (+0x24, its human by 0x4362C0) is either none or a friend too, it
+// returns 0 (0x85E4AE, 0x85E4CD, 0x85E4DC). With Guerrilla's sides the civilians are the player's friends (and the
+// guerrillas his own side), so nothing he did hurt them, bullets, explosions, melee or his car alike.
+// Guerrilla's human_damage (RM 0xACED70) has no such test outside multiplayer (human_teams_are_allies only with
+// Multiplayer and a team match whose friendly fire is off). Its friendly damage is only scaled, and Armageddon's code
+// does the same with the same numbers: a bullet from a friend x 0.3 from the player (Damage_multiplier_player_damage_
+// friendly, RM 0x1694330; Armageddon's 0x1102914) and x 0.5 from anyone else (Damage_multiplier_friendly_fire, RM
+// 0x169432C; 0x1102910), in human::process_bullet_hit (RM 0xAD37B0; Armageddon's 0x87D8E0, and 0x87B2B0); the player's
+// car x 0.3 x 0.5 (human_collide_vehicle RM 0xACFED2; Armageddon's 0x8730CF).
+// Guerrilla's human_damage also scales the damage to anyone not friendly to the local player by the difficulty's
+// item 0 (local_player_is_friendly, RM 0xACEF10); Armageddon's scales the damage to anyone not friendly to the attacker
+// (0x85E761 → item 0, 0x85E774). So an EDF soldier's damage to a civilian or a guerrilla was scaled, Guerrilla's isn't.
+// In our worlds, outside multiplayer, the friends test answers as Guerrilla's at those three places (told by where it
+// returns to): no friends at the player's test, and the victim's friendliness to the local player at the scaling. Its
+// other callers (the AI's, melee assist, the reactions) keep the game's answer. The consequences are the campaign's,
+// already ported: a civilian or a guerrilla killed by the player costs the district's morale 3 with HM_TRUST_BETRAYED
+// (gfm_control_morale_human_killed; district_sources.cpp).
+constexpr DWORD kHumansAreFriends = 0x46FE80;
+constexpr size_t kHumansAreFriendsPrologue = 6;  // push ebp / mov ebp,esp / mov eax,[ebp+0Ch]
+constexpr DWORD kFromPlayersFriendTest = 0x85E4B3, kFromPlayersFriendSourceTest = 0x85E4D2, kFromEnemyDamageScale = 0x85E766;
+auto& g_multiplayer = *reinterpret_cast<const bool*>(0x2685118);
+using HumansAreFriendsFn = bool(__cdecl*)(BYTE* human, BYTE* other);
+HumansAreFriendsFn g_humansAreFriends = nullptr;
+int g_friendlyHits = 0;  // hits between the player and a friend let through (the log's first few)
+
+bool __cdecl HumansAreFriends(BYTE* human, BYTE* other) {
+    const DWORD from = reinterpret_cast<DWORD>(_ReturnAddress());
+    const bool playersTest = from == kFromPlayersFriendTest || from == kFromPlayersFriendSourceTest;
+    if ((!playersTest && from != kFromEnemyDamageScale) || g_multiplayer || !InOurWorld()) return g_humansAreFriends(human, other);
+    if (from == kFromEnemyDamageScale) return !g_localPlayer || g_humansAreFriends(human, g_localPlayer);
+    if (from == kFromPlayersFriendTest && g_humansAreFriends(human, other) && ++g_friendlyHits <= 8)
+        rfa::LogDetail("Sides: a hit between the player and a friend (%08X, team %d) lets its damage through, as Guerrilla's (%d so far)",
+                       ObjectHandle(human == g_localPlayer ? other : human, nullptr), *reinterpret_cast<const int*>((human == g_localPlayer ? other : human) + kHumanTeam),
+                       g_friendlyHits);
+    return false;
+}
+
+// The EDF may hurt the EDF (the main session's go, 2026-11-19: "port it, since the user's standing rule is Guerrilla
+// 1:1"). Armageddon's human damage (0x85E0C0) and its damage event (0x84CF00) both begin by giving nothing when the
+// attacker and the victim are both of team 1, its Legion's and Guerrilla's EDF (0x85E0E8-0x85E103, 0x84CF25-0x84CF3E:
+// the team getter 0x862B60, thiscall, +0x13B4, on the attacker, then on the victim, each compared with 1). Guerrilla's
+// human_damage has no team test outside multiplayer, so its tanks, rockets, grenades and drivers hurt their own
+// soldiers, its bullets by Damage_multiplier_friendly_fire (x 0.5, as Armageddon's 0x87D8E0 still does). In our worlds,
+// outside multiplayer, the attacker's team read by that test (told by where it returns to: 0x85E0ED, 0x84CF2A) answers
+// "no team" (-1), so the test never holds; the victim's read after it is then skipped by the game's own jump. The
+// getter's 89 other callers, riders.cpp's and turrets.cpp's among them, read the team as it is.
+constexpr DWORD kHumanTeamOf = 0x862B60;
+constexpr size_t kHumanTeamOfPrologue = 7;  // push ebp / mov ebp,esp / push ecx / mov [ebp-4],ecx
+constexpr DWORD kFromDamageEdfTest = 0x85E0ED, kFromDamageEventEdfTest = 0x84CF2A;
+constexpr int kNoTeam = -1;
+using HumanTeamOfFn = int(__fastcall*)(BYTE* human, void*);
+HumanTeamOfFn g_humanTeamOf = nullptr;
+
+int __fastcall HumanTeamOf(BYTE* human, void* unused) {
+    const DWORD from = reinterpret_cast<DWORD>(_ReturnAddress());
+    if ((from != kFromDamageEdfTest && from != kFromDamageEventEdfTest) || g_multiplayer || !InOurWorld()) return g_humanTeamOf(human, unused);
+    return kNoTeam;
+}
+
 int g_levelStarts = 0;  // each level's start (a reload too): the people's reports are written again after it
 
 void __cdecl ResetDispositions() {
@@ -2375,6 +2440,12 @@ void guerrilla_people::Init() {
         rfa::Log("Guerrilla men: could not hook the draw actions; a guerrilla in civilian clothes keeps his civilian set when he draws");
     g_resetDispositions = reinterpret_cast<ResetDispositionsFn>(rfa::HookFunction(kResetDispositions, kResetDispositionsPrologue, reinterpret_cast<void*>(&ResetDispositions)));
     if (!g_resetDispositions) rfa::Log("Sides: could not hook the teams' reset; Armageddon's dispositions stay");
+    g_humansAreFriends = reinterpret_cast<HumansAreFriendsFn>(rfa::HookFunction(kHumansAreFriends, kHumansAreFriendsPrologue, reinterpret_cast<void*>(&HumansAreFriends)));
+    if (g_humansAreFriends) rfa::Log("Sides: in Guerrilla's worlds the player and his friends (civilians, guerrillas) can hurt each other, as in Guerrilla");
+    else rfa::Log("Sides: could not hook the friends test; the player can't hurt civilians or guerrillas");
+    g_humanTeamOf = reinterpret_cast<HumanTeamOfFn>(rfa::HookFunction(kHumanTeamOf, kHumanTeamOfPrologue, reinterpret_cast<void*>(&HumanTeamOf)));
+    if (g_humanTeamOf) rfa::Log("Sides: in Guerrilla's worlds the EDF can hurt the EDF, as in Guerrilla");
+    else rfa::Log("Sides: could not hook the team getter; the EDF can't hurt the EDF");
     if (rfa::DetailLog()) {  // a diagnosis only: it changes nothing in the game
         g_humanJump = reinterpret_cast<HumanJumpFn>(rfa::HookFunction(kHumanJump, kHumanJumpPrologue, reinterpret_cast<void*>(&HumanJump)));
         if (!g_humanJump) rfa::Log("Jump: could not hook the jump; a jump turned down isn't written in the log");

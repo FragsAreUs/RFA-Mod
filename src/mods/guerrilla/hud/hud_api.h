@@ -9,6 +9,10 @@
 // ActivityResults, 44 bytes (size, Guerrilla's activity mode, success, the game log's reason, seven numbers).
 int GuerrillaHud_ActivityComplete(const void* results);
 
+// Whether a radio tag pair's M.O.A.B. is on the maps (guerrilla_hud.cpp, "Guerrilla's radio tags": every third tag
+// found shows its own pair's), for guerrilla_campaign's car bomb.
+bool GuerrillaHud_BombShown(int pair);
+
 // Guerrilla's keys (keys.cpp, [GuerrillaKeys]): a number that goes up with each change made in the F7 window.
 int GuerrillaHud_KeysVersion();
 

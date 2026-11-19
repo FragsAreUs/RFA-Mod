@@ -76,6 +76,15 @@ struct GuerrillaCampaignDiversion {
 // The panel's items now, in order: how many were written (at most `most`; Guerrilla's panel holds 8).
 int GuerrillaCampaign_Diversions(GuerrillaCampaignDiversion* items, int most);
 
+// The game's damage for the activities' listeners (Guerrilla's activity_register_damage and _death), from the parts
+// that wrap the game's functions (damage_feeds.cpp has the rest):
+// - guerrilla_vehicles' wrap of the human damage (0x85E0C0), after the game's: its damage record and what it returned
+//   (the damage done); a hit is reported when the victim lives on and is an NPC, as Guerrilla's human_damage does.
+// - guerrilla_world's wrap of a prop's damage (general_mover::apply_damage 0x8CEC80), after the game's: the prop, the
+//   attacker, and its hit points before the hit; its death is reported when they went from above 0 to 0 or less.
+void GuerrillaCampaign_HumanDamaged(const void* record, float done);
+void GuerrillaCampaign_PropDamaged(void* prop, void* attacker, int hitPointsBefore);
+
 // ---- The districts and the campaign's state (campaign_state.cpp)
 
 // For guerrilla_hud's control and morale meters: one district (Guerrilla's MoraleUpdate data item has these). Times
@@ -127,9 +136,13 @@ int GuerrillaCampaign_Alert(float* meter);
 
 // For guerrilla_hud: the next message, 1 if there was one (messages.cpp). *tag is Guerrilla's string tag (a minor
 // message) or tool tip name, *icon the picture shown with a message (null for none), *kind 0 for a minor message, 1
-// for a tool tip, 2 for a minor message whose text takes a number (%d): *ms is a tool tip's time on screen, or kind
-// 2's number. The texts stay valid.
+// for a tool tip, 2 for a minor message whose text takes a number (%d), 3 for a primary message (hud_message_add):
+// *ms is a tool tip's time on screen, or kind 2's number. The texts stay valid.
 int GuerrillaCampaign_NextMessage(const char** tag, const char** icon, int* kind, int* ms);
+
+// The world map's and minimap's M.O.A.B. icon of a radio tag pair (car_bomb.cpp): 0 once that bomb is on a car or
+// spent, and while a car bomb runs or the player sits in an armed car (Guerrilla's cartographer hid them so); else 1.
+int GuerrillaCampaign_BombIconShown(int pair);
 
 // For the people's ambient walkers and the map: whether a point on the ground is inside one of Guerrilla's
 // restricted areas (restricted_areas.cpp); with forAmbientPeople, the areas that let ambient people in don't count.

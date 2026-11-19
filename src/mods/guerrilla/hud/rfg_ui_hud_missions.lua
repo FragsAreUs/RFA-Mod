@@ -16,6 +16,11 @@ local SCREEN_RUNNING = 2					-- the mod's (the campaign's) screen while an activ
 local MODE_DEMOLITIONS_MASTER = 11		-- the campaign's activity modes
 local LUA_ACTIVITY_DEMOLITIONS_TYPE = 6	-- Guerrilla's LUA_ACTIVITY_DEMOLITIONS (its script's)
 local LUA_INVALID_TYPE = 0				-- its LUA_MISSION_ACTIVITY_INVALID
+-- The document's own texts named by Guerrilla's string tags (set in the document, not by its script), which Armageddon's
+-- string tables haven't: Guerrilla's text for each, from the mod, set at the start, so the diversion items its script
+-- clones from the first carry it. (Its other tags, HM_CONVOY_*, HM_SHOTGUN_*, HM_TARGET_*, HM_GOTO_TARGET, are the
+-- convoys' and riding shotgun's panels', for when those kinds come.)
+local DOCUMENT_TAGS = { diversion_millions = "HUD_MILLION" }
 local Thread = -1
 local Shown = ""							-- what was sent last ("" none)
 local Failed = {}
@@ -136,6 +141,13 @@ function rfg_ui_hud_missions_init()
 	local ok, problem = pcall(rfg_ui_hud_missions_guerrilla_init)
 	if not ok then
 		log("Guerrilla's init: " .. tostring(problem))
+	end
+	for name, tag in pairs(DOCUMENT_TAGS) do
+		local handle = vint_object_find(name)
+		local shown = text(tag)
+		if handle ~= 0 and shown ~= "" then
+			vint_set_property(handle, "text_tag", shown)
+		end
 	end
 	-- Nothing shows until an activity runs.
 	call(mission_info, "mission_info", { LUA_INVALID_TYPE, "", "", 0, "", "", "", n = 7 })

@@ -35,7 +35,8 @@
 namespace campaign::activities {
 namespace {
 
-constexpr DWORD kHandle = 0x68, kRagdollSource = 0x778, kRagdoll = 0x794, kLastHitKind = 0xF4C;
+constexpr DWORD kHandle = 0x68, kObjectType = 0x7A, kRagdollSource = 0x778, kRagdoll = 0x794, kLastHitKind = 0xF4C;
+constexpr BYTE kHumanType = 0;  // object_type OT_HUMAN
 constexpr int kByCar = 1, kByLevelObject = 4, kByWorld = 6;  // damaged_by_types
 constexpr int kHostile = 0, kFriendly = 3;                   // human_team_dispositions
 constexpr float kReachSquared = 22500.0f;                   // 150 m, on the ground
@@ -88,6 +89,7 @@ public:
         BYTE* player = static_cast<BYTE*>(Player());
         if (!victim || !player) return;
         const BYTE* human = static_cast<const BYTE*>(victim);
+        if (human[kObjectType] != kHumanType) return;  // a human's death only (the listeners hear vehicles' and props' too)
         const DWORD playerHandle = *reinterpret_cast<const DWORD*>(player + kHandle);
         // Knocked over by the player and killed by a car, an object or the world.
         bool knockedOver = false;

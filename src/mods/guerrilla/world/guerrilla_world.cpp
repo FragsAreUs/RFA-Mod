@@ -136,6 +136,7 @@
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
 #include "world_api.h"
+#include "campaign/campaign_api.h"
 #include "gear/gear_api.h"
 #include "rfa_game.h"
 #include <d3d11.h>
@@ -10624,8 +10625,15 @@ DWORD __fastcall PropDamaged(BYTE* prop, void* unused, float damage, int kind, c
                       kGuerrillaMeleeBuildingScale, damage / kGuerrillaMeleeBuildingScale, damage);
         damage /= kGuerrillaMeleeBuildingScale;
     }
-    if (!g_propLog || !prop || !PropLineLeft())
-        return g_propDamage(prop, unused, damage, kind, a, b, attacker, handle, scale, x, y, z);
+    // Its hit points before the hit: its death goes to the campaign's activities (Guerrilla's general_mover::
+    // apply_damage, RM 0xA8B032, calls activity_register_death when its hit points go from above 0 to 0 or less).
+    const BYTE* propsBefore = prop ? *reinterpret_cast<BYTE* const*>(prop + kObjectProps) : nullptr;
+    const int hitPointsBefore = propsBefore ? *reinterpret_cast<const int*>(propsBefore + kPropsHitpoints) : 0;
+    if (!g_propLog || !prop || !PropLineLeft()) {
+        const DWORD result = g_propDamage(prop, unused, damage, kind, a, b, attacker, handle, scale, x, y, z);
+        GuerrillaCampaign_PropDamaged(prop, attacker, hitPointsBefore);
+        return result;
+    }
     const BYTE* player = LocalPlayer();
     const float* at = reinterpret_cast<const float*>(prop + kObjectPos);
     const float* me = player ? reinterpret_cast<const float*>(player + kObjectPos) : nullptr;
@@ -10634,6 +10642,7 @@ DWORD __fastcall PropDamaged(BYTE* prop, void* unused, float damage, int kind, c
     const BYTE* props = *reinterpret_cast<BYTE* const*>(prop + kObjectProps);
     const int before = close && props ? *reinterpret_cast<const int*>(props + kPropsHitpoints) : 0;
     const DWORD result = g_propDamage(prop, unused, damage, kind, a, b, attacker, handle, scale, x, y, z);
+    GuerrillaCampaign_PropDamaged(prop, attacker, hitPointsBefore);
     if (!close || !InOurWorld()) return result;
     InterlockedIncrement(&g_propLines);
     const DWORD self = *reinterpret_cast<const DWORD*>(prop + kObjectHandle);

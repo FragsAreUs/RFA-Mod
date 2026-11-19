@@ -1509,8 +1509,9 @@ void __cdecl LoadStart() {
 // (spawn_bomb_from_tag: the bomb node's add_icon with MAP_ELEMENT_CARBOMB) and says so
 // (HM_BFTP_SPAWN_BOMB); otherwise it says how many more tags are needed (HM_BFTP_TAG_FOUND for one,
 // HM_BFTP_TAGS_FOUND), each a HUD message for 4 s; here Armageddon's own message line (0x581820, which
-// shows one for 5 s). Not yet: the bomb itself (the item bftp_bomb, which a car drives up to, to start
-// Guerrilla's car bomb activity), the handbook's entry, the tool tips, the sound, the stats.
+// shows one for 5 s). The bomb itself (the item bftp_bomb, which a car drives up to, to start Guerrilla's car bomb
+// activity) is guerrilla_campaign's (car_bomb.cpp: GuerrillaHud_BombShown says which are shown). Not yet: the
+// handbook's entry, the sound, the stats.
 // The tags found are kept in mods\guerrilla_hud\radio_tags_found.txt, one list for every save.
 struct RadioTag {
     bool tag = false;  // a radio tag, else a M.O.A.B.
@@ -3188,6 +3189,7 @@ void ShowMessage(const std::string& text, bool major, float seconds) {
 // the propaganda's diversion icons) is for Guerrilla's control and morale meters, not shown yet (logged). Taken each
 // HUD update in our worlds, at most kCampaignMessagesAFrame.
 constexpr int kCampaignMessageMinor = 0, kCampaignMessageTip = 1, kCampaignMessageCount = 2;
+constexpr int kCampaignMessagePrimary = 3;  // hud_message_add: a primary message (HM_BFTP_GET_A_CAR)
 constexpr int kCampaignMessagesAFrame = 8;
 std::map<std::string, std::string> g_hudMessageTexts;  // Guerrilla's tag -> its text
 
@@ -3279,7 +3281,7 @@ void FollowCampaignMessages() {
             continue;
         }
         const std::string shown = kind == kCampaignMessageCount ? WithNumber(text, ms) : text;
-        ShowMessage(shown, false);
+        ShowMessage(shown, kind == kCampaignMessagePrimary);
         RFA_LOG_DETAIL_FIRST(40, "The campaign's messages: %s%s%s: \"%s\"%s%s", tag, kind == kCampaignMessageCount ? " with " : "",
                       kind == kCampaignMessageCount ? std::to_string(ms).c_str() : "", shown.c_str(),
                       icon ? ", icon " : "", icon ? icon : "");
@@ -4953,12 +4955,14 @@ int __cdecl LuaMapRing(lua_State* L) {
 }
 
 // rfg_map_icon_shown(i) -> whether the i-th line of map_icons.txt is shown now: a M.O.A.B. ("bomb") once
-//   its radio tags are found, everything else always.
+//   its radio tags are found, and while the campaign doesn't hide it (on a car or spent, or a car bomb running:
+//   GuerrillaCampaign_BombIconShown), everything else always.
 int __cdecl LuaMapIconShown(lua_State* L) {
     using namespace rfa::game;
     const int index = static_cast<int>(lua_tonumber(L, 1)) - 1;
     bool shown = index >= 0 && index < static_cast<int>(g_mapIcons.size());
-    if (shown && g_mapIcons[index].kind == "bomb") shown = g_bombsShown.count(g_mapIcons[index].pair) != 0;
+    if (shown && g_mapIcons[index].kind == "bomb")
+        shown = g_bombsShown.count(g_mapIcons[index].pair) != 0 && GuerrillaCampaign_BombIconShown(g_mapIcons[index].pair) != 0;
     lua_pushboolean(L, shown);
     return 1;
 }
@@ -5541,6 +5545,10 @@ int GuerrillaHud_ActivityComplete(const void* results) {
     memcpy(&copy, results, sizeof(copy));
     return AskActivityComplete(copy, false, "the campaign") ? 1 : 0;
 }
+
+// Whether a radio tag pair's M.O.A.B. is on the maps (every third tag found shows its own pair's: see "Guerrilla's
+// radio tags"), for guerrilla_campaign's car bomb, which places the M.O.A.B. itself only then.
+bool GuerrillaHud_BombShown(int pair) { return guerrilla_hud::Running() && g_bombsShown.count(pair) != 0; }
 
 void guerrilla_hud::Init() {
     // Log= also has Guerrilla's HUD scripts write what they find (rfg_ui_*.lua read it themselves).

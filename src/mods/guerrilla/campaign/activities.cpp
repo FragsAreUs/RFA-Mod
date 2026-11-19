@@ -145,7 +145,29 @@ void FollowPlayersVehicle() {
     }
 }
 
-std::unordered_set<DWORD> g_deathsReported;  // each human's death once (Armageddon may call its death again)
+std::unordered_set<DWORD> g_deathsReported;  // each death once (Armageddon may call its human death again)
+
+// The marks (register_mark_object RM 0x770510 into two hash tables, 0x1651370 / 0x1651374, swapped every 20 s by
+// activity_system_do_frame): a hit of 100 or more with the player's doing on either side marks both objects, which
+// then count as the player's until the set they are in is dropped, 20 to 40 s later.
+constexpr float kMarkDamage = 100.0f;
+constexpr int kMarksSwapMs = 20000;
+std::unordered_set<DWORD> g_marks, g_oldMarks;
+int g_marksSwappedAt = -1;
+
+bool Marked(const void* object) {
+    const DWORD handle = HandleOf(object);
+    return g_marks.count(handle) || g_oldMarks.count(handle);
+}
+
+void FollowMarks() {
+    const int now = GameTime();
+    if (g_marksSwappedAt < 0 || now - g_marksSwappedAt >= kMarksSwapMs || now < g_marksSwappedAt) {
+        g_oldMarks.swap(g_marks);
+        g_marks.clear();
+        g_marksSwappedAt = now;
+    }
+}
 
 // ---- The diversions panel (hud_ui_missions_determine_diversion_items RM 0x8C5490 and process_diversion_info
 // 0x8C56A0): each free kind but mission vrail and continuous attack whose interface is RUNNING is listed (8 at most,
@@ -448,6 +470,7 @@ const BaseData* FindBaseData(const std::string& name) {
 bool PlayerControlled(const void* object) {
     const BYTE* player = static_cast<const BYTE*>(Player());
     if (!object || !player) return false;
+    if (Marked(object)) return true;
     const DWORD playerHandle = HandleOf(player);
     switch (TypeOf(object)) {
     case kHumanType:
@@ -473,12 +496,113 @@ int DispositionToPlayer(const void* human) {
     return Disposition(*reinterpret_cast<const int*>(static_cast<const BYTE*>(human) + kTeam), *reinterpret_cast<const int*>(player + kTeam));
 }
 
-void ReportDeath(void* victim, void* killer) {
-    // human_died tells the activities of a non-player human's death (activity_register_death).
-    if (!victim || victim == Player() || TypeOf(victim) != kHumanType) return;
-    if (!g_deathsReported.insert(HandleOf(victim)).second) return;
+// ---- The reports: posted from any thread, told on the main thread
+//
+// Armageddon runs some of its damage and destruction in its physics jobs, on other threads, so each report is
+// posted with the objects' handles and told to the listeners at the next frame of the activities (Update), the
+// objects looked up again by handle (gone by then: left out). Guerrilla told them at once; a frame later changes
+// nothing its rules read.
+enum class Posted { Damage, Death, BuildingDamage, BuildingDestroyed, Explosion, Mark };
+struct Report {
+    Posted kind;
+    DWORD a, b;    // the objects' handles (kNoHandle: none)
+    float x, y;    // the damage; a building's change and its damage before
+};
+CRITICAL_SECTION g_reportsLock;
+bool g_reportsLockMade = false;
+std::vector<Report> g_reports;
+constexpr size_t kMostReports = 4096;  // a frame's at most (more are left out, said once a level)
+bool g_reportsFullSaid = false;
+
+DWORD HandleOrNone(const void* object) { return object ? HandleOf(object) : kNoHandle; }
+
+void Post(Posted kind, const void* a, const void* b, float x = 0.0f, float y = 0.0f) {
+    if (!g_reportsLockMade || !Playing()) return;
+    EnterCriticalSection(&g_reportsLock);
+    if (g_reports.size() < kMostReports) g_reports.push_back({kind, HandleOrNone(a), HandleOrNone(b), x, y});
+    else if (!g_reportsFullSaid) {
+        g_reportsFullSaid = true;
+        rfa::Log("Activities: more than %u damage reports in a frame; the rest left out this frame", static_cast<unsigned>(kMostReports));
+    }
+    LeaveCriticalSection(&g_reportsLock);
+}
+
+// The listeners (Guerrilla's table of four): each told while it isn't disabled or suspended, running or not.
+template <typename Tell>
+void TellListeners(Tell tell) {
     for (Activity* activity : g_activities)
-        if (activity && activity->Listens() && !activity->Disabled()) activity->RegisterDeath(victim, killer);
+        if (activity && activity->Listens() && !activity->Disabled()) tell(*activity);
+}
+
+void* ByHandle(DWORD handle) { return handle != kNoHandle ? ObjectFromHandle(handle) : nullptr; }
+
+void TellReports() {
+    std::vector<Report> reports;
+    if (!g_reportsLockMade) return;
+    EnterCriticalSection(&g_reportsLock);
+    reports.swap(g_reports);
+    LeaveCriticalSection(&g_reportsLock);
+    for (const Report& report : reports) {
+        switch (report.kind) {
+        case Posted::Mark:  // activity_register_damage_mark_objects RM 0x799C60: both, when either is the player's doing
+            if (PlayerControlled(ByHandle(report.a)) || PlayerControlled(ByHandle(report.b))) {
+                if (report.a != kNoHandle) g_marks.insert(report.a);
+                if (report.b != kNoHandle) g_marks.insert(report.b);
+            }
+            break;
+        case Posted::Damage: {
+            // activity_register_damage RM 0x799CA0: both marked when the damage is 100 or more and either is the
+            // player's doing; then the listeners.
+            void* victim = ByHandle(report.a);
+            void* attacker = ByHandle(report.b);
+            if (!victim && !attacker) break;
+            if (report.x >= kMarkDamage && (PlayerControlled(victim) || PlayerControlled(attacker))) {
+                if (report.a != kNoHandle) g_marks.insert(report.a);
+                if (report.b != kNoHandle) g_marks.insert(report.b);
+            }
+            TellListeners([&](Activity& activity) { activity.RegisterDamage(victim, attacker, report.x); });
+            break;
+        }
+        case Posted::Death: {
+            // activity_register_death: from human_died (non-player humans), vehicle_blow_up and a prop's damage.
+            void* victim = ByHandle(report.a);
+            if (!victim || victim == Player() || !g_deathsReported.insert(report.a).second) break;
+            void* killer = ByHandle(report.b);
+            TellListeners([&](Activity& activity) { activity.RegisterDeath(victim, killer); });
+            break;
+        }
+        case Posted::BuildingDamage:
+            if (void* building = ByHandle(report.a))
+                TellListeners([&](Activity& activity) { activity.RegisterBuildingDamage(building, report.x, report.y); });
+            break;
+        case Posted::BuildingDestroyed:
+            if (void* building = ByHandle(report.a)) TellListeners([&](Activity& activity) { activity.RegisterBuildingDestroyed(building); });
+            break;
+        case Posted::Explosion: {
+            void* owner = ByHandle(report.a);
+            TellListeners([&](Activity& activity) { activity.RegisterExplosion(owner); });
+            break;
+        }
+        }
+    }
+}
+
+void MarkObjects(const void* a, const void* b) { Post(Posted::Mark, a, b); }
+void ReportDamage(void* victim, void* attacker, float damage) { Post(Posted::Damage, victim, attacker, damage); }
+void ReportDeath(void* victim, void* killer) { Post(Posted::Death, victim, killer); }
+void ReportBuildingDamage(void* building, float damage, float before) { Post(Posted::BuildingDamage, building, nullptr, damage, before); }
+void ReportBuildingDestroyed(void* building) { Post(Posted::BuildingDestroyed, building, nullptr); }
+void ReportExplosion(void* owner) { Post(Posted::Explosion, owner, nullptr); }
+
+void MissionActivated(int missionMode) {
+    constexpr int kTutorial = 4;  // MISSION_MODE_TUTORIAL
+    if (missionMode != kTutorial) return;
+    // mission_activate_post_save: mayhem killed (when nothing disables it yet) and disabled for good (ADR_MISSION).
+    if (Activity* mayhem = Get(Mayhem)) {
+        rfa::Log("Activities: the Tutorial mission switches mayhem off for good, as Guerrilla's");
+        if (!mayhem->Disabled()) mayhem->KillNow();
+        mayhem->Disable(ByMission);
+    }
 }
 
 void Init() {
@@ -486,6 +610,11 @@ void Init() {
     LoadBaseData();
     Register(MakeDemolitionsMaster());
     Register(MakeKillingSpree());
+    Register(MakeMayhem());
+    Register(MakeCarBomb());
+    InitializeCriticalSection(&g_reportsLock);
+    g_reportsLockMade = true;
+    StartDamageFeeds();
 }
 
 void Enter() {
@@ -500,13 +629,25 @@ void Enter() {
     g_leftVehicleAt = -1;
     g_deathsReported.clear();
     g_diversions.clear();
+    g_marks.clear();
+    g_oldMarks.clear();
+    g_marksSwappedAt = -1;
+    if (g_reportsLockMade) {
+        EnterCriticalSection(&g_reportsLock);
+        g_reports.clear();
+        g_reportsFullSaid = false;
+        LeaveCriticalSection(&g_reportsLock);
+    }
     for (Activity* activity : g_activities)
         if (activity) activity->LevelInit();
+    CarBombEnter();
 }
 
 void Update(float seconds) {
     if (g_cooldown > 0.0f) g_cooldown -= seconds;
     FollowPlayersVehicle();
+    FollowMarks();
+    TellReports();
     // At ORANGE or RED, offered modal activities are withdrawn when none is running (Guerrilla
     // spares Guerrilla Express).
     if (liberation::AlertLevel() >= handles::AlertOrange && g_current == ModeNone)
@@ -514,6 +655,7 @@ void Update(float seconds) {
             if (activity && activity->Modal() && activity->GetMode() != Delivery) activity->Withdraw();
     for (Activity* activity : g_activities)
         if (activity) activity->DoFrame(seconds);
+    CarBombFrame();
     FollowDiversions();
 }
 

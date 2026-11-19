@@ -370,6 +370,14 @@ void Frame() {
     if (++g_frames % 600 == 0) Tidy();
 }
 
+int VehicleTeam(const void* vehicle) {
+    if (!vehicle) return -1;
+    const BYTE* v = static_cast<const BYTE*>(vehicle);
+    const auto seen = g_vehicles.find(HandleOf(v));
+    if (seen != g_vehicles.end() && seen->second.lastDriverTeam == kEdf) return kEdf;
+    return OwnTeam(v);
+}
+
 bool Believes(const void* human, int kind, unsigned about) {
     BYTE* ai = human ? *reinterpret_cast<BYTE* const*>(static_cast<const BYTE*>(human) + kAi) : nullptr;
     if (!ai) return false;

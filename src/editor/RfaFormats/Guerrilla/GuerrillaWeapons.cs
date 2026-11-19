@@ -125,6 +125,14 @@ public static class GuerrillaWeapons
         "amb_spraybottle", "amb_box", "amb_welding_torch", "binoculars", "amb_broom", "amb_data_pad", "wiring_kit", "amb_file_folder",
     ];
 
+    /// <summary>
+    /// Guerrilla's world items its campaign places itself: the M.O.A.B. of its radio tags ("Blast from the Past",
+    /// bftp_bomb: items.vpp_pc's bftp_bomb.str2_pc, the mesh blast_carbomb), which guerrilla_campaign's car_bomb.cpp makes
+    /// at a M.O.A.B.'s place and touches itself (a car within 5 m): its Touch_Script blast_from_the_past is left out
+    /// (Armageddon has no such script), preloaded, as the ambient props.
+    /// </summary>
+    public static readonly string[] CampaignItems = ["bftp_bomb"];
+
     /// <summary>Guerrilla's weapons its world places (GuerrillaPickups): its propane tanks and its singularity bombs' caches.</summary>
     public static readonly string[] PickupWeapons = ["propane_tank", "singularity_bomb"];
 
@@ -437,6 +445,8 @@ public static class GuerrillaWeapons
                 foreach (string line in b.BackpackItem(name)) yield return line;
         foreach (string name in AmbientPropItems)
             foreach (string line in b.AmbientPropItem(name)) yield return line;
+        foreach (string name in CampaignItems)
+            foreach (string line in b.CampaignItem(name)) yield return line;
         // The turrets' parts and their guns drawn as the top, as the vehicles part's turrets name them.
         foreach (string line in b.TurretItems(modFolder)) yield return line;
         // The backpacks' camera shakes (BackpackMedia), which guerrilla_gear plays: into camera_shake.xtbl before it is written.
@@ -1771,6 +1781,19 @@ public static class GuerrillaWeapons
             entry.Element("Touch_Script")?.Remove();
             GuerrillaTableFit.Set(entry, "streaming_category", "General (preloaded)");
             Built.Add($"{name} as {ours} (an ambient prop)");
+        }
+
+        /// <summary>One of the campaign's world items (see <see cref="CampaignItems"/>): its item, with no touch, preloaded.</summary>
+        public IEnumerable<string> CampaignItem(string name)
+        {
+            var notes = new List<string>();
+            string? ours = Item(name, notes);
+            foreach (string note in notes) yield return $"{name}: {note}";
+            if (ours == null) { yield return $"{name}: left out"; yield break; }
+            var entry = items.Entries.First(e => XtblFile.EntryName(e).Equals(ours, StringComparison.OrdinalIgnoreCase));
+            entry.Element("Touch_Script")?.Remove();
+            GuerrillaTableFit.Set(entry, "streaming_category", "General (preloaded)");
+            Built.Add($"{name} as {ours} (the campaign's world item)");
         }
 
         /// <summary>A backpack's model (see <see cref="BackpackItems"/>): its item, with no pickup.</summary>

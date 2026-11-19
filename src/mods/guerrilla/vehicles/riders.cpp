@@ -60,6 +60,7 @@
 #define RFA_MOD_NAME "guerrilla_vehicles"
 #include "rfa_mod.h"
 #include "game.h"
+#include "campaign/campaign_api.h"
 #include <intrin.h>
 #include <cstdio>
 #include <cstring>
@@ -550,12 +551,17 @@ bool RuleToSetAside(const BYTE* damage, BYTE* victim) {
 
 float __cdecl HumanDamage(BYTE* damage) {
     BYTE* victim = damage ? Field<BYTE*>(damage, kVictim) : nullptr;
-    if (!victim || g_setAside.rider || !RuleToSetAside(damage, victim)) return g_humanDamage(damage);
+    if (!victim || g_setAside.rider || !RuleToSetAside(damage, victim)) {
+        const float done = g_humanDamage(damage);
+        GuerrillaCampaign_HumanDamaged(damage, done);  // the activities' listeners (Guerrilla's activity_register_damage)
+        return done;
+    }
     g_setAside = {victim, VehicleOf(victim)};
     *reinterpret_cast<DWORD*>(victim + kInVehicleField) = kNone;
     if (g_hit.victim == victim) g_hit.ruleSetAside = true;
     const float done = g_humanDamage(damage);
     PutBack();  // (if the function stopped before its next call)
+    GuerrillaCampaign_HumanDamaged(damage, done);
     return done;
 }
 
@@ -752,12 +758,14 @@ void StartRiders() {
     g_log = rfa::ReadLogSwitch(L"GuerrillaVehicles", L"RiderLog");
     rfa::Log(g_carjack ? "Carjack: in Guerrilla's world someone whose seat is taken gets out, as Guerrilla's ([GuerrillaVehicles] CarjackAsGuerrilla=1)"
                        : "Carjack: someone whose seat is taken stays in it, as in Armageddon ([GuerrillaVehicles] CarjackAsGuerrilla=0)");
+    // The human damage is wrapped either way: the campaign's activities hear of its hits through it (HumanDamage);
+    // the rider rule inside it follows RiderDamageAsGuerrilla (RuleToSetAside).
+    g_humanDamage = Hook<HumanDamageFn>("the human damage", kHumanDamage, {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x01, 0x00, 0x00},
+                                        reinterpret_cast<void*>(&HumanDamage));
+    if (g_humanDamage)
+        g_copyHitInfo = Hook<CopyHitInfoFn>("the human damage's record copy", kCopyHitInfo, {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC},
+                                            reinterpret_cast<void*>(&CopyHitInfo));
     if (g_asGuerrilla) {
-        g_humanDamage = Hook<HumanDamageFn>("the human damage", kHumanDamage, {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x4C, 0x01, 0x00, 0x00},
-                                            reinterpret_cast<void*>(&HumanDamage));
-        if (g_humanDamage)
-            g_copyHitInfo = Hook<CopyHitInfoFn>("the human damage's record copy", kCopyHitInfo, {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC},
-                                                reinterpret_cast<void*>(&CopyHitInfo));
         rfa::Log(g_humanDamage && g_copyHitInfo
                      ? "Riders: in Guerrilla's world bullets hurt NPCs who sit in a vehicle, as in Guerrilla ([GuerrillaVehicles] RiderDamageAsGuerrilla=1)"
                      : "Riders: the game's human damage isn't as expected; riders keep Armageddon's rule (only a vehicle's end kills them)");

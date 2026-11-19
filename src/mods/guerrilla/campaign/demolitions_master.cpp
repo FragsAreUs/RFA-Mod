@@ -741,6 +741,11 @@ protected:
 
     bool Start() override {
         if (!Activity::Start()) return false;
+        // activity_start RM 0x7AD7C1: mayhem killed and kept off while the challenge runs (ADR_ACTIVITY).
+        if (Activity* mayhem = Get(Mayhem)) {
+            mayhem->KillNow();
+            mayhem->Disable(ByActivity);
+        }
         // finalize_activity_initialization: the inventory swapped for the challenge's weapons.
         for (const Weapon& weapon : level_->weapons) {
             if (IsProp(weapon))
@@ -859,6 +864,8 @@ protected:
     void End() override {
         StopListening();
         Activity::End();
+        // end 0x797AE2 and kill 0x797B32: mayhem allowed again.
+        if (Activity* mayhem = Get(Mayhem)) mayhem->Enable(ByActivity);
     }
 
 private:

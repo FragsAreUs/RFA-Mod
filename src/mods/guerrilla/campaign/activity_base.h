@@ -23,6 +23,7 @@ public:
 
     void Disable(DisableReason reason);  // kills a run that is offered or running
     void Enable(DisableReason reason);
+    void KillNow() { Kill(); }           // activity_kill, whatever its state (a free kind's clears what it gathered)
     void Withdraw() {  // an offered run, no longer offered
         if (state_ == State::Ready) Kill();
     }
@@ -44,6 +45,14 @@ public:
     // RM 0x759DB0, from human_died: the victim and its killer, a human or the object that killed it).
     virtual bool Listens() const { return false; }
     virtual void RegisterDeath(void* victim, void* killer) {}
+    // The other four (register_damage 0x799CA0, register_building_damage 0x759E00, register_building_destroyed
+    // 0x759E70, register_explosion 0x759F20): a hit (the two objects, as the game's damage gave them, and the damage),
+    // a building's new damage (its damage fraction's change since the last report, and the fraction before), a building
+    // counted as destroyed, an explosion (its owner).
+    virtual void RegisterDamage(void* victim, void* attacker, float damage) {}
+    virtual void RegisterBuildingDamage(void* building, float damage, float before) {}
+    virtual void RegisterBuildingDestroyed(void* building) {}
+    virtual void RegisterExplosion(void* owner) {}
     // The diversions panel (hud_ui_missions_process_diversion_info RM 0x8C56A0): the kind's title, a string tag
     // (activity_get_name: get_title), and its text and number (activity_get_ui_text: get_ui_display_info; the number
     // is the time left in ms, the icon flashing under 6 s), false for none.
@@ -100,19 +109,44 @@ void SetCurrentMode(Mode mode);
 // After a modal run ends, no other is offered for a while (Guerrilla's cooldown).
 void StartCooldown();
 
-// activity_register_damage_is_player_controlled (RM 0x785790): whether something was the player's doing: the
-// player; his vehicle, or the one he last drove for 40 s after he left it (while no one else has driven it); a
-// turret he operates; an item he owns. (Guerrilla's marks, an object the player hurt by 100 or more in the last
-// 20-40 s, come with the damage listeners, step 5b.) Armageddon's objects.
+// activity_register_damage_is_player_controlled (RM 0x785790): whether something was the player's doing: an object
+// marked (below); the player; his vehicle, or the one he last drove for 40 s after he left it (while no one else has
+// driven it); a turret he operates; an item he owns. Armageddon's objects.
 bool PlayerControlled(const void* object);
+// The marks (register_mark_object, mark_objects): an object hit by 100 or more with the player's doing on either
+// side counts as the player's for 20-40 s (two sets of handles, the older dropped every 20 s).
+void MarkObjects(const void* a, const void* b);
+// The game's damage, as Guerrilla's dispatchers give it to the listeners (damage_feeds.cpp and the parts' wraps call
+// these): a hit (activity_register_damage: the marks first), a death of anything but the player
+// (activity_register_death), a building's new damage, a building destroyed, an explosion.
+void ReportDamage(void* victim, void* attacker, float damage);
+void ReportBuildingDamage(void* building, float damage, float before);
+void ReportBuildingDestroyed(void* building);
+void ReportExplosion(void* owner);
+// activity_register_damage_get_cost (RM 0x7705C0): what damage to something costs, in millions of credits (mayhem's
+// score; riding shotgun's later): people 0.1, vehicles their table's value, buildings their own value or their size
+// and importance, props their size (mayhem.cpp).
+float DamageCost(const void* object);
+// A mission activated (mission_activate_post_save RM 0x79D7EF), by Guerrilla's mission mode: the Tutorial (4) kills
+// mayhem and disables it for good. For the mission framework (step 14); nothing calls it yet.
+void MissionActivated(int missionMode);
 // Guerrilla's team dispositions (human_teams_get_disposition RM 0xA0D560): how the victim's team takes the
 // player's (0 hostile .. 3 friendly, 4 allied), as Armageddon's table holds them.
 int DispositionToPlayer(const void* human);
-// A human died (district_sources' wrap of Armageddon's human death): each listener is told, once a death.
+// Something died (a human: district_sources' wrap of Armageddon's human death; a vehicle or a prop: damage_feeds.cpp
+// and guerrilla_world's prop wrap): each listener is told, once a death.
 void ReportDeath(void* victim, void* killer);
 
-// Killing spree (killing_spree.cpp).
+// Killing spree (killing_spree.cpp), mayhem (mayhem.cpp), the car bomb with its M.O.A.B.s (car_bomb.cpp: its
+// world items made and touched each frame, CarBombFrame).
 Activity* MakeKillingSpree();
+Activity* MakeMayhem();
+Activity* MakeCarBomb();
+void CarBombEnter();
+void CarBombFrame();
+// The damage feeds (damage_feeds.cpp): Armageddon's vehicle damage and end, the movers' hits, the buildings' damage
+// reports and destruction, the explosions, wrapped once at start-up.
+void StartDamageFeeds();
 
 // Demolitions master (demolitions_master.cpp).
 Activity* MakeDemolitionsMaster();

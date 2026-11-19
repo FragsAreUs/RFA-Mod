@@ -17,7 +17,7 @@ namespace {
 struct Message {
     const char* tag;   // static text: Guerrilla's string tag, or a tool tip's name
     const char* icon;  // static text, or null
-    int kind;          // 0 a minor HUD message, 1 a tool tip, 2 a minor message with a number
+    int kind;          // 0 a minor HUD message, 1 a tool tip, 2 a minor message with a number, 3 a primary message
     int ms;            // a tool tip's time on screen, or kind 2's number
 };
 
@@ -43,6 +43,10 @@ void MinorCount(const char* tag, int count) {
 
 void Tip(const char* name, int ms) {
     if (name) Add({name, nullptr, 1, ms});
+}
+
+void Primary(const char* tag) {
+    if (tag) Add({tag, nullptr, 3, 0});
 }
 
 }  // namespace campaign::messages

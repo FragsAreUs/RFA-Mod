@@ -19,6 +19,10 @@ float PlayerMultiplier();
 // The player is in a tank or a walker: there the alert never falls.
 bool PlayerInTankOrWalker();
 
+// A vehicle's team as Guerrilla's human_teams_get_team gives it: its last driver's when that was the EDF
+// (team_of_most_recent_driver), else the one it is made for (Default_Team, vehicle_teams.txt); -1 none.
+int VehicleTeam(const void* vehicle);
+
 // Whether a person's AI holds a belief of that kind about someone (Guerrilla's ai_belief_types, the
 // same numbers in Armageddon: 0 an enemy, 5 the first contact, someone in sight now).
 bool Believes(const void* human, int kind, unsigned about);

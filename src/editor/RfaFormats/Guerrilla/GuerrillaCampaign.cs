@@ -42,6 +42,9 @@ public static class GuerrillaCampaign
     /// <summary>The buildings that change a district by being destroyed: see <see cref="EdfBuildings"/>.</summary>
     public const string EdfBuildingsFile = "edf_buildings.txt";
 
+    /// <summary>The buildings with a value of their own, for mayhem's score: see <see cref="BuildingValues"/>.</summary>
+    public const string BuildingValuesFile = "building_values.txt";
+
     /// <summary>The campaign's markers, in mods\guerrilla_campaign\: see <see cref="CampaignObjects"/>.</summary>
     public const string CampaignObjectsFile = @"world\campaign_objects.xml";
 
@@ -89,6 +92,41 @@ public static class GuerrillaCampaign
         yield return KillRegions(Path.Combine(guerrilla, "build", "pc", "cache"), campaignFolder);
         yield return CampaignObjects(Path.Combine(guerrilla, "build", "pc", "cache"), guerrillaTables, campaignFolder);
         yield return EdfBuildings(Path.Combine(guerrilla, "build", "pc", "cache"), guerrillaTables, campaignFolder);
+        yield return BuildingValues(Path.Combine(guerrilla, "build", "pc", "cache"), guerrillaTables, campaignFolder);
+    }
+
+    /// <summary>
+    /// The buildings with a value of their own, for the guerrilla_campaign mod's mayhem (its cost of damage,
+    /// activity_register_damage_get_cost, Re-Mars-tered 0x7705C0: a building whose gameplay_properties row has a value,
+    /// in millions of credits, costs that, else its size and importance decide): each of Guerrilla's rfg_movers whose
+    /// row's value isn't -1 (25 rows have one: the EDF's headquarters, power cores, armories, ... and a few others).
+    /// Armageddon's gameplay_properties has no such field, and its reader can merge rows that differ only by it, so
+    /// the value goes by building. A line each: value, Guerrilla's handle, its place (op), the value. A building in a
+    /// zone and again in its p_ file is written once.
+    /// </summary>
+    static string BuildingValues(string guerrillaCache, Packfile guerrillaMisc, string campaignFolder)
+    {
+        if (guerrillaMisc.Find("gameplay_properties.xtbl") is not { } propertiesEntry) return "Building values: Guerrilla's misc.vpp_pc has no gameplay_properties.xtbl; none written";
+        var values = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in XtblFile.FromBytes(guerrillaMisc.Read(propertiesEntry)).Entries)
+            if (float.TryParse(entry.ValueOf("value")?.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float value) && value != -1f)
+                values.TryAdd(XtblFile.EntryName(entry), value);
+        var zones = Packfile.Open(Path.Combine(guerrillaCache, "zonescript_terr01.vpp_pc"));
+        uint moverClass = NameHashes.ClassHash("rfg_mover");
+        var lines = new List<string> { "# The buildings with a value of their own (Guerrilla's gameplay_properties value, millions of credits), for the guerrilla_campaign mod's mayhem (written by editor\\GuerrillaBuilder.exe with the people)" };
+        var written = new HashSet<uint>();
+        static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+        foreach (var entry in zones.Entries.Where(e => e.Name.EndsWith(".rfgzone_pc", StringComparison.OrdinalIgnoreCase))
+                                           .OrderBy(e => e.Name.StartsWith("p_", StringComparison.OrdinalIgnoreCase)).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
+            foreach (var o in GuerrillaZones.Objects(zones.Read(entry)).Where(o => o.ClassHash == moverClass))
+            {
+                if (o.Text("gameplay_props")?.Trim() is not { Length: > 0 } name || !values.TryGetValue(name, out float value)) continue;
+                if (o.Value("op") is not { Length: >= 12 } op || !written.Add(o.Handle)) continue;
+                lines.Add($"value {o.Handle:X8} {F(BitConverter.ToSingle(op, 0))} {F(BitConverter.ToSingle(op, 4))} {F(BitConverter.ToSingle(op, 8))} {F(value)}");
+            }
+        Directory.CreateDirectory(campaignFolder);
+        File.WriteAllLines(Path.Combine(campaignFolder, BuildingValuesFile), lines);
+        return $"Building values: {written.Count} buildings of {values.Count} gameplay properties with a value, in {BuildingValuesFile}";
     }
 
     /// <summary>
@@ -364,7 +402,7 @@ public static class GuerrillaCampaign
 
     public static IEnumerable<string> Remove(string campaignFolder)
     {
-        foreach (string written in new[] { VehicleTeams, RestrictedAreasFile, KillRegionsFile, CampaignObjectsFile, EdfBuildingsFile })
+        foreach (string written in new[] { VehicleTeams, RestrictedAreasFile, KillRegionsFile, CampaignObjectsFile, EdfBuildingsFile, BuildingValuesFile })
         {
             string file = Path.Combine(campaignFolder, written);
             if (!File.Exists(file)) continue;
