@@ -70,12 +70,16 @@ inline const auto lua_pushcclosure = At<void(__cdecl*)(lua_State*, lua_CFunction
 inline const auto lua_pushboolean = At<void(__cdecl*)(lua_State*, int)>(0xD911A0);         // as `rawequal` returns
 inline const auto lua_setfield = At<void(__cdecl*)(lua_State*, int, const char*)>(0xD91620);
 inline const auto luaL_loadbuffer = At<int(__cdecl*)(lua_State*, const char*, size_t, const char*)>(0xD95730);
-inline const auto lua_pcall = At<int(__cdecl*)(lua_State*, int, int, int)>(0xD90FC0);
-inline const auto lua_next = At<int(__cdecl*)(lua_State*, int)>(0xD913C0);
-inline const auto lua_getfield = At<void(__cdecl*)(lua_State*, int, const char*)>(0xD914F0);
-inline const auto lua_pop = At<void(__cdecl*)(lua_State*, int)>(0xD912D0);
-inline const auto lua_rawgeti = At<void(__cdecl*)(lua_State*, int, int)>(0xD915E0);
-inline const auto lua_settop = At<void(__cdecl*)(lua_State*, int)>(0xD91260);
+// These follow lapi.c's order, told apart by what each calls: index2adr (0xD905A0), luaS_newlstr
+// (0xD9E1F0), luaV_gettable (0xD99C00), luaH_getnum (0xD9D790), luaH_next (0xD9CE50), luaD_pcall (0xD947D0).
+inline const auto lua_settop = At<void(__cdecl*)(lua_State*, int)>(0xD904C0);              // the one after lua_gettop: nils up to the new top
+inline const auto lua_getfield = At<void(__cdecl*)(lua_State*, int, const char*)>(0xD91270);  // index2adr, luaS_newlstr, luaV_gettable
+inline const auto lua_rawgeti = At<void(__cdecl*)(lua_State*, int, int)>(0xD91370);        // index2adr, luaH_getnum
+inline const auto lua_pcall = At<int(__cdecl*)(lua_State*, int, int, int)>(0xD91A90);      // index2adr (the error handler), luaD_pcall
+inline const auto lua_next = At<int(__cdecl*)(lua_State*, int)>(0xD91D30);                 // index2adr, luaH_next
+
+// lua_pop is a macro in Lua 5.1, not a function the game has.
+inline void lua_pop(lua_State* L, int n) { lua_settop(L, -n - 1); }
 
 inline void lua_register(lua_State* L, const char* name, lua_CFunction fn) {
     lua_pushcclosure(L, fn, 0);

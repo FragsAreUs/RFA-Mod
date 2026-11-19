@@ -130,26 +130,64 @@ inline void Log(const char* fmt, ...) {
 // "[module:log]" so the console leaves them out: they go to logs\rfa_mods.log only. A mod's narrower
 // switches (DriveLog=, PropLog=, ...) add their own detail lines and need Log=1 too.
 
-// This DLL's switch (one for all of a DLL's source files).
+// A DLL holding one mod has one switch, which its RFAMod_Init reads. A DLL holding several mods, each with its
+// own Log= (rfa_guerrilla.dll's nine parts), has one switch per part. A part's source files all log under the
+// part's name (RFA_MOD_NAME), and they follow that name's switch once a file with that name has read it. A name
+// whose switch nobody read follows the DLL's switch, which is the one read last. That is how rfa_qol.dll's
+// parts all follow [Loader] Log=, which its main file reads.
+
+// The DLL's switch: the one read last, by any of its source files.
 inline bool& DetailLogSwitch() {
     static bool on = false;
     return on;
 }
 
-// Whether this DLL writes its detail lines. Code that does work only to log it checks this first.
-inline bool DetailLog() { return DetailLogSwitch(); }
+// The switch of one name: whether a source file with that name has read it yet, and whether it is on.
+struct LogSwitch {
+    bool read = false;
+    bool on = false;
+};
 
-// Reads Log= in `section` (off when missing) as this DLL's switch, and returns it.
-inline bool ReadLogSwitch(const wchar_t* section) {
-    DetailLogSwitch() = IniInt(section, L"Log", 0) != 0;
-    return DetailLogSwitch();
+// A number for a name (FNV-1a), the same in every source file, so that all the files with one name share one switch.
+constexpr unsigned LogNameKey(const char* name) {
+    unsigned key = 2166136261u;
+    for (; *name; ++name) key = (key ^ static_cast<unsigned char>(*name)) * 16777619u;
+    return key;
 }
 
-// One of a mod's narrower switches (DriveLog=, PropLog=, ...): on only when it and the mod's Log= are.
-// Call after ReadLogSwitch.
+// The switch of the name whose number is Key: one per name in each DLL.
+template <unsigned Key>
+LogSwitch& NamedLogSwitch() {
+    static LogSwitch named;
+    return named;
+}
+
+namespace {
+// The switch of this source file's name (RFA_MOD_NAME).
+inline LogSwitch& OwnLogSwitch() { return NamedLogSwitch<LogNameKey(RFA_MOD_NAME)>(); }
+
+// Whether this source file writes its detail lines: its name's switch once read, else the DLL's. Code that does
+// work only in order to log it checks this first.
+inline bool DetailLog() {
+    const LogSwitch& own = OwnLogSwitch();
+    return own.read ? own.on : DetailLogSwitch();
+}
+
+// Reads Log= in `section` (off when missing) as this file's name's switch, and the DLL's, and returns it.
+inline bool ReadLogSwitch(const wchar_t* section) {
+    LogSwitch& own = OwnLogSwitch();
+    own.on = IniInt(section, L"Log", 0) != 0;
+    own.read = true;
+    DetailLogSwitch() = own.on;
+    return own.on;
+}
+
+// One of a mod's narrower switches (DriveLog=, PropLog=, ...), which is on only when both it and the mod's Log= are.
+// Call it after ReadLogSwitch.
 inline bool ReadLogSwitch(const wchar_t* section, const wchar_t* key) {
     return DetailLog() && IniInt(section, key, 0) != 0;
 }
+}  // namespace
 
 namespace {
 // A routine line for logs\rfa_mods.log, starting with "[RFA_MOD_NAME:log]": written only while this

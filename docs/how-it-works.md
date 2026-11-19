@@ -79,9 +79,10 @@ applied again, so change a command's value there rather than deleting it.
 ```
 src\launcher\             RFAModLauncher.exe: updates your settings files, starts the game, injects the loader
 src\loader\               rfa_loader.dll: loads mods, crash reports, overrides, Lua bridge
-src\mods\<name>\          one folder per mod DLL (guerrilla_gear, guerrilla_hud, guerrilla_people,
-                          guerrilla_vehicles, guerrilla_world, rfa_qol), and a mod's own scripts; rfa_qol\ has a source file for each of
-                          its parts (borderless, console, fov, video_settings)
+src\mods\rfa_qol\         rfa_qol.dll: a source file for each of its parts (borderless, console, fov, ...)
+src\mods\guerrilla\       rfa_guerrilla.dll: rfa_guerrilla.cpp, and a folder for each of its nine parts
+                          (campaign, gear, hud, kiosks, people, save, vehicles, voices, world), with their
+                          own scripts
 src\common\               rfa_mod.h (logging, ini, hooking helpers), rfa_game.h (build check, Lua API)
 src\overrides\            replacements for files inside the game's archives, same layout as the game
 src\editor\RfaFormats\    C# library that reads and writes the game's file formats (no UI)
@@ -112,9 +113,11 @@ Settings are in `rfa_mods.ini`. Everything the launcher, loader and mods do is w
 when its name is set to `0` under `[Mods]`.
 
 **Merged mods**: `borderless.dll`, `console.dll`, `fov.dll` and `video_settings.dll` are now the
-parts of `rfa_qol.dll` (see [rfa_qol](#rfa_qol)). Copying an update over an older install leaves
-the old DLLs in `mods\`, so while `rfa_qol.dll` is there the loader skips them (`kMergedMods` in
-`loader.cpp`) and logs that they can be deleted; otherwise every hook would go in twice.
+parts of `rfa_qol.dll` (see [rfa_qol](#rfa_qol)), and the nine `guerrilla_*.dll` the parts of
+`rfa_guerrilla.dll` (see [rfa_guerrilla](#rfa_guerrilla)). Copying an update over an older install
+leaves the old DLLs in `mods\`, so while the DLL that holds them now is there the loader skips them
+(`kMergedMods` in `loader.cpp`) and logs that they can be deleted; otherwise every hook would go in
+twice.
 
 **Crash reports** (`CrashReports=1` under `[Loader]`): if the game crashes, `logs\rfa_mods.log`
 ends with a `CRASH:` block: the exception, the module+offset it happened in, the registers, and
@@ -208,6 +211,36 @@ DLLs of their own until v0.4.9-beta and work as they did then:
 Its name sorts before `vehicle_spawner.dll`, a community mod that hooks the game's frame update
 (`0x544CB0`), which `console` hooks too. `rfa::HookFunction` copies the function's first bytes as
 they are, so it has to go first: the other hook, placed after it, chains on.
+
+### rfa_guerrilla
+
+`rfa_guerrilla.dll` holds the mods that bring Red Faction: Guerrilla's world and campaign into
+Armageddon: `guerrilla_campaign`, `guerrilla_gear`, `guerrilla_hud`, `guerrilla_kiosks`,
+`guerrilla_people`, `guerrilla_save`, `guerrilla_vehicles`, `guerrilla_voices` and
+`guerrilla_world`, each in a folder of its own in `src\mods\guerrilla\` (`campaign\`, `gear\`, ...).
+They were DLLs of their own until v0.6.6-beta and work as they did then:
+- each has its own settings section in `rfa_mods.ini` (`[GuerrillaCampaign]`, ...) and its own
+  switch under `[Mods]` (`guerrilla_campaign=`, ...), the names the loader used to read for their
+  DLLs, so old settings files need no change. `rfa_guerrilla.cpp`'s `RFAMod_Init` starts each part
+  that is on, in the order the DLLs loaded in (by name), each in a crash guard of its own: a crash
+  while one starts is logged, that part counts as off, and the others still start. It ends with
+  "N of 9 parts running". `[Mods] rfa_guerrilla=0` turns them all off;
+- each logs under its own name, and its routine lines (`[guerrilla_world:log]`, ...) follow its own
+  `Log=`: `rfa_mod.h` keeps one switch for each name a DLL's source files log under;
+- each keeps its data folder in `mods\` (`mods\guerrilla_world\`, ...), which the Guerrilla builder
+  writes;
+- a part calls another through the other's header (`campaign\campaign_api.h`, `gear\gear_api.h`,
+  ...), with one declaration of each function and struct for the compiler to check (they were the
+  DLLs' exports, found by name). While a part is off, what it gives the others answers as its
+  missing DLL did: nothing there (no district, no message, no key, nobody speaks). Each part also
+  has `Running()` (`rfa_guerrilla.h`), for a caller that does something else without it;
+- `RFAMod_Menu` passes the in-game menus to `guerrilla_gear` (its upgrades window) and
+  `guerrilla_hud` (its keys window), each in its own crash guard (a part whose menus crash has
+  them turned off), and `RFAMod_RegisterLua` gives the game's Lua `guerrilla_hud`'s functions and
+  `guerrilla_save`'s.
+
+`build.cmd` compiles each part into a folder of its own (two have a `tables.cpp`), `gear` and `hud`
+with ImGui for their windows, and links them with ImGui's core files once.
 
 ### spawner
 
@@ -824,7 +857,7 @@ documents (elements driven by a Lua script).
   is.
 - Guerrilla's documents and pictures load in Armageddon as they are, but their scripts read game
   data Armageddon doesn't have, so each document gets a script of our own (`mods\guerrilla_hud\`,
-  from `src\mods\guerrilla_hud\`) that drives Guerrilla's elements from Armageddon's data
+  from `src\mods\guerrilla\hud\`) that drives Guerrilla's elements from Armageddon's data
   (`health_hud`) and fades out the parts of Armageddon's HUD it replaces while it is loaded.
 - The mod puts each document in the interface's draw list after loading it, as the console's
   `vint_doc_load` does (a document in no draw list is loaded but never drawn), and keeps it there
@@ -879,7 +912,7 @@ opened and closed with `MapKey=`).
   later, and each person gets Guerrilla's ring (`ui_map_icon_ring`), growing and fading over the
   first third of the sweep. The game's Lua has no math library, so the mod gives it
   `rfg_sin_cos` for where a blip lands on the turned map.
-- What the guerrilla_campaign mod runs shows on Guerrilla's own HUD parts, fed through its exports: the control and
+- What the guerrilla_campaign mod runs shows on Guerrilla's own HUD parts, fed through `campaign_api.h`: the control and
   morale meters when a district's EDF control or morale changes, the district-liberated screen, and an activity's
   briefing, corner panel and results (demolitions master's). Their scripts are Guerrilla's; Guerrilla's game filled
   their data, so the mod gives the same values, Guerrilla's texts included (Armageddon's string tables don't have
@@ -1124,8 +1157,8 @@ skeletons, and their dents.
     and stops close to a target that's standing still so the gunner can shoot.
   - **Unusable vehicle:** on fire, wrecked or flipped, everyone gets out.
 
-  Other mods can hand a crewed vehicle a target with the exported `GuerrillaVehicles_Chase(vehicle,
-  target)` and give it back with `GuerrillaVehicles_Release(vehicle)`.
+  The other parts can hand a crewed vehicle a target with `GuerrillaVehicles_Chase(vehicle, target)`
+  (`vehicles_api.h`) and give it back with `GuerrillaVehicles_Release(vehicle)`.
 - **Convoys** (`convoys.cpp`, `Convoys=`): Guerrilla's EDF convoys, which Armageddon deleted. Every 4 to
   6 s, while no convoy is out, one may start from the end point nearest you that is more than 150 m away
   and whose hours include the time of day. Each end point waits 10 minutes between convoys, and the first
@@ -2078,7 +2111,8 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() { /* install hooks *
   with the mod, with `NDEBUG`, as `build.cmd` does for `rfa_qol`).
 - Add a `cl` line for it to `build.cmd`. Disable a mod with `<name>=0` under `[Mods]`.
 - One DLL can hold several mods, each in a source file of its own with its own `RFA_MOD_NAME`, as
-  `rfa_qol` does: its `<name>.cpp` exports `RFAMod_Init` and starts the parts.
+  `rfa_qol` does: its `<name>.cpp` exports `RFAMod_Init` and starts the parts. `rfa_guerrilla`
+  keeps each part in a folder of its own, with a header for what it gives the others.
 
 ## Building, packaging and releasing
 

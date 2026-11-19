@@ -1907,6 +1907,15 @@ constexpr MergedMod kMergedMods[] = {
     {L"console.dll", L"rfa_qol.dll"},
     {L"fov.dll", L"rfa_qol.dll"},
     {L"video_settings.dll", L"rfa_qol.dll"},
+    {L"guerrilla_campaign.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_gear.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_hud.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_kiosks.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_people.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_save.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_vehicles.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_voices.dll", L"rfa_guerrilla.dll"},
+    {L"guerrilla_world.dll", L"rfa_guerrilla.dll"},
 };
 
 // The DLL among `files` that now holds the mod `file` was, or nullptr.

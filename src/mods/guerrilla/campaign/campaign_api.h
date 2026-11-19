@@ -1,0 +1,121 @@
+// What guerrilla_campaign gives the other parts of rfa_guerrilla.dll (they were its DLL's exports; each is described
+// where it is made, too). While the campaign isn't running (guerrilla_campaign=0 under [Mods]), each answers as
+// its missing DLL did: nothing there (0, false, null, and -1 where -1 says "not known").
+#pragma once
+
+// ---- Activities (activities.cpp), for guerrilla_hud's minimap, world map and screens, and the parts' ambient life
+
+// 1 while an activity or a mission runs (Guerrilla's !activity_none() || mission_is_active()). *activityMode: the
+// current modal kind (Guerrilla's activity_modes: 11 demolitions master, 4 Guerrilla Express, ...; 0 none);
+// *mission: 1 while a mission runs (none is ported yet: 0). All 0 while the campaign's systems rest.
+int GuerrillaCampaign_Running(int* activityMode, int* mission);
+
+// 1 when the activity at a node is completed (its start icon turns grey): the node by Guerrilla's handle, as
+// campaign_objects.xml has it. Only demolitions master keeps progress yet.
+int GuerrillaCampaign_ActivityDone(unsigned node);
+
+// The same by place, for a map icon that knows only where it is (map_icons.txt): the node within 2 m of (x, z) on
+// the ground, or 0.
+int GuerrillaCampaign_ActivityDoneAt(float x, float z);
+
+// What GuerrillaCampaign_Activity fills, for the HUD. The texts are Guerrilla's string tags (or names), valid until
+// the next call.
+struct GuerrillaCampaignActivity {
+    int mode;                // Guerrilla's activity_modes: 11 demolitions master; 0 none
+    int screen;              // 0 none, 1 the briefing (accept or cancel), 2 running (the corner panel), 3 the results (close)
+    const char* title;       // ACT_DEMO_MASTER_NAME
+    const char* subtitle;    // the briefing's (Briefing_Destroy_Message)
+    const char* body;        // the briefing's text (Demo_Info_Body_Text)
+    const char* objective;   // the corner panel's (Corner_HUD_Destroy_Message)
+    const char* timer;       // "mm:ss": the 5 s back into the area, else the time left, else the time so far
+    const char* result;      // the results: the row's Success_String / Failure_String_Time / _Range / _Ammo / _Death
+    const char* failure;     // the results, lost: MENU_YOU_DIED, ACTIVITY_FAIL_OUT_OF_TIME, _LEFT_AREA, _OUT_OF_AMMO
+    const char* weapon[4];   // the briefing's weapons (weapons.xtbl names, or a layer prop's icon); null past the last
+    int ammo[4];             // their rounds (-1: none shown)
+    int timeLimit, parTime;  // seconds (limit 0: none)
+    int bestMs, elapsedMs;   // the best time (0: none yet), this run's
+    int status;              // running: 0, 1 unstable (out of ammo while collapsing), 2 destroyed
+    int success, proTime;    // the results: won; done within the par time
+    int outOfRange;          // running: the 5 s back into the area are counting
+    int salvage;             // the results: salvage given
+};
+
+// The running activity's screen: 1 and *info filled in, or 0 (*info all 0) when none is up.
+int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info);
+
+// The HUD's answer: the briefing, 1 accept or 0 cancel; the results, anything closes them.
+void GuerrillaCampaign_ActivityChoose(int accept);
+
+// The use prompt at the start of one of Guerrilla's activities: its icon (Guerrilla's use_object_icon; 1 the
+// default hand), 0 none. The use key itself the campaign reads.
+int GuerrillaCampaign_UsePrompt();
+
+// A ring on the minimap's ground (CIRCLE_FILLED_OUTLINE).
+struct GuerrillaCampaignMapRing {
+    float x, z, radius;
+    unsigned char r, g, b, a;
+    int inverted;  // shade the outside
+};
+
+// The rings on the minimap's ground now (render_regions): demolitions master's play area, green (50, 200, 50, 80),
+// red (200, 50, 50, 255) while the 5 s back into it are counting, and its target. How many were written.
+int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most);
+
+// ---- The districts and the campaign's state (campaign_state.cpp)
+
+// For guerrilla_hud's control and morale meters: one district (Guerrilla's MoraleUpdate data item has these). Times
+// are the game's clock in milliseconds (-1: never changed); changes counts up with each change of control or morale.
+struct GuerrillaCampaignDistrict {
+    const char* name;  // Guerrilla's ("Dust"); stays valid
+    int index;         // its district_index
+    float control, controlMax, controlBefore;
+    float morale, moraleMax, moraleBefore;
+    float effectiveMorale;  // 0..1, what morale's effects read
+    int liberated;
+    int controlChangedAt, moraleChangedAt;
+    unsigned changes;
+};
+
+// The district (-1: the player's): 1 and *info filled in, or 0 (none there).
+int GuerrillaCampaign_District(int which, GuerrillaCampaignDistrict* info);
+
+// For guerrilla_people's squad levels: a team's progression level, Guerrilla's get_progression_level (RM 0x78CC70):
+// 0 guerrillas and 2 civilians the tech level (0-5), 1 the EDF's progression (0-7, at least the player's district's
+// min_progression_edf), 3 the Marauders' (0-7). Level n is squad_level_(n+1). -1 while the campaign's systems rest.
+int GuerrillaCampaign_ProgressionLevel(int team);
+
+// For guerrilla_gear: whether the district of that name (Guerrilla's, as upgrades.xtbl's District_Liberated names
+// it: "Parker", "Dust", ...) is liberated: 1 yes, 0 not yet, -1 no such district.
+int GuerrillaCampaign_DistrictLiberated(const char* name);
+
+// For guerrilla_save, when it makes a save of one of our worlds: the campaign's state into buffer (room bytes); the
+// bytes written, or the bytes needed when buffer is null (or too small).
+int GuerrillaCampaign_SaveState(unsigned char* buffer, int room);
+
+// For guerrilla_save, when a save of one of our worlds is opened: the state it carried (null, 0: a fresh world, back
+// to Guerrilla's starting values), read again by every system.
+void GuerrillaCampaign_LoadState(const unsigned char* data, int size);
+
+// ---- The rest
+
+// 1 while a demolitions master challenge has swapped the player's weapons for its own (demolitions_master.cpp):
+// guerrilla_gear's hammer top-up should leave his slots alone then.
+int GuerrillaCampaign_KitLocked();
+
+// For guerrilla_save's respawn at a safehouse (district_sources.cpp): called just before it takes the respawn
+// save's campaign state, which already holds the death's morale.
+void GuerrillaCampaign_RespawnSaved();
+
+// For guerrilla_hud: Guerrilla's alert level (0 green, 1 yellow, 2 orange, 3 red) and, in *meter, what its HUD shows
+// of it (0 to 100); -1 while the systems rest (guerrilla_campaign.cpp).
+int GuerrillaCampaign_Alert(float* meter);
+
+// For guerrilla_hud: the next message, 1 if there was one (messages.cpp). *tag is Guerrilla's string tag (a minor
+// message) or tool tip name, *icon the picture shown with a message (null for none), *kind 0 for a minor message, 1
+// for a tool tip, 2 for a minor message whose text takes a number (%d): *ms is a tool tip's time on screen, or kind
+// 2's number. The texts stay valid.
+int GuerrillaCampaign_NextMessage(const char** tag, const char** icon, int* kind, int* ms);
+
+// For the people's ambient walkers and the map: whether a point on the ground is inside one of Guerrilla's
+// restricted areas (restricted_areas.cpp); with forAmbientPeople, the areas that let ambient people in don't count.
+bool GuerrillaCampaign_InRestrictedArea(float x, float z, bool forAmbientPeople);

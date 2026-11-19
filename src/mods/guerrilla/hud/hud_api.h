@@ -1,0 +1,20 @@
+// What guerrilla_hud gives the other parts of rfa_guerrilla.dll (they were its DLL's exports; each is described where
+// it is made, too). While the HUD part isn't running (guerrilla_hud=0 under [Mods]), each answers as its missing DLL
+// did: nothing there (no key, nothing shown).
+#pragma once
+
+// Guerrilla's activity-complete screen, for guerrilla_campaign as one of the two kinds it shows ends (guerrilla_hud.cpp,
+// "Guerrilla's activity-complete screen"): 1 taken (it opens at the next HUD update the game isn't paused), 0 not
+// (one is up or waiting, a mode it doesn't show, or results of another size). results: guerrilla_hud's
+// ActivityResults, 44 bytes (size, Guerrilla's activity mode, success, the game log's reason, seven numbers).
+int GuerrillaHud_ActivityComplete(const void* results);
+
+// Guerrilla's keys (keys.cpp, [GuerrillaKeys]): a number that goes up with each change made in the F7 window.
+int GuerrillaHud_KeysVersion();
+
+// The virtual-key code of one of Guerrilla's keys by its setting's name ("Backpack", "Map", ...); 0 for none or a
+// name not among them.
+int GuerrillaHud_Key(const char* name);
+
+// Raises one of Guerrilla's tool tips by its name (tool_tips.cpp; see tool_tips.h): false if it wasn't queued.
+bool GuerrillaHud_ToolTip(const char* name, int delayMs, const char* icon);

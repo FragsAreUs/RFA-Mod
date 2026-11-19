@@ -88,22 +88,29 @@ rem source file each, in one DLL. The loader skips their old DLLs if an older bu
 cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\mods\rfa_qol\*.cpp" %IMGUI_CORE% /Fe"%OUT%\mods\rfa_qol.dll" /link /IMPLIB:rfa_qol.lib user32.lib psapi.lib dbghelp.lib >> "%LOG%" 2>&1 || goto :fail
 rem live_analysis_mcp.exe: standalone MCP server for live analysis
 cl %CFLAGS% "%ROOT%src\mods\rfa_qol\live_analysis_mcp.cpp" /Fe"%OUT%\live_analysis_mcp.exe" >> "%LOG%" 2>&1 || goto :fail
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_world\guerrilla_world.cpp" /Fe"%OUT%\mods\guerrilla_world.dll" /link /IMPLIB:guerrilla_world.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_hud.dll: Guerrilla's HUD, and its keys' F7 window (ImGui).
-cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\mods\guerrilla_hud\*.cpp" %IMGUI_CORE% /Fe"%OUT%\mods\guerrilla_hud.dll" /link /IMPLIB:guerrilla_hud.lib user32.lib >> "%LOG%" 2>&1 || goto :fail
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_vehicles\*.cpp" /Fe"%OUT%\mods\guerrilla_vehicles.dll" /link /IMPLIB:guerrilla_vehicles.lib >> "%LOG%" 2>&1 || goto :fail
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_people\*.cpp" /Fe"%OUT%\mods\guerrilla_people.dll" /link /IMPLIB:guerrilla_people.lib >> "%LOG%" 2>&1 || goto :fail
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_save\guerrilla_save.cpp" /Fe"%OUT%\mods\guerrilla_save.dll" /link /IMPLIB:guerrilla_save.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_campaign.dll: Guerrilla's alert level (and, being made, the rest of its campaign's systems).
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_campaign\*.cpp" /Fe"%OUT%\mods\guerrilla_campaign.dll" /link /IMPLIB:guerrilla_campaign.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_kiosks.dll: Guerrilla's EDF news kiosks (their screens; the broadcast's voice and music next).
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_kiosks\*.cpp" /Fe"%OUT%\mods\guerrilla_kiosks.dll" /link /IMPLIB:guerrilla_kiosks.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_voices.dll: Guerrilla's NPC voices (personas, lines and their rules; an export to play a line on a person).
-cl %CFLAGS% /LD "%ROOT%src\mods\guerrilla_voices\*.cpp" /Fe"%OUT%\mods\guerrilla_voices.dll" /link /IMPLIB:guerrilla_voices.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_gear.dll: Guerrilla's weapons' room, hammer and movement, and its upgrades' F7 window (ImGui).
-cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\mods\guerrilla_gear\*.cpp" %IMGUI_CORE% /Fe"%OUT%\mods\guerrilla_gear.dll" /link /IMPLIB:guerrilla_gear.lib user32.lib >> "%LOG%" 2>&1 || goto :fail
-rem guerrilla_hud's scripts, which editor\GuerrillaBuilder.exe packs with Guerrilla's HUD documents.
-xcopy /i /y /q "%ROOT%src\mods\guerrilla_hud\*.lua" "%OUT%\mods\guerrilla_hud" >nul || goto :fail
+rem rfa_guerrilla.dll: the mods for Guerrilla's world and campaign, nine parts in one DLL (src\mods\guerrilla\:
+rem campaign, gear, hud, kiosks, people, save, vehicles, voices, world). Each part compiles into a folder of its
+rem own as it did when it was a DLL of its own (two parts have a tables.cpp), gear and hud with ImGui for their
+rem F7 windows; then one link, with ImGui's core files once. The loader skips the parts' old DLLs
+rem (guerrilla_world.dll, ...) if an older build left them in bin\mods.
+set "GUERRILLA=%ROOT%src\mods\guerrilla"
+set "GOBJ=%OBJ%\rfa_guerrilla"
+if exist "%GOBJ%" rd /s /q "%GOBJ%"
+for %%p in (campaign kiosks people save vehicles voices world) do (
+    mkdir "%GOBJ%\%%p"
+    cl %CFLAGS% /I"%GUERRILLA%" /c "%GUERRILLA%\%%p\*.cpp" /Fo"%GOBJ%\%%p\\" >> "%LOG%" 2>&1 || goto :fail
+)
+for %%p in (gear hud) do (
+    mkdir "%GOBJ%\%%p"
+    cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /I"%GUERRILLA%" /c "%GUERRILLA%\%%p\*.cpp" /Fo"%GOBJ%\%%p\\" >> "%LOG%" 2>&1 || goto :fail
+)
+mkdir "%GOBJ%\main"
+cl %CFLAGS% /I"%GUERRILLA%" /c "%GUERRILLA%\rfa_guerrilla.cpp" /Fo"%GOBJ%\main\\" >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /c %IMGUI_CORE% /Fo"%GOBJ%\main\\" >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /LD "%GOBJ%\main\*.obj" "%GOBJ%\campaign\*.obj" "%GOBJ%\gear\*.obj" "%GOBJ%\hud\*.obj" "%GOBJ%\kiosks\*.obj" "%GOBJ%\people\*.obj" "%GOBJ%\save\*.obj" "%GOBJ%\vehicles\*.obj" "%GOBJ%\voices\*.obj" "%GOBJ%\world\*.obj" /Fe"%OUT%\mods\rfa_guerrilla.dll" /link /IMPLIB:rfa_guerrilla.lib user32.lib >> "%LOG%" 2>&1 || goto :fail
+rem guerrilla_hud's scripts, which editor\GuerrillaBuilder.exe packs with Guerrilla's HUD documents (the part's
+rem data folder keeps its old name).
+xcopy /i /y /q "%GUERRILLA%\hud\*.lua" "%OUT%\mods\guerrilla_hud" >nul || goto :fail
 
 popd
 rem overrides\ mirrors the game folder (one folder per archive), so copy the whole tree.

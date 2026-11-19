@@ -115,6 +115,13 @@ file, `mods\rfa_qol.dll`. You can delete the old `borderless.dll`, `console.dll`
 `video_settings.dll` from `mods\`. If you leave them, they're skipped, and your settings for them
 work as before.
 
+Updating from v0.6.6-beta or older: the nine Guerrilla mods are now one file,
+`mods\rfa_guerrilla.dll`. You can delete the old `guerrilla_campaign.dll`, `guerrilla_gear.dll`,
+`guerrilla_hud.dll`, `guerrilla_kiosks.dll`, `guerrilla_people.dll`, `guerrilla_save.dll`,
+`guerrilla_vehicles.dll`, `guerrilla_voices.dll` and `guerrilla_world.dll` from `mods\`, but keep
+the `guerrilla_...` folders next to them: they hold what the Guerrilla builder made from your copy of
+Guerrilla. If you leave the old files, they're skipped, and your settings for them work as before.
+
 ## Play
 
 1. With Steam running, start `RFAModLauncher.exe`.
@@ -136,7 +143,10 @@ work as before.
     and `LargeAddressAware=` (set it to `0` to start the game's own program, with 2 GB);
   - `[Loader]`: crash reports and overrides;
   - `[Mods]`: set a mod to `0` to turn it off. `borderless`, `fov`, `video_settings`, `console`
-    and `spawner` share one file, `mods\rfa_qol.dll`, but each still turns off on its own;
+    and `spawner` share one file, `mods\rfa_qol.dll`, and the nine Guerrilla mods
+    (`guerrilla_campaign`, `guerrilla_gear`, `guerrilla_hud`, `guerrilla_kiosks`,
+    `guerrilla_people`, `guerrilla_save`, `guerrilla_vehicles`, `guerrilla_voices` and
+    `guerrilla_world`) share `mods\rfa_guerrilla.dll`, but each still turns off on its own;
   - one section for each mod: `[Borderless]`, `[FOV]`, `[Console]`, `[GuerrillaWorld]`,
     `[GuerrillaHud]` and `[GuerrillaVehicles]`.
 - **`console.ini`**: console settings applied for you, as `<console name>=<value>`. `[Startup]`

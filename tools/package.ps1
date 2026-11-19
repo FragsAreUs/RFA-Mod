@@ -45,18 +45,26 @@ $parts = @(
     @{ From = 'LICENSE-exception.txt';  To = 'LICENSE-exception.txt' }
 )
 # Our own mods only (those built from src\mods\<name>\, which holds <name>.cpp and perhaps more
-# source files): bin\mods may also hold mods others made with the framework, which aren't ours to
-# ship, and old DLLs of our mods now built into another (borderless.dll, ... into rfa_qol.dll),
-# whose own folders are gone.
+# source files, and rfa_guerrilla.dll, built from src\mods\guerrilla\rfa_guerrilla.cpp and its
+# parts' folders): bin\mods may also hold mods others made with the framework, which aren't ours to
+# ship, and old DLLs of our mods now built into another (borderless.dll, ... into rfa_qol.dll;
+# guerrilla_world.dll, ... into rfa_guerrilla.dll), which have no <name>.cpp of their own there.
 foreach ($dll in Get-ChildItem -LiteralPath (Join-Path $bin 'mods') -Filter '*.dll') {
-    if (-not (Test-Path -LiteralPath (Join-Path $root "src\mods\$($dll.BaseName)\$($dll.BaseName).cpp"))) { continue }
+    $ours = (Test-Path -LiteralPath (Join-Path $root "src\mods\$($dll.BaseName)\$($dll.BaseName).cpp")) -or
+            (Test-Path -LiteralPath (Join-Path $root "src\mods\guerrilla\$($dll.BaseName).cpp"))
+    if (-not $ours) { continue }
     $parts += @{ From = "bin\mods\$($dll.Name)"; To = "mods\$($dll.Name)" }
 }
 # A mod's own scripts (guerrilla_hud's, which GuerrillaBuilder.exe packs with Guerrilla's documents),
-# from src\mods: never bin\mods\<mod>\, which also holds files made from the player's own games.
-foreach ($script in Get-ChildItem -LiteralPath (Join-Path $root 'src\mods') -Recurse -Filter '*.lua' -File) {
-    $mod = $script.Directory.Name
-    $parts += @{ From = "src\mods\$mod\$($script.Name)"; To = "mods\$mod\$($script.Name)" }
+# from src\mods: never bin\mods\<mod>\, which also holds files made from the player's own games. A part
+# of rfa_guerrilla.dll (src\mods\guerrilla\<part>\) keeps its old name for its folder in mods\
+# (guerrilla_<part>\).
+$mods = Join-Path $root 'src\mods'
+foreach ($script in Get-ChildItem -LiteralPath $mods -Recurse -Filter '*.lua' -File) {
+    $from = $script.FullName.Substring($root.Length + 1)
+    $folder = $script.Directory.Name
+    if ($script.Directory.Parent.FullName -eq (Join-Path $mods 'guerrilla')) { $folder = "guerrilla_$folder" }
+    $parts += @{ From = $from; To = "mods\$folder\$($script.Name)" }
 }
 $overrides = Join-Path $root 'src\overrides'
 foreach ($file in Get-ChildItem -LiteralPath $overrides -Recurse -File) {
