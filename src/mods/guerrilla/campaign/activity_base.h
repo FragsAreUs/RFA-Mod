@@ -158,6 +158,16 @@ Activity* MakeKillingSpree();
 Activity* MakeMayhem();
 Activity* MakeCarBomb();
 void CarBombEnter();
+
+// Continuous attack (continuous_attack.cpp): EDF squads sent in waves at a target, by a row of
+// activity_continuous_attack.xtbl (activity_cont_attack_start: false with no target, no such row, or one running), its
+// end, and the script words' changes (attacker_count capped at 15, the squads' sub-group).
+Activity* MakeContinuousAttack();
+bool ContinuousAttackStart(unsigned target, const char* row, const char* who);
+void ContinuousAttackEnd(const char* why);
+void ContinuousAttackSetCount(int count);
+void ContinuousAttackChangeCount(int change);
+void ContinuousAttackSetSubGroup(int group);
 void CarBombFrame();
 // The damage feeds (damage_feeds.cpp): Armageddon's vehicle damage and end, the movers' hits, the buildings' damage
 // reports and destruction, the explosions, wrapped once at start-up.

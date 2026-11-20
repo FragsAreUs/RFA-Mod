@@ -40,6 +40,8 @@
 //     at 10 s or more while it fights or closes in). Below its level, all its squads go.
 //   - A squad taken away: its people on foot walk away and go out of view (the converts' SendAway); its vehicle, and
 //     its people still in it, are taken away once nobody sees them.
+//   - The squads' own making, keeping and letting go are Guerrilla's reinforcement_squad, shared with the continuous
+//     attacks: attack_squads.cpp. Here: the profiles, the places, the caps.
 #define RFA_MOD_NAME "guerrilla_campaign"
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
@@ -47,7 +49,7 @@
 #include "reinforcements.h"
 #include "activities.h"
 #include "alert_sources.h"
-#include "converts.h"
+#include "attack_squads.h"
 #include "handle_kinds.h"
 #include "liberation.h"
 #include "tables.h"
@@ -63,40 +65,14 @@ namespace {
 
 void* const kWorld = reinterpret_cast<void*>(0x1870630);
 using CountFn = int(__fastcall*)(void* world, void* unused);
-using AtFn = BYTE*(__fastcall*)(void* world, void* unused, int index);
 auto const HumanCount = reinterpret_cast<CountFn>(0x43A860);
-auto const HumanAt = reinterpret_cast<AtFn>(0x43A8B0);
-constexpr DWORD kHandle = 0x68, kInVehicle = 0x1160, kAi = 0x174C, kAiSquad = 0x7D4;
+constexpr DWORD kHandle = 0x68, kInVehicle = 0x1160;
 constexpr DWORD kNone = 0xFFFFFFFF;
-constexpr int kEdf = 1;
-using IsDeadFn = bool(__thiscall*)(void* object);
-bool IsDead(BYTE* object) { return reinterpret_cast<IsDeadFn>((*reinterpret_cast<void***>(object))[4])(object); }
 DWORD HandleOf(const BYTE* object) { return *reinterpret_cast<const DWORD*>(object + kHandle); }
-
-// Armageddon's squad-making (the console's drop_squad).
-using SquadDefinitionFn = BYTE*(__cdecl*)(const char* name);
-auto const SquadDefinition = reinterpret_cast<SquadDefinitionFn>(0x50C350);
-using VehicleGroupFn = void*(__cdecl*)(const char* name);
-auto const VehicleGroup = reinterpret_cast<VehicleGroupFn>(0x757340);  // a vehicle_spawn_group_info by name, or null
-using SpawnParametersFn = void(__fastcall*)(BYTE* parameters, void* unused);
-auto const SpawnParameters = reinterpret_cast<SpawnParametersFn>(0x507950);
-using SpawnSquadFn = BYTE*(__fastcall*)(BYTE* parameters, void* unused);
-auto const SpawnSquad = reinterpret_cast<SpawnSquadFn>(0x5080A0);
-constexpr size_t kParametersSize = 0x100;  // 0xB8 used
-constexpr DWORD kPlace = 0x0, kOrientation = 0x10, kDefinition = 0x34, kVehicleGroup = 0x38;
-constexpr DWORD kOrdersType = 0x98, kOrdersTeam = 0x9C, kOrdersPlace = 0xA0, kOrdersTarget = 0xAC;
-constexpr int kAttackOrders = 3;  // Armageddon's orders (0x110212C): Standard 1, Defend 2, Attack 3
+using attack_squads::Squad;
 
 auto const ClosestRoad = reinterpret_cast<BYTE*(__cdecl*)(const float* where, bool special, float within, bool unknown, bool gpsOnly)>(0x7F6E10);
 constexpr DWORD kRoadPointCount = 0x98, kRoadPoints = 0x9C, kRoadPointSize = 28;
-
-using GoToFn = int(__fastcall*)(BYTE* ai, void* unused, const float* place, int movement, int stance, int priority, DWORD cellLow, DWORD cellHigh,
-                                bool flag);
-auto const GoTo = reinterpret_cast<GoToFn>(0x431C20);
-constexpr int kRun = 2, kStanding = 0, kLowPriority = 0;
-constexpr int kFirstContact = 5;
-auto const InView = reinterpret_cast<bool(__cdecl*)(const float* centre, float radius)>(0x768400);
-auto const RemoveObject = reinterpret_cast<int(__fastcall*)(void* world, void* unused, DWORD handle, int flag)>(0x6D56A0);
 auto& g_difficulty = *reinterpret_cast<const int*>(0x10F7E98);  // 0 Easy
 
 constexpr float kFootNear = 80.0f, kFootFar = 160.0f;          // Master_ped_spawn_info
@@ -107,9 +83,6 @@ constexpr int kPeriodMs = 500;
 constexpr int kChaseAgainMs = 4000;
 constexpr int kSpawnTriesMs = 20000;  // a squad that can't be made (its vehicle's model not in) is given up after this
 constexpr int kMostPeople = 80;       // no new squad while the world holds this many people
-constexpr float kTooFar = 325.0f;     // do_frame_spawned: a squad farther than this from the player is taken away
-constexpr int kFirstUseMs = 20000;    // its timer at the spawn (20 s)
-constexpr int kKeepUseMs = 10000;     // kept at least this long while it engages the player or closes on him
 
 // ---- reinforcement_profile.xtbl
 
@@ -165,15 +138,8 @@ const Profile* PickProfile(int alert, int progression, unsigned kind) {
     return nullptr;
 }
 
-// ---- The squads sent
+// ---- The squads sent (attack_squads' Squad: reinforcement_squad)
 
-struct Sent {
-    DWORD squad = kNone;
-    DWORD vehicle = kNone;
-    std::string what;
-    int usefulUntil = 0;         // reinforcement_squad's timer: gone once it runs out while not engaging nor closing
-    float lastDistance2 = 1e30f; // to the player, at the last look (is_closing_to_target)
-};
 struct Allocation {
     int level;
     const char* name;
@@ -183,10 +149,9 @@ struct Allocation {
     int readyAt = 0;      // the game's clock when another profile may be picked
     bool active = false;
     int chasedAt = 0;
-    std::vector<Sent> squads;
+    std::vector<Squad> squads;
 };
 Allocation g_allocations[] = {{handles::AlertOrange, "orange"}, {handles::AlertRed, "red"}};
-std::vector<Sent> g_leaving;  // squads let go whose vehicles (and people in them) go once unseen
 
 bool g_on = true;
 int g_next = 0;
@@ -194,18 +159,6 @@ int g_next = 0;
 float Distance2(const Vector& a, const Vector& b) {
     const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
     return dx * dx + dy * dy + dz * dz;
-}
-
-std::vector<BYTE*> Members(DWORD squad) {
-    std::vector<BYTE*> members;
-    const int count = HumanCount(kWorld, nullptr);
-    for (int i = 0; i < count; ++i) {
-        BYTE* human = HumanAt(kWorld, nullptr, i);
-        if (!human || IsDead(human)) continue;
-        BYTE* ai = *reinterpret_cast<BYTE**>(human + kAi);
-        if (ai && *reinterpret_cast<const DWORD*>(ai + kAiSquad) == squad) members.push_back(human);
-    }
-    return members;
 }
 
 // The EDF's squad nodes as placed (the world build's reinforcement_nodes.txt).
@@ -283,33 +236,12 @@ bool RoadPlace(const Vector& here, float nearest, float farthest, Vector& place)
     return best < 1e30f;
 }
 
-bool IsFlyerGroup(const std::string& group) { return strstr(group.c_str(), "flyer") || strstr(group.c_str(), "Flyer"); }
-
 // One of the profile's squads made: true when made, or when it can't be and is given up.
 bool SpawnOne(Allocation& a, BYTE* player, const SquadInfo& info) {
     const std::string name = g_difficulty == 0 && !info.casual.empty() ? info.casual : info.squad;
-    BYTE* definition = SquadDefinition(name.c_str());
-    if (!definition) {
-        RFA_LOG_FIRST(16, "Reinforcements (%s): no squad %s in squads.xtbl; skipped", a.name, name.c_str());
-        return true;
-    }
-    void* group = nullptr;
-    std::string groupName;
-    if (!info.group.empty()) {
-        groupName = "rfg_" + info.group;  // the world build's names for Guerrilla's groups
-        group = VehicleGroup(groupName.c_str());
-        if (!group) {
-            groupName = info.group;
-            group = VehicleGroup(groupName.c_str());
-        }
-        if (!group) {
-            RFA_LOG_FIRST(16, "Reinforcements (%s): no vehicle group %s; %s comes on foot", a.name, info.group.c_str(), name.c_str());
-            groupName.clear();
-        }
-    }
     const Vector here = PositionOf(player);
     Vector place{};
-    const bool inVehicle = group != nullptr;
+    const bool inVehicle = attack_squads::GroupExists(info.group);
     const float nearest = inVehicle ? kVehicleNear : kFootNear, farthest = inVehicle ? kVehicleFar : kFootFar;
     const char* where = "a squad node";
     if (inVehicle || !NodePlace(here, nearest, farthest, place)) {
@@ -324,111 +256,47 @@ bool SpawnOne(Allocation& a, BYTE* player, const SquadInfo& info) {
         }
     }
     RFA_LOG_DETAIL_FIRST(40, "Reinforcements (%s): %s comes from %s", a.name, name.c_str(), where);
-    if (inVehicle && IsFlyerGroup(info.group)) place.y += kFlyerHeight;
-    alignas(8) BYTE parameters[kParametersSize] = {};
-    SpawnParameters(parameters, nullptr);
-    *reinterpret_cast<Vector*>(parameters + kPlace) = place;
-    // Facing the player (the matrix's rows: right, up, forward).
-    float fx = here.x - place.x, fz = here.z - place.z;
-    const float length = sqrtf(fx * fx + fz * fz);
-    fx = length > 0.01f ? fx / length : 0.0f;
-    fz = length > 0.01f ? fz / length : 1.0f;
-    const float orientation[9] = {fz, 0.0f, -fx, 0.0f, 1.0f, 0.0f, fx, 0.0f, fz};
-    memcpy(parameters + kOrientation, orientation, sizeof(orientation));
-    *reinterpret_cast<BYTE**>(parameters + kDefinition) = definition;
-    *reinterpret_cast<void**>(parameters + kVehicleGroup) = group;
-    *reinterpret_cast<int*>(parameters + kOrdersType) = kAttackOrders;
-    *reinterpret_cast<int*>(parameters + kOrdersTeam) = kEdf;
-    *reinterpret_cast<Vector*>(parameters + kOrdersPlace) = here;
-    *reinterpret_cast<DWORD*>(parameters + kOrdersTarget) = HandleOf(player);
+    if (inVehicle && attack_squads::IsFlyerGroup(info.group)) place.y += kFlyerHeight;
     // Its members take the Reinforcement EDF set's weapons at the EDF's level (Guerrilla's squad_flags.reinforcement_squad;
-    // guerrilla_people's squad levels): named for the squads made now, and by its handle for members made later.
-    GuerrillaPeople_NextSquadsSet("Reinforcement EDF");
-    BYTE* squad = SpawnSquad(parameters, nullptr);
-    GuerrillaPeople_NextSquadsSet(nullptr);
-    if (squad) GuerrillaPeople_SquadSet(HandleOf(squad), "Reinforcement EDF");
-    if (!squad) {
+    // guerrilla_people's squad levels).
+    attack_squads::Order order;
+    order.squad = name;
+    order.group = inVehicle ? info.group : std::string();
+    order.place = place;
+    order.target = HandleOf(player);
+    order.weaponSet = "Reinforcement EDF";
+    order.who = a.name;
+    Squad squad;
+    std::string why;
+    const attack_squads::Made made = attack_squads::Make(order, squad, why);
+    if (made == attack_squads::Made::Failed) {
+        RFA_LOG_FIRST(16, "Reinforcements (%s): %s; skipped", a.name, why.c_str());
+        return true;
+    }
+    if (made == attack_squads::Made::Wait) {
         const int now = GameTime();
         if (a.tryingSince < 0) a.tryingSince = now;
         if (now - a.tryingSince < kSpawnTriesMs) return false;  // its vehicle's model may still be streaming in
-        rfa::Log("Reinforcements (%s): the game made no %s%s%s at (%.0f, %.0f, %.0f) in %d s; given up", a.name, name.c_str(), groupName.empty() ? "" : " in ",
-                 groupName.c_str(), place.x, place.y, place.z, kSpawnTriesMs / 1000);
+        rfa::Log("Reinforcements (%s): %s at (%.0f, %.0f, %.0f) in %d s; given up", a.name, why.c_str(), place.x, place.y, place.z, kSpawnTriesMs / 1000);
         return true;
     }
-    Sent sent;
-    sent.squad = HandleOf(squad);
-    sent.what = name + (groupName.empty() ? std::string(" on foot") : " in " + groupName);
-    sent.usefulUntil = GameTime() + kFirstUseMs;
-    a.squads.push_back(sent);
-    rfa::LogDetail("Reinforcements (%s, %s): %s from (%.0f, %.0f, %.0f), %.0f m away, attacking the player", a.name, a.profile->name.c_str(), sent.what.c_str(),
+    a.squads.push_back(squad);
+    rfa::LogDetail("Reinforcements (%s, %s): %s from (%.0f, %.0f, %.0f), %.0f m away, attacking the player", a.name, a.profile->name.c_str(), squad.what.c_str(),
              place.x, place.y, place.z, sqrtf(Distance2(place, here)));
     return true;
 }
 
-// Its squad's vehicle, once one of its members sits in one.
-void FindVehicle(Sent& sent, const std::vector<BYTE*>& members) {
-    if (sent.vehicle != kNone) return;
-    for (BYTE* member : members) {
-        const DWORD vehicle = *reinterpret_cast<const DWORD*>(member + kInVehicle);
-        if (vehicle != kNone) {
-            sent.vehicle = vehicle;
-            return;
-        }
-    }
-}
-
-// A squad let go: its people on foot walk off and go, its vehicle (with whoever is in it) goes once unseen.
-void LetGo(Sent& sent) {
-    const std::vector<BYTE*> members = Members(sent.squad);
-    FindVehicle(sent, members);
-    for (BYTE* member : members)
-        if (*reinterpret_cast<const DWORD*>(member + kInVehicle) == kNone) converts::SendAway(HandleOf(member));
-    if (sent.vehicle != kNone) g_leaving.push_back(sent);
-}
-
 void Release(Allocation& a, const char* why) {
     if (!a.squads.empty()) rfa::Log("Reinforcements (%s): %u squads let go (%s)", a.name, static_cast<unsigned>(a.squads.size()), why);
-    for (Sent& sent : a.squads) LetGo(sent);
+    for (Squad& squad : a.squads) attack_squads::LetGo(squad);
     a.squads.clear();
     a.profile = nullptr;
     a.next = 0;
     a.tryingSince = -1;
 }
 
-// The vehicles of squads let go, taken away (with the people still in them) once nobody sees them: out of view and
-// 60 m away, or 300 m away.
-void RetireLeaving(BYTE* player) {
-    const Vector here = PositionOf(player);
-    for (size_t i = 0; i < g_leaving.size();) {
-        Sent& sent = g_leaving[i];
-        const BYTE* vehicle = static_cast<const BYTE*>(ObjectFromHandle(sent.vehicle));
-        if (!vehicle) {
-            g_leaving.erase(g_leaving.begin() + i);
-            continue;
-        }
-        const Vector at = PositionOf(vehicle);
-        const float d2 = Distance2(at, here);
-        if (d2 > 300.0f * 300.0f || (d2 > 60.0f * 60.0f && !InView(&at.x, 5.0f))) {
-            for (BYTE* member : Members(sent.squad))
-                if (*reinterpret_cast<const DWORD*>(member + kInVehicle) == sent.vehicle) RemoveObject(kWorld, nullptr, HandleOf(member), 0);
-            RemoveObject(kWorld, nullptr, sent.vehicle, 0);
-            g_leaving.erase(g_leaving.begin() + i);
-            continue;
-        }
-        ++i;
-    }
-}
-
 void Chase(Allocation& a, BYTE* player) {
-    const DWORD playerHandle = HandleOf(player);
-    const Vector here = PositionOf(player);
-    for (const Sent& sent : a.squads)
-        for (BYTE* member : Members(sent.squad)) {
-            if (*reinterpret_cast<const DWORD*>(member + kInVehicle) != kNone) continue;
-            if (alert_sources::Believes(member, kFirstContact, playerHandle)) continue;
-            BYTE* ai = *reinterpret_cast<BYTE**>(member + kAi);
-            if (ai) GoTo(ai, nullptr, &here.x, kRun, kStanding, kLowPriority, kNone, kNone, false);
-        }
+    for (const Squad& squad : a.squads) attack_squads::Chase(squad, player);
 }
 
 void FrameAllocation(Allocation& a, BYTE* player, int level, bool allowed, int now) {
@@ -440,36 +308,25 @@ void FrameAllocation(Allocation& a, BYTE* player, int level, bool allowed, int n
         return;
     }
     a.active = true;
-    // reinforcement_squad::do_frame_spawned: a squad with nobody left is done; one farther than 325 m from the player,
-    // or one that neither engages him nor closes on him once its timer has run out, is taken away (and the next wave
-    // comes nearer).
-    const DWORD playerHandle = HandleOf(player);
-    const Vector here = PositionOf(player);
+    // reinforcement_squad::do_frame_spawned (attack_squads' Follow): a squad with nobody left is done; one farther than
+    // 325 m from the player, or one that neither engages him nor closes on him once its timer has run out, is taken
+    // away (and the next wave comes nearer).
     for (size_t i = 0; i < a.squads.size();) {
-        Sent& sent = a.squads[i];
-        const std::vector<BYTE*> members = Members(sent.squad);
-        if (members.empty()) {
-            RFA_LOG_DETAIL_FIRST(60, "Reinforcements (%s): %s is gone", a.name, sent.what.c_str());
+        Squad& squad = a.squads[i];
+        const std::vector<BYTE*> members = attack_squads::Members(squad.squad);
+        if (const char* gone = attack_squads::Gone(squad, members, now)) {
+            RFA_LOG_DETAIL_FIRST(60, "Reinforcements (%s): %s is done (%s)", a.name, squad.what.c_str(), gone);
+            attack_squads::LetGo(squad);  // what's left of it (its vehicle, its squad object) freed
             a.squads.erase(a.squads.begin() + i);
             continue;
         }
-        FindVehicle(sent, members);
-        float d2 = 1e30f;
-        bool engaging = false;
-        for (BYTE* member : members) {
-            const float d = Distance2(PositionOf(member), here);
-            d2 = d < d2 ? d : d2;
-            engaging = engaging || alert_sources::Believes(member, kFirstContact, playerHandle);
+        if (members.empty()) {  // its people still to come
+            ++i;
+            continue;
         }
-        const bool closing = d2 < sent.lastDistance2 - 1.0f;
-        sent.lastDistance2 = d2;
-        if (engaging || closing) {
-            if (sent.usefulUntil < now + kKeepUseMs) sent.usefulUntil = now + kKeepUseMs;
-        }
-        const char* why = d2 > kTooFar * kTooFar ? "farther than 325 m" : now >= sent.usefulUntil ? "neither fighting nor coming closer" : nullptr;
-        if (why) {
-            RFA_LOG_DETAIL_FIRST(60, "Reinforcements (%s): %s taken away (%s)", a.name, sent.what.c_str(), why);
-            LetGo(sent);
+        if (const char* why = attack_squads::Follow(squad, members, now)) {
+            RFA_LOG_DETAIL_FIRST(60, "Reinforcements (%s): %s taken away (%s)", a.name, squad.what.c_str(), why);
+            attack_squads::LetGo(squad);
             a.squads.erase(a.squads.begin() + i);
             continue;
         }
@@ -540,7 +397,6 @@ void Enter() {
         a.readyAt = 0;
         a.active = false;
     }
-    g_leaving.clear();
     g_next = 0;
 }
 
@@ -554,7 +410,6 @@ void Frame() {
     const int level = liberation::AlertLevel();
     const bool allowed = !activities::AnyRunning();  // Guerrilla's test of 0x2229590 and its switch 0x22295CB
     for (Allocation& a : g_allocations) FrameAllocation(a, player, level, allowed, now);
-    RetireLeaving(player);
 }
 
 }  // namespace campaign::reinforcements

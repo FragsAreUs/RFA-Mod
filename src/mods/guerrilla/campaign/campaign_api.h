@@ -58,6 +58,12 @@ int GuerrillaCampaign_TakePlayerDeath();
 // handed back (GuerrillaCampaign_LoadState) can't say it (2026-11-19 21:26: a fresh campaign's first retry).
 void GuerrillaCampaign_ReloadedAtSpot();
 
+// For guerrilla_save, at the first gameplay step after one of our worlds opened (fresh, from a slot, a respawn's or a
+// reload's save), once the save's state has been given back: Guerrilla's level_init ran on every load, so the campaign
+// starts its level again at its next frame (every part's Enter: what one level held, its squads, its continuous attack,
+// gone). Without this, a reload from memory, which restarts neither the game's clock nor the player, left them running.
+void GuerrillaCampaign_WorldOpened();
+
 // Guerrilla's activity-complete screen's answer (guerrilla_hud's CloseActivityComplete, delivery.cpp): 1 its first
 // hint (CONTINUE after a win, RETRY after a loss), 2 its second (RETRY after a won Transporter, EXIT after a loss).
 void GuerrillaCampaign_ActivityCompleteChoose(int choice);

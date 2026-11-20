@@ -326,12 +326,53 @@ public static class GuerrillaCampaign
                 xml.Append("</object>\n");
             }
         }
+        // Guerrilla's spawn regions (object_spawn_region, OT 23): where a continuous attack's squads appear
+        // (activity_continuous_attack_data::find_local_spawn_region RM 0x77FED0 takes any in the world, 50-350 m from the
+        // player; its only check is the distance). Those of the world's zones, and those of each activity's layers
+        // (activities.vpp_pc: an area defense's, a Transporter's), which are in the world only while that activity's
+        // layers are: each with its layer (the activity's name, "-" for the world's). Only their place matters.
+        uint spawnRegionClass = NameHashes.ClassHash("object_spawn_region");
+        int worldRegions = 0, layerRegions = 0;
+        void WriteRegion(GuerrillaZoneObject o, string zone, string layer)
+        {
+            if (!written.Add(o.Handle)) return;
+            var at = PlaceOf(o);
+            xml.Append($"<object><class>object_spawn_region</class><handle>{o.Handle:X8}</handle><parent>{o.Parent:X8}</parent><zone>{zone}</zone>")
+               .Append($"<pos>{F(at.X)} {F(at.Y)} {F(at.Z)}</pos>\n")
+               .Append($"  <property><name>layer</name><value>{Escape(layer)}</value></property>\n</object>\n");
+        }
+        foreach (var entry in zoneEntries)
+        {
+            string guerrillaZone = Path.GetFileNameWithoutExtension(entry.Name);
+            string zone = "rfg_" + guerrillaZone[(guerrillaZone.LastIndexOf("terr01_", StringComparison.OrdinalIgnoreCase) + "terr01_".Length)..];
+            foreach (var o in objectsOf[entry.Name].Where(o => o.ClassHash == spawnRegionClass))
+            {
+                WriteRegion(o, zone, "-");
+                worldRegions++;
+            }
+        }
+        if (File.Exists(Path.Combine(guerrillaCache, "activities.vpp_pc")))
+        {
+            var activities = Packfile.Open(Path.Combine(guerrillaCache, "activities.vpp_pc"));
+            foreach (var entry in activities.Entries.Where(e => e.Name.EndsWith(".str2_pc", StringComparison.OrdinalIgnoreCase)))
+            {
+                string activity = Path.GetFileNameWithoutExtension(entry.Name);
+                var inner = activities.OpenContainer(entry);
+                foreach (var layer in inner.Entries.Where(e => e.Name.EndsWith(".layer_pc", StringComparison.OrdinalIgnoreCase)))
+                    foreach (var o in GuerrillaZones.LayerObjects(inner.Read(layer)).Where(o => o.ClassHash == spawnRegionClass))
+                    {
+                        WriteRegion(o, "-", activity);
+                        layerRegions++;
+                    }
+            }
+        }
         xml.Append("</objects>\n");
         string file = Path.Combine(campaignFolder, CampaignObjectsFile);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.WriteAllText(file, xml.ToString(), new System.Text.UTF8Encoding(false));
         return $"Campaign markers: {written.Count} in {CampaignObjectsFile} ({string.Join(", ", counts.Select(c => $"{c.Value} {c.Key}"))}; " +
-               $"{demoMasterCentre.Count} demolitions master areas centred by their layer)" +
+               $"{demoMasterCentre.Count} demolitions master areas centred by their layer; spawn regions: {worldRegions} in the world's zones, " +
+               $"{layerRegions} in activities' layers)" +
                (unnamed > 0 ? $"; {unnamed} properties the schema doesn't name left out" : "");
     }
 

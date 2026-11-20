@@ -989,8 +989,8 @@ void RunTransitionCells() {  // each second in our worlds: zones streamed in sin
 // worlds as in Guerrilla, see MatchGuerrillaAvoidTime). The budget stays the game's.
 //
 // The check walks the same cells as the game's search (the start's and goal's cells by the game's own lookup, 0x5B9AA0;
-// from edge midpoint to edge midpoint, a step dropped once its way so far plus 0.75 x its straight distance to the goal
-// passes the budget), by the search's own rules (the A* 0x5BE3B0): it goes on only through a cell's neighbours (a
+// from edge midpoint to edge midpoint, a step dropped once its way so far plus 0.75 x the straight distance to the goal
+// from where the way entered the cell it leaves passes the budget), by the search's own rules (the A* 0x5BE3B0): it goes on only through a cell's neighbours (a
 // missing one is a wall, 0x5BE538), walks no further from a cell with flag 0x08 (switched off) or 0x04 though either can
 // be the goal (the goal is tested first, 0x5BE461), and walks through every other cell (0x10 included). It adds none of
 // the search's costs (x 1.01 and + 0.5 m a step on some cells, 0x5BE5E5), so it never finds less than the game's would.
@@ -1130,9 +1130,15 @@ struct WalkResult {
 };
 
 // The shortest walk from a place in one cell to a place in another over the loaded zones' people's cells, by edge
-// midpoints and the game's search's rules (above). With a budget, a step whose way so far plus 0.75 x its straight
-// distance to the goal passes it is dropped (the game's search's rule); without one (budget 0), the walk is measured up
-// to kLongestWalkLogged.
+// midpoints and the game's search's rules (above). With a budget, a step whose way so far plus 0.75 x the straight
+// distance to the goal from where the way entered the cell it leaves passes it is dropped (the game's search's rule);
+// without one (budget 0), the walk is measured up to kLongestWalkLogged.
+// The cell it leaves, not the one it enters (2026-11-20, the activities session's continuous attack test in Dust,
+// 00:21:05: "Failed pathfind ... from: nch: 0x00007a000020009b, pos (-319.4, 7.4, -1431.5) to: nch: 0x00007a0000200640,
+// pos (-228.1, 17.5, -1296.4)", 163 m straight, a walk of 349.1 m against the person's budget of 350 m). The walk measured
+// the distance from the next edge, nearer the goal than the one before, so it reached the goal within the budget where
+// the search (0x5BE666: the current cell's stored distance) drops the last steps. The step onto the goal's cell also
+// carries the way on to the goal, as the search's does (0x5BE615-0x5BE62D).
 // The same walk over every loaded zone's people's layer (2026-11-13, the user's Oasis run: "Failed pathfind ... from
 // (1246.0, 34.0, 768.9) to (1321.3, 1.9, 788.4)" and "Pathfinding ran out of nav heap objects": a squad's chase of
 // 77 m straight whose walk is 395 m, past the game's budget of 266 m; the walk above stopped at the zone's edge,
@@ -1172,22 +1178,28 @@ WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goa
         return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
     };
     if (!LayerOf(startCell) || !LayerOf(goalCell)) { result.undecided = true; return result; }
+    // Per cell: the shortest way to it (with where that way enters it) and, kept apart, the smallest straight distance
+    // to the goal from any place a way entered it. The search keeps a cell's way and place together and its distance
+    // from its first entry (0x5DAE90: the distance stored on the cell's first visit, its way and place lowered later), so
+    // each of these is never more than the search's own.
     std::unordered_map<const BYTE*, float> best;
     std::unordered_map<const BYTE*, std::array<float, 3>> at;
+    std::unordered_map<const BYTE*, float> toGoal;
     using Entry = std::pair<float, const BYTE*>;  // the step's estimate (way so far + straight to the goal), its cell
     std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
     best[startCell] = 0;
     at[startCell] = {start[0], start[1], start[2]};
-    open.push({Distance(start, goal), startCell});
+    toGoal[startCell] = Distance(start, goal);
+    open.push({toGoal[startCell], startCell});
     const float limit = budget > 0 ? budget : kLongestWalkLogged;
     while (!open.empty()) {
         const auto [estimate, cell] = open.top();
         open.pop();
         const float way = best[cell];
-        if (estimate > way + Distance(at[cell].data(), goal) + 0.01f) continue;  // an older, longer step to this cell
+        if (estimate > way + toGoal[cell] + 0.01f) continue;  // an older step to this cell
         if (cell == goalCell) {
             result.reached = true;
-            result.length = way + Distance(at[cell].data(), goal);
+            result.length = way;  // its last step's way to the goal included
             return result;
         }
         if (cell[kCellFlags] & kCellNotWalkedThrough) continue;  // the search walks no further from it (it can still be the goal)
@@ -1219,13 +1231,23 @@ WalkResult WalkAcross(const BYTE* startCell, const float* start, const BYTE* goa
                     for (int c = 0; c < 3; ++c) through[c] += Vertex(*nextLayer, next, b)[c];
             }
             for (int c = 0; c < 3; ++c) through[c] /= static_cast<float>(shared);
-            const float wayThere = way + Distance(at[cell].data(), through);
-            if (auto known = best.find(next); known != best.end() && known->second <= wayThere) continue;
-            const float straight = Distance(through, goal);
-            if (wayThere + (budget > 0 ? 0.75f * straight : 0) > limit) continue;  // past the budget (the game's rule)
-            best[next] = wayThere;
-            at[next] = {through[0], through[1], through[2]};
-            open.push({wayThere + straight, next});
+            // The step, as the search measures it: to the shared edge, and on into the goal on the goal's cell (0x5BE615);
+            // past the budget once the way there plus 0.75 x the straight distance from where it entered this cell to
+            // the goal passes it (0x5BE658-0x5BE67C: this cell's distance, not the next one's).
+            const float straight = next == goalCell ? 0.0f : Distance(through, goal);
+            const float wayThere = way + Distance(at[cell].data(), through) + (next == goalCell ? Distance(through, goal) : 0.0f);
+            if (wayThere + (budget > 0 ? 0.75f * toGoal[cell] : 0) > limit) continue;  // past the budget (the game's rule)
+            const auto known = best.find(next);
+            const auto knownToGoal = toGoal.find(next);
+            const bool shorter = known == best.end() || wayThere < known->second;
+            const bool nearer = knownToGoal == toGoal.end() || straight < knownToGoal->second;
+            if (!shorter && !nearer) continue;
+            if (shorter) {
+                best[next] = wayThere;
+                at[next] = {through[0], through[1], through[2]};
+            }
+            if (nearer) toGoal[next] = straight;
+            open.push({best[next] + toGoal[next], next});
         }
     }
     return result;
@@ -1252,11 +1274,14 @@ bool OutOfReach(BYTE* human, BYTE* startCell, const float* from, BYTE* goalCell,
     // (0x5C1129 → 0x5BCCD0 → 0x5BD200 → 0x5BDF60), so a person's search is capped at 350 m.
     const float budget = SearchBudget(startCell, from, goalCell, goal, false, false);
     if (!(budget > 0)) return false;
-    const WalkResult withinBudget = WalkAcross(startCell, from, goalCell, goal, budget);
+    // Walked the way the search walks it: from the goal back to the one asking (0x5BE3DF starts at the request's +0x20
+    // cell and +0x14 place, the far end's, 0x5BD36D; it ends at +0x10, the asker's cell, 0x5BE461, and its distances are
+    // to +4, the asker's place). The rule above takes the distance of the cell a step leaves, so the way matters.
+    const WalkResult withinBudget = WalkAcross(goalCell, goal, startCell, from, budget);
     if (withinBudget.reached || withinBudget.undecided) return false;
     ++g_goalsTurnedDown;
     if (g_goalsTurnedDown <= 64 || g_goalsTurnedDown % 100 == 0) {
-        const WalkResult walk = WalkAcross(startCell, from, goalCell, goal, 0);
+        const WalkResult walk = WalkAcross(goalCell, goal, startCell, from, 0);
         const float dx = goal[0] - from[0], dz = goal[2] - from[2];
         BYTE* squad = SquadOfNpc(human);
         char walked[64];

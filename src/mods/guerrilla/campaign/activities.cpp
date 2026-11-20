@@ -616,6 +616,7 @@ void Init() {
     Register(MakeKillingSpree());
     Register(MakeMayhem());
     Register(MakeCarBomb());
+    Register(MakeContinuousAttack());
     InitializeCriticalSection(&g_reportsLock);
     g_reportsLockMade = true;
     StartDamageFeeds();

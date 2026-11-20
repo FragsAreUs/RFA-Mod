@@ -15,7 +15,7 @@
 // 30 m of a target at 3 m/s or less it stops and lets the gunner shoot (chase_target_hold_position, looked
 // at again every 1 to 3.5 s; it drives again once the target is above 9 m/s or 30 m away). The roads are
 // used only beyond 75 m; it stops 3 m short. On fire, wrecked or flipped: everyone out. A target gone or
-// 250 m away: the chase is over.
+// 250 m away (a handed chase's own distance, GuerrillaVehicles_ChaseWithin): the chase is over.
 #define RFA_MOD_NAME "guerrilla_vehicles"
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
@@ -241,7 +241,7 @@ ChaseResult ChaseFrame(Crew& crew, Chase& chase, BYTE* vehicle) {
     const bool targetMoving = targetVehicle && targetSpeed > 3.0f;
     const V3 me = Pos(vehicle);
     const float away = FlatDistance(me, at);
-    if (away > 250.0f) return ChaseResult::Lost;
+    if (away > chase.giveUp) return ChaseResult::Lost;
     Track(crew, vehicle);
     YieldDriver(crew, vehicle);
     const bool gunner = Gunner(crew, vehicle) != nullptr;
@@ -336,13 +336,16 @@ void ChasesFrame() {
 
 using namespace gv;
 
-// For the other parts (the people part's Marauder ambushes): from the next frame on, the vehicle's driver (an
-// NPC in seat 0) chases the target as above, the other occupants keeping their own AI. False if the vehicle
-// or target isn't there, or nobody but the player drives it. Call on the game's thread.
-bool GuerrillaVehicles_Chase(DWORD vehicleHandle, DWORD targetHandle) {
-    if (!guerrilla_vehicles::Running()) return false;
+// For the other parts (the people part's Marauder ambushes, the campaign's attacks): from the next frame on,
+// the vehicle's driver (an NPC in seat 0) chases the target as above, the other occupants keeping their own AI.
+// False if the vehicle or target isn't there, the vehicle isn't a car (the chase drives on the ground: a flyer
+// or a walker keeps its own AI), or nobody but the player drives it. Call on the game's thread.
+// The chase gives up beyond `giveUpMeters` from the target (GuerrillaVehicles_Chase: 250 m, the ambushes').
+bool GuerrillaVehicles_ChaseWithin(DWORD vehicleHandle, DWORD targetHandle, float giveUpMeters) {
+    if (!guerrilla_vehicles::Running() || !(giveUpMeters > 0)) return false;
     BYTE* vehicle = VehicleByHandle(kWorld, nullptr, vehicleHandle);
     if (!vehicle || !ObjectByHandle(kWorld, nullptr, targetHandle)) return false;
+    if (VehicleSubtype(vehicle, nullptr) != kAutomobile) return false;
     BYTE* driver = SeatOccupant(vehicle, 0);
     if (!driver || driver == Player()) return false;
     g_handed.erase(std::remove_if(g_handed.begin(), g_handed.end(), [&](const Handed& h) { return h.crew.vehicle == vehicleHandle; }), g_handed.end());
@@ -352,9 +355,22 @@ bool GuerrillaVehicles_Chase(DWORD vehicleHandle, DWORD targetHandle) {
     for (int seat = 1; seat < Seats(vehicle); ++seat)
         if (BYTE* human = SeatOccupant(vehicle, seat)) handed.crew.people.push_back({Handle(human), *reinterpret_cast<const int*>(human + kManagement)});
     handed.chase.target = targetHandle;
+    handed.chase.giveUp = giveUpMeters;
     g_handed.push_back(handed);
-    RFA_LOG_DETAIL_FIRST(40, "Crews: a crew of %u was handed a chase", static_cast<unsigned>(handed.crew.people.size()));
+    RFA_LOG_DETAIL_FIRST(40, "Crews: a crew of %u was handed a chase (given up beyond %.0f m)", static_cast<unsigned>(handed.crew.people.size()), giveUpMeters);
     return true;
+}
+
+bool GuerrillaVehicles_Chase(DWORD vehicleHandle, DWORD targetHandle) {
+    return GuerrillaVehicles_ChaseWithin(vehicleHandle, targetHandle, 250.0f);
+}
+
+// True while a vehicle handed over with GuerrillaVehicles_Chase(Within) still chases. A chase ends by itself when
+// the target is gone or past its give-up distance (the vehicle given back), when the crew gets out to fight, or
+// when nobody can drive; a caller that wants it chasing again once it's close hands it over again.
+bool GuerrillaVehicles_Chasing(DWORD vehicleHandle) {
+    if (!guerrilla_vehicles::Running()) return false;
+    return std::any_of(g_handed.begin(), g_handed.end(), [&](const Handed& h) { return h.crew.vehicle == vehicleHandle; });
 }
 
 // Gives a vehicle handed over with GuerrillaVehicles_Chase back to the game now.

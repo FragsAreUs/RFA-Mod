@@ -770,6 +770,40 @@ void* __fastcall MakeAutomobilePool(void* pool, void*) {
     return MakePool(pool, g_automobileBuffer, sizeof(g_automobileBuffer), FillAutomobilePool, kAutomobiles);
 }
 
+// A squad's vehicle (object_squad::spawn_vehicle 0x80AC90: riding squads, the campaign's attacks) is refused when its
+// kind's pool is full: 0x80B040 (cdecl, the vehicle's table entry; its kind at +0xC: 0 automobile, 1 flyer, 2 walker)
+// compares the world's count (0x610DC0, 0x477250, 0x610E80: thiscall on the world) with Armageddon's own pool sizes
+// written into it, 16, 8 and 4. With the cars' pool at kAutomobiles the 16 stopped every squad's car once traffic and
+// parked cars made 16 (found 2026-11-19: the world held 20, every attack's car squad refused). The same rule, with the
+// cars' pool as it is now; flyers and walkers keep their pools (8 and 4).
+constexpr DWORD kSquadVehicleRoomFull = 0x80B040;
+using WorldCountFn = int(__fastcall*)(void* world, void* unused);
+auto const WorldAutomobiles = reinterpret_cast<WorldCountFn>(0x610DC0);
+auto const WorldFlyers = reinterpret_cast<WorldCountFn>(0x477250);
+auto const WorldWalkers = reinterpret_cast<WorldCountFn>(0x610E80);
+constexpr int kGameFlyers = 8, kGameWalkers = 4;
+void* const kTheWorld = reinterpret_cast<void*>(0x1870630);
+
+bool __cdecl SquadVehicleRoomFull(const BYTE* vehicle) {
+    switch (*reinterpret_cast<const int*>(vehicle + 0xC)) {
+    case 0: return WorldAutomobiles(kTheWorld, nullptr) >= kAutomobiles;
+    case 1: return WorldFlyers(kTheWorld, nullptr) >= kGameFlyers;
+    case 2: return WorldWalkers(kTheWorld, nullptr) >= kGameWalkers;
+    default: return false;
+    }
+}
+
+void MakeRoomForSquadsVehicles() {
+    // Its compares: cmp eax,10h at 0x80B058, cmp eax,8 at 0x80B079, cmp eax,4 at 0x80B09A.
+    const BYTE* code = reinterpret_cast<const BYTE*>(kSquadVehicleRoomFull);  // code[0x18] is 0x80B058
+    const bool asExpected = code[0] == 0x55 && code[1] == 0x8B && code[2] == 0xEC && code[0x18] == 0x83 && code[0x1A] == 0x10 &&
+                            code[0x3B] == 0x08 && code[0x5C] == 0x04;
+    if (asExpected && rfa::ReplaceFunction(kSquadVehicleRoomFull, reinterpret_cast<void*>(&SquadVehicleRoomFull)))
+        rfa::Log("Cars: a squad's car is refused only once the world holds %d (the game's check said %d)", kAutomobiles, kGameAutomobiles);
+    else rfa::Log("Cars: the squads' vehicle check (0x%08lX) isn't as expected; a squad's car is refused once the world holds %d", kSquadVehicleRoomFull,
+                  kGameAutomobiles);
+}
+
 // The vehicle records: the start-up code builds the records (0xF29510: the array constructor 0x422890,
 // stdcall (array, 0x1C bytes, 84, the record's constructor 0x75FD20)), then the vehicle resource pool
 // on them (0xF29550: 0x7650F0, thiscall (pool, 84, the records, 16, the streamed list)).
@@ -804,12 +838,13 @@ void MakeRoomForVehiclesInTheWorld() {
     // 0x5F980B and the count 16 at 0x5F981F; both are checked before the constructor is replaced.
     const DWORD carBuffer = rfa::CodeValue(kAutomobileBufferSize);
     const int carCount = CodeByte(kAutomobileCount);
-    if (carBuffer == 0x5DED9 && carCount == kGameAutomobiles && rfa::ReplaceFunction(kAutomobilePoolMake, reinterpret_cast<void*>(&MakeAutomobilePool)))
+    if (carBuffer == 0x5DED9 && carCount == kGameAutomobiles && rfa::ReplaceFunction(kAutomobilePoolMake, reinterpret_cast<void*>(&MakeAutomobilePool))) {
         rfa::Log("Cars: the game holds %d at once (its own %d, Guerrilla's %d): its pool's constructor (0x%08lX, which pushed %d and a "
                  "buffer of %lu bytes) replaced by one on a buffer of the mod's, %lu KB",
                  kAutomobiles, kGameAutomobiles, gv::kGuerrillaCars, kAutomobilePoolMake, carCount, carBuffer,
                  static_cast<unsigned long>(sizeof(g_automobileBuffer) / 1024));
-    else rfa::Log("Cars: the pool's constructor isn't as expected (it pushes %d and a buffer of 0x%lX, not %d and 0x5DED9); the game keeps its %d",
+        MakeRoomForSquadsVehicles();
+    } else rfa::Log("Cars: the pool's constructor isn't as expected (it pushes %d and a buffer of 0x%lX, not %d and 0x5DED9); the game keeps its %d",
                   carCount, carBuffer, kGameAutomobiles, kGameAutomobiles);
 
     // The records' constructor (push the record's constructor, push 54h, push 1Ch, push the records)

@@ -252,6 +252,8 @@ bool g_blockPending = false;
 bool g_loadPending = false;                 // the next gameplay step gives the campaign its state:
 bool g_loadFresh = false;                   //   (null, 0), or
 std::vector<unsigned char> g_blockToLoad;   //   this save's block
+bool g_worldOpenedPending = false;          // one of our worlds opened: the next gameplay step tells the campaign
+                                            // (GuerrillaCampaign_WorldOpened), as a reload restarts neither clock nor player
 
 std::vector<std::string> g_worlds;
 
@@ -834,11 +836,13 @@ void NoteKit() {
 void __cdecl GameplayStep() {
     StepRespawn();
     StepReload();
-    bool load = false, fresh = false, giveKit = false;
+    bool load = false, fresh = false, giveKit = false, opened = false;
     std::vector<unsigned char> block;
     Kit kit;
     {
         std::lock_guard<std::mutex> hold(g_blockLock);
+        opened = g_worldOpenedPending;
+        g_worldOpenedPending = false;
         if (g_loadPending) {
             g_loadPending = false;
             load = true;
@@ -865,6 +869,9 @@ void __cdecl GameplayStep() {
             }
         }
     }
+    // After the state is given back: the campaign starts the level again at this step's script frame (Guerrilla's
+    // level_init runs at every load; what runs in the world, a continuous attack among it, starts over).
+    if (opened && InGuerrillaWorld() && CampaignThere()) GuerrillaCampaign_WorldOpened();
     g_gameplayStep();
     AddCampaignBlock();
     EquipHeldGun();
@@ -921,9 +928,11 @@ int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool f
         g_kitPending = false;
         g_equipSlot = -1;
         g_aliveKitTaken = false;  // noted again once he is alive in the world opened
+        g_worldOpenedPending = false;
         if (fresh && name && LevelIsOurs(name)) {
             g_loadPending = true;
             g_loadFresh = true;
+            g_worldOpenedPending = true;
         }
     }
     if (!fresh && name && name[0] == 0) {
@@ -942,6 +951,7 @@ int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool f
                      hasKit ? (", and a respawn's weapons: " + KitText(kit)).c_str() : "");
             {
                 std::lock_guard<std::mutex> hold(g_blockLock);
+                g_worldOpenedPending = true;
                 if (hasBlock) {
                     g_loadPending = true;
                     g_loadFresh = false;

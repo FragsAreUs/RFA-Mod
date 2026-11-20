@@ -9,6 +9,8 @@
 #include "rfa_mod.h"
 #include "script_words.h"
 #include "activities.h"
+#include "activity_base.h"
+#include "handle_kinds.h"
 #include "liberation.h"
 
 namespace campaign::words {
@@ -184,6 +186,20 @@ void __cdecl ActivityDisableDiversions(Args args) {
 // (Guerrilla also starts a raid when the node is a raid node: not ported until raids are.)
 void __cdecl ActivitySpawn(Args) { activities::Reinstate(activities::ByScript, false); }
 
+// ---- Continuous attacks (continuous_attack.cpp; Guerrilla's Action_callback_continuous_attack_* RM 0xB22510...)
+
+// (target, cont_atttack_type): the row by its name.
+void __cdecl ContinuousAttackStartWord(Args args) {
+    activities::ContinuousAttackStart(AsObject(args[0]), handles::NameOf(handles::Named::ContinuousAttack, AsHandle(args[1])), "a script");
+}
+void __cdecl ContinuousAttackEndWord(Args) { activities::ContinuousAttackEnd("a script's continuous_attack_end"); }
+void __cdecl ContinuousAttackSetAttackerCount(Args args) { activities::ContinuousAttackSetCount(AsInt(args[0])); }
+void __cdecl ContinuousAttackChangeAttackerCount(Args args) { activities::ContinuousAttackChangeCount(AsInt(args[0])); }
+void __cdecl ContinuousAttackSetSpawnGroup(Args args) { activities::ContinuousAttackSetSubGroup(AsInt(args[0])); }
+// Guerrilla's add_priority_spawn and remove_priority_spawn set a spawn region's flag that nothing of its reads: the same
+// here, nothing.
+void __cdecl ContinuousAttackPrioritySpawn(Args) {}
+
 // ---- The words
 
 const Word kWords[] = {
@@ -193,13 +209,13 @@ const Word kWords[] = {
     {Kind::Action, "activity_set_spawn", {{Bool}, 1}, Void, Callback(&ActivitySetSpawn)},
     {Kind::Action, "activity_spawn", {{Object}, 1}, Void, Callback(&ActivitySpawn)},
     {Kind::Action, "asd_setup_bomber", {{Object, Object, Object, Object, Object}, 5}, Void, nullptr},
-    {Kind::Action, "continuous_attack_add_priority_spawn", {{ObjectList}, 1}, Void, nullptr},
-    {Kind::Action, "continuous_attack_change_attacker_count", {{Number}, 1}, Void, nullptr},
-    {Kind::Action, "continuous_attack_end", {{}, 0}, Void, nullptr},
-    {Kind::Action, "continuous_attack_remove_priority_spawn", {{ObjectList}, 1}, Void, nullptr},
-    {Kind::Action, "continuous_attack_set_attacker_count", {{Number}, 1}, Void, nullptr},
-    {Kind::Action, "continuous_attack_set_spawn_group", {{Number}, 1}, Void, nullptr},
-    {Kind::Action, "continuous_attack_start", {{Object, Handle}, 2}, Void, nullptr},
+    {Kind::Action, "continuous_attack_add_priority_spawn", {{ObjectList}, 1}, Void, Callback(&ContinuousAttackPrioritySpawn)},  // nothing in Guerrilla
+    {Kind::Action, "continuous_attack_change_attacker_count", {{Number}, 1}, Void, Callback(&ContinuousAttackChangeAttackerCount)},
+    {Kind::Action, "continuous_attack_end", {{}, 0}, Void, Callback(&ContinuousAttackEndWord)},
+    {Kind::Action, "continuous_attack_remove_priority_spawn", {{ObjectList}, 1}, Void, Callback(&ContinuousAttackPrioritySpawn)},  // nothing in Guerrilla
+    {Kind::Action, "continuous_attack_set_attacker_count", {{Number}, 1}, Void, Callback(&ContinuousAttackSetAttackerCount)},
+    {Kind::Action, "continuous_attack_set_spawn_group", {{Number}, 1}, Void, Callback(&ContinuousAttackSetSpawnGroup)},
+    {Kind::Action, "continuous_attack_start", {{Object, Handle}, 2}, Void, Callback(&ContinuousAttackStartWord)},
     {Kind::Action, "continuous_support_end", {{ObjectList}, 1}, Void, nullptr},
     {Kind::Action, "continuous_support_start", {{ObjectList, Number}, 2}, Void, nullptr},
     {Kind::Action, "continuous_support_update", {{ObjectList, Object, Number}, 3}, Void, nullptr},

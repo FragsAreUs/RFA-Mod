@@ -44,6 +44,7 @@
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
 #include "campaign_api.h"
+#include <atomic>
 #include "rfa_game.h"
 #include "campaign.h"
 #include "script_engine.h"
@@ -62,6 +63,7 @@
 #include "guerrilla_squads.h"
 #include "alert_orders.h"
 #include "reinforcements.h"
+#include "attack_squads.h"
 #include "difficulty.h"
 
 namespace campaign {
@@ -80,6 +82,7 @@ int g_inOurWorld = -1;      // last frame's answer (-1 before the first)
 bool g_playing = false;     // in one of our worlds with the player there: the systems run
 bool g_activities = false;  // [GuerrillaCampaign] Activities=
 int g_lastClock = 0;        // the game's clock at the last frame
+std::atomic<bool> g_worldOpened{false};  // GuerrillaCampaign_WorldOpened: the level starts again at the next frame
 
 // The game's frame time, in seconds (Guerrilla's Frametime): read by some 580 places, among them
 // the game clock's update each frame (0x5411D2, passed to 0x51FC10).
@@ -101,6 +104,9 @@ void __cdecl ScriptFrame() {
     const bool playing = ours && Player() != nullptr;
     const int clock = GameTime();
     if (clock < g_lastClock) g_playing = false;  // the clock began again: another level
+    // A world of ours opened again (guerrilla_save's GuerrillaCampaign_WorldOpened, after the save's state was given
+    // back): a reload from memory restarts neither the clock nor the player, so it says so (Guerrilla's level_init).
+    if (g_worldOpened.exchange(false)) g_playing = false;
     if (playing && !g_playing) {
         liberation::Enter();
         alert_sources::Enter();
@@ -113,6 +119,7 @@ void __cdecl ScriptFrame() {
         guerrilla_squads::Enter();
         alert_orders::Enter();
         reinforcements::Enter();
+        attack_squads::Enter();
         if (g_activities) activities::Enter();
     }
     g_playing = playing;
@@ -130,6 +137,7 @@ void __cdecl ScriptFrame() {
         guerrilla_squads::Frame();
         alert_orders::Frame();
         reinforcements::Frame();
+        attack_squads::Frame();
         liberation::Update(seconds);
         if (g_activities) activities::Update(seconds);
     }
@@ -237,4 +245,10 @@ int GuerrillaCampaign_Alert(float* meter) {
     if (!guerrilla_campaign::Running() || !g_playing) return -1;
     if (meter) *meter = liberation::AlertMeter();
     return liberation::AlertLevel();
+}
+
+// For guerrilla_save: one of our worlds opened again (see campaign_api.h): the level starts again at the next frame.
+void GuerrillaCampaign_WorldOpened() {
+    if (!guerrilla_campaign::Running()) return;
+    campaign::g_worldOpened = true;
 }

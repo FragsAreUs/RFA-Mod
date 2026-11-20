@@ -65,6 +65,7 @@ struct Chase {
     int sideUntil = -1, holdCheck = -1, lostSince = -1;
     V3 targetLast{}, targetVelocity{};
     int targetTime = -1;
+    float giveUp = 250.0f;  // farther from the target than this (flat metres), the chase is over
 };
 enum class ChaseResult { Chasing, OnFoot, Lost, Over };
 // One frame of Guerrilla's chase for the crew's driver (the gunner, if any, fires on its own): OnFoot once
