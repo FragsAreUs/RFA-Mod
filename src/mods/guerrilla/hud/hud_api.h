@@ -9,6 +9,17 @@
 // ActivityResults, 44 bytes (size, Guerrilla's activity mode, success, the game log's reason, seven numbers).
 int GuerrillaHud_ActivityComplete(const void* results);
 
+// The results GuerrillaHud_ActivityComplete takes (44 bytes): Guerrilla's hud_ui_activity_complete_start(mode, success),
+// the game log's reason for a failure, and the numbers its kind's loader read.
+struct GuerrillaHudActivityResults {
+    int size;           // sizeof, 44
+    int mode;           // Guerrilla's activity mode: 1 vehicle rail (Collateral Damage), 4 delivery (Transporter)
+    int success;        // 1 won, 0 failed
+    int reason;         // a failure's gamelog_complete_reasons (2 died, 4 out of time, ... 12 not enough damage), else 0
+    float numbers[7];   // Transporter: the pro, target, best (0 for none) and your times, in ms; Collateral Damage:
+                        // the goal, soldiers, structures, vehicles, score, deaths and total, in millions
+};
+
 // Whether a radio tag pair's M.O.A.B. is on the maps (guerrilla_hud.cpp, "Guerrilla's radio tags": every third tag
 // found shows its own pair's), for guerrilla_campaign's car bomb.
 bool GuerrillaHud_BombShown(int pair);

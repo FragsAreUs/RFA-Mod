@@ -103,6 +103,7 @@ struct Screen {
     bool hasTarget = false, targetDown = false;
     Vector target{};
     float targetRadius = 0.0f;
+    std::string distance;              // running: the distance to the end (Transporter's corner panel), "" none
 };
 
 }  // namespace campaign::activities

@@ -71,6 +71,43 @@ local function hide_armageddon_hud(hide)
 	end
 end
 
+-- The screen's own animation, mc_logo_bg_anim_1: the blocks, the dust and the hints fading in (mc_hints_main_alpha_twn_1,
+-- at 1.9 s for 0.5 s; Guerrilla's init sets the hints' alpha to 0). Guerrilla's interface played a document's
+-- animations as it loaded it (its script disables the two it doesn't want, complete_anim and fail_anim, and nothing
+-- names this one); Armageddon's doesn't, so the hints never came up (2026-11-19: no key prompts, so no way to know Esc
+-- retries a won Transporter). Started at the init as Guerrilla's script starts complete_anim: from now, its tweens running.
+local INTRO_ANIMATION = "mc_logo_bg_anim_1"
+local Intro_start = 0				-- the document's time the screen's animations count from
+
+local function play_intro()
+	Intro_start = vint_get_time_index(vint_document_find("rfg_ui_activity_complete"))
+	local anim = vint_object_find(INTRO_ANIMATION)
+	if anim == nil or anim == 0 then
+		log("no " .. INTRO_ANIMATION .. " in the document: its hints stay hidden")
+		return
+	end
+	vint_set_property(anim, "start_time", Intro_start)
+	vint_set_child_tween_state(anim, TWEEN_STATE_RUNNING)
+end
+
+-- fail_anim: its one tween (fail_stamp_alpha_out) fades the FAILED stamp out at 4.47 s, for 0.5 s, and the reason line
+-- under it (mc_mission_subtext: YOU LEFT THE VEHICLE, ...) shows. Guerrilla's activity_complete sets it waiting
+-- (TWEEN_STATE_IDLE) when a Transporter or Collateral Damage failed with a reason, and Guerrilla's interface then played
+-- it from the screen's start; Armageddon's doesn't (2026-11-19 21:26: "...ICLE" behind the stamp). Started so after
+-- each of its activity_complete calls (send_complete: it sets it waiting again each time, the keys' coming in among
+-- them), always from the screen's start, so its timing stays as Guerrilla's.
+local FAIL_ANIMATION = "fail_anim"
+
+local function play_fail()
+	local anim = vint_object_find(FAIL_ANIMATION)
+	if anim == nil or anim == 0 then
+		log("no " .. FAIL_ANIMATION .. " in the document: the reason stays under the stamp")
+		return
+	end
+	vint_set_property(anim, "start_time", Intro_start)
+	vint_set_child_tween_state(anim, TWEEN_STATE_RUNNING)
+end
+
 -- ActivityComplete as Guerrilla's process_activity_information filled it: shown, the screen's mode (4 Transporter,
 -- 5 Collateral Damage), complete, the title's tag, the failure's tag (nil for none), each hint's key picture and text
 -- (the pictures nil until the keys are let in; the second nil when it isn't offered), and hide_overall. Handed again
@@ -90,6 +127,12 @@ local function send_complete()
 	end
 	call(activity_complete, "activity_complete", { true, mode, complete, title, failure, hint_1_image, hint_1_text,
 		hint_2_image, hint_2_text, hide_overall, n = 10 })
+	if failure ~= nil and (mode == AC_ACTIVITY_GUERILLA_EXPRESS or mode == AC_ACTIVITY_RIDING_SHOTGUN) then
+		local ok, problem = pcall(play_fail)	-- as Guerrilla's activity_complete set fail_anim waiting
+		if not ok then
+			log(FAIL_ANIMATION .. ": " .. tostring(problem))
+		end
+	end
 	log("mode " .. tostring(mode) .. ", " .. tostring(title) .. (complete and " complete" or " failed") ..
 		(failure ~= nil and (" (" .. tostring(failure) .. ")") or "") .. (hint_1_image ~= nil and ", keys in" or ""))
 end
@@ -107,9 +150,49 @@ local function send_tallys()
 	call(set_numbers, "set_numbers", { goal, soldiers, structures, vehicles, score, deaths, total, n = 7 })
 end
 
+-- The stamp's end (Guerrilla's ac_anim_end: the keys let in) is mc_dust_group_3_alpha_twn_1's end event, which its
+-- ac_start_dt sets. That tween is mc_logo_bg_anim_1's, and the event never came (2026-11-19: the keys only by
+-- guerrilla_hud's fallback): its animation never ran (see play_intro, started since), and for a Transporter its script
+-- also hides dirt_dust, the tween's group's parent. Kept as a guard: once that tween's end is reached (its start_time
+-- and duration) with the keys still out, its callback is called here, once.
+local STAMP_END_TWEEN = "mc_dust_group_3_alpha_twn_1"
+local Stamp_end_called = false
+
+local function follow_stamp_end(keys_in)
+	if keys_in or Stamp_end_called then
+		return
+	end
+	local tween = vint_object_find(STAMP_END_TWEEN)
+	if tween == nil or tween == 0 then
+		return
+	end
+	local name = rfg_end_event_of(tween)
+	if name == nil then
+		return		-- not set yet: ac_start_dt hasn't run
+	end
+	local at = vint_get_property(tween, "start_time")
+	local length = vint_get_property(tween, "duration")
+	if at ~= nil and length ~= nil and vint_get_time_index() < at + length then
+		return
+	end
+	Stamp_end_called = true
+	log("the stamp's end event (" .. tostring(name) .. ") called here: its tween (start " .. tostring(at) .. ", duration " ..
+		tostring(length) .. ") is on a hidden object")
+	local callback = _GetAnyGlobalSilent(name)
+	if callback ~= nil then
+		local ok, problem = pcall(callback)
+		if not ok then
+			log(tostring(name) .. ": " .. tostring(problem))
+		end
+	end
+end
+
 local function follow()
 	while true do
-		local open, version = rfg_activity_complete()
+		-- Guerrilla's tweens' start events, which Armageddon's interface doesn't call (the shims keep them): each block's
+		-- tally starts as it fades in, and the last one starts the stamp and lets the keys in at its end.
+		rfg_follow_start_events()
+		local open, version, mode, complete, title, failure, hint_1_image = rfg_activity_complete()
 		if open or Hud_hidden then
 			hide_armageddon_hud(open)
 		end
@@ -119,9 +202,11 @@ local function follow()
 				send_complete()
 			end
 			send_tallys()
+			follow_stamp_end(hint_1_image ~= nil)
 		else
 			Version = -1
 			Tallys = ""
+			Stamp_end_called = false
 		end
 		thread_yield()
 	end
@@ -131,6 +216,10 @@ function rfg_ui_activity_complete_init()
 	local ok, problem = pcall(rfg_ui_activity_complete_guerrilla_init)
 	if not ok then
 		log("Guerrilla's init: " .. tostring(problem))
+	end
+	local played, why = pcall(play_intro)
+	if not played then
+		log(INTRO_ANIMATION .. ": " .. tostring(why))
 	end
 	if _GetAnyGlobalSilent("rfg_activity_complete") == nil or _GetAnyGlobalSilent("rfg_activity_complete_tallys") == nil then
 		log("no rfg_activity_complete (an older guerrilla_hud.dll?): the screen stays empty")

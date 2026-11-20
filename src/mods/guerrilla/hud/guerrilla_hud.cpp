@@ -66,6 +66,13 @@ constexpr DWORD kHudUpdate = 0x57BC30;
 constexpr size_t kHudUpdatePrologue = 6;  // push ebp / mov ebp,esp / mov eax,[ebp+8]
 using HudUpdateFn = void(__cdecl*)(void* hud);
 HudUpdateFn g_hudUpdate;
+// A part of the HUD's update (0x57B8F0, cdecl, the same argument), which the update calls (0x57BCF7) and which the HUD's
+// process (0x57B520) calls alone while the local player is dead (0x57B5B2: his vtable +0x10 true): the update isn't
+// called then, nor ours with it (see HudPartAlone).
+constexpr DWORD kHudPart = 0x57B8F0;
+constexpr size_t kHudPartPrologue = 6;    // push ebp / mov ebp,esp / sub esp,38h
+HudUpdateFn g_hudPart;
+bool g_inHudUpdate = false;              // the game's update runs (its own call of the part)
 
 // The interface's documents. The project (rfg.vint_proj) lists every document the game can load;
 // a loaded ("open") document has its handle at +0x40 of its record.
@@ -1247,8 +1254,10 @@ bool LevelLoading() {
 }
 
 // In our worlds, the documents wanted are loaded (and loaded again if the game closes one); the
-// others the mod loaded are unloaded, and all of them in any other world.
-void FollowTheWorld() {
+// others the mod loaded are unloaded, and all of them in any other world. While the player lies dead (dead: see
+// HudPartAlone) only the documents and the campaign's screens: the rest reads the living player and his inventory,
+// which Armageddon stops at a death (his object may be half torn down, or swapped by the respawn).
+void FollowTheWorld(bool dead) {
     const bool ours = InOurWorld();
     if (static_cast<int>(ours) != g_inOurWorld) {
         rfa::Log(ours ? "World %s: Guerrilla's HUD" : "World %s: Armageddon's own HUD", WorldName());
@@ -1263,7 +1272,10 @@ void FollowTheWorld() {
         RFA_LOG_DETAIL_FIRST(20, "A level load runs: Guerrilla's HUD documents wait for it to end");
         return;
     }
-    if (ours) {
+    if (ours && dead) {
+        FollowCampaignScreens();
+        StepCampaignScreens();
+    } else if (ours) {
         UpdateMapView();
         if (g_mapOpen) StepFullMap(false);
         else FollowTheMapKey();
@@ -1393,13 +1405,42 @@ void RaiseVintHeap() {
              kVintHeapGame / 1024, kVintHeapSizeValues[0], kVintHeapSizeValues[1]);
 }
 
+void OurHudFrame(bool dead);
+ULONGLONG g_lastDeadFrame = 0;  // our last frame while the player lay dead (HudPartAlone)
+
 void __cdecl HudUpdate(void* hud) {
+    g_inHudUpdate = true;
     g_hudUpdate(hud);
+    g_inHudUpdate = false;
+    OurHudFrame(false);
+}
+
+bool CampaignScreenWanted();
+
+// The HUD's part the game's process runs alone while the local player is dead. Guerrilla's activities take a death as
+// the death timer runs out and raise their results screen over the dead player (gamestate_gp_simulate_frame →
+// process_player_death → hud_ui_activity_complete_start): so while the activity-complete screen is asked for or open
+// (2026-11-19, a Transporter's results asked for at the death, never opened), the part of our frame that screen needs
+// runs here too (FollowTheWorld's dead: the documents, the campaign's screens; the pause menu's block). Otherwise
+// nothing of ours runs while he lies dead, as before.
+void __cdecl HudPartAlone(void* hud) {
+    g_hudPart(hud);
+    if (g_inHudUpdate || !InOurWorld() || !g_player || !ObjectIsDead(g_player) || !CampaignScreenWanted()) return;
+    RFA_LOG_FIRST(10, "Guerrilla's HUD runs while the player is dead: the activity-complete screen is asked for or open (its parts only)");
+    OurHudFrame(true);
+}
+
+// Our frame, after the game's HUD update (or its part while the player lies dead: dead, see HudPartAlone).
+void OurHudFrame(bool dead) {
     LogVintHeap(kVintHeapLogStep, "playing");
     const ULONGLONG now = GetTickCount64();
-    g_hudFrameMs = (std::min)(now - g_lastHudUpdate, kHudFrameMostMs);  // the HUD's time: none while it's stopped
-    g_lastHudUpdate = now;
-    FollowTheWorld();
+    // The HUD's time: none while it's stopped. While he lies dead our frames keep a clock of their own, and the HUD's
+    // last update's time is left alone: the draw pass doesn't take the HUD for running then, so only the screen (an
+    // open one of ours) is drawn.
+    ULONGLONG& last = dead ? g_lastDeadFrame : g_lastHudUpdate;
+    g_hudFrameMs = (std::min)(now - last, kHudFrameMostMs);
+    last = now;
+    FollowTheWorld(dead);
     SwallowPauseMenuRequest();
     FollowPauseMenuBlock();
     if (!rfa::DetailLog()) return;  // the rest is for the log, with Log=1
@@ -3876,10 +3917,12 @@ int __cdecl LuaMapExplosive(lua_State* L) {
 }
 
 // rfg_map_markers() -> count, and rfg_map_marker(i) -> map_x, map_y, picture (rfg_...), placement (0 plain, 1 sticky,
-//   2 closest sticky, 3 a convert's pop), r, g, b (-1 for the picture's own colour), age ms (-1 for none): the people's
-//   map markers (guerrilla_people's).
-struct MinimapMarker { double mapX, mapY; std::string picture; int placement; int r, g, b; int ageMs; };
+//   2 closest sticky, 3 a convert's pop), r, g, b (-1 for the picture's own colour), age ms (-1 for none), on the world
+//   map too: the people's map markers (guerrilla_people's), then the campaign's icons (GuerrillaCampaign_MapIcons: a
+//   running Transporter's end point, Guerrilla's temporary icons, which its world map drew too when VisibleOnFSMap).
+struct MinimapMarker { double mapX, mapY; std::string picture; int placement; int r, g, b; int ageMs; bool onWorldMap; };
 std::vector<MinimapMarker> g_minimapMarkers;
+constexpr int kMostCampaignIcons = 8;
 
 int __cdecl LuaMapMarkers(lua_State* L) {
     using namespace rfa::game;
@@ -3898,6 +3941,26 @@ int __cdecl LuaMapMarkers(lua_State* L) {
             m.g = c ? static_cast<int>((c >> 8) & 0xFF) : -1;
             m.b = c ? static_cast<int>(c & 0xFF) : -1;
             m.ageMs = found[i].ageMs;
+            m.onWorldMap = false;
+            g_minimapMarkers.push_back(m);
+        }
+    }
+    if (guerrilla_campaign::Running() && InOurWorld()) {
+        GuerrillaCampaignIcon icons[kMostCampaignIcons] = {};
+        icons[0].size = sizeof(GuerrillaCampaignIcon);
+        const int count = (std::min)(GuerrillaCampaign_MapIcons(icons, kMostCampaignIcons), kMostCampaignIcons);
+        for (int i = 0; i < count; ++i) {
+            if (!icons[i].picture || !icons[i].picture[0]) continue;
+            MinimapMarker m{};
+            MapPixels(icons[i].x, icons[i].z, m.mapX, m.mapY);
+            m.picture = std::string("rfg_") + icons[i].picture;
+            m.placement = icons[i].placement;
+            const DWORD c = icons[i].color;
+            m.r = c ? static_cast<int>((c >> 16) & 0xFF) : -1;
+            m.g = c ? static_cast<int>((c >> 8) & 0xFF) : -1;
+            m.b = c ? static_cast<int>(c & 0xFF) : -1;
+            m.ageMs = -1;
+            m.onWorldMap = icons[i].onWorldMap != 0;
             g_minimapMarkers.push_back(m);
         }
     }
@@ -3918,7 +3981,8 @@ int __cdecl LuaMapMarker(lua_State* L) {
     lua_pushnumber(L, m.g);
     lua_pushnumber(L, m.b);
     lua_pushnumber(L, m.ageMs);
-    return 8;
+    lua_pushboolean(L, m.onWorldMap);
+    return 9;
 }
 
 // ---- Guerrilla's control and morale meters, from the campaign's districts
@@ -4112,6 +4176,7 @@ struct ActivityScreen {
     bool asked = false;        // the campaign has a screen up (we asked: it waits for our answer)
     GuerrillaCampaignActivity info{};
     std::string title, subtitle, body, objective, timer, result, failure, weapon[4];
+    std::string distance;      // running: Transporter's distance to its end
     int screen = 0;            // what the campaign shows: 0 none, 1 briefing, 2 running, 3 results
     bool open = false, paused = false;  // our briefing or results screen
     int answered = 0;          // the screen we answered (the campaign may still give it until its next frame)
@@ -4224,6 +4289,7 @@ void KeepActivity(const GuerrillaCampaignActivity& info) {
     s.result = info.result ? info.result : "";
     s.failure = info.failure ? info.failure : "";
     for (int i = 0; i < 4; ++i) s.weapon[i] = info.weapon[i] ? info.weapon[i] : "";
+    s.distance = info.distance ? info.distance : "";
 }
 
 void OpenActivityScreen(int screen) {
@@ -4331,14 +4397,8 @@ void StepActivityScreen() {
 // What an activity gives the screen as it ends (GuerrillaHud_ActivityComplete): Guerrilla's
 // hud_ui_activity_complete_start(mode, success), the game log's reason for a failure, and the numbers its kind's loader
 // read.
-struct ActivityResults {
-    int size;           // sizeof(ActivityResults), 44
-    int mode;           // Guerrilla's activity mode: 1 vehicle rail (Collateral Damage), 4 delivery (Transporter)
-    int success;        // 1 won, 0 failed
-    int reason;         // a failure's gamelog_complete_reasons (2 died, 4 out of time, ... 12 not enough damage), else 0
-    float numbers[7];   // Transporter: the pro, target, best (0 for none) and your times, in ms; Collateral Damage:
-                        // the goal, soldiers, structures, vehicles, score, deaths and total, in millions
-};
+// (hud_api.h's GuerrillaHudActivityResults, which the campaign fills.)
+using ActivityResults = GuerrillaHudActivityResults;
 static_assert(sizeof(ActivityResults) == 44, "GuerrillaHud_ActivityComplete's results are 44 bytes");
 
 constexpr int kAcTransporter = 4, kAcCollateralDamage = 5;  // the screen's numbers of the two kinds it shows
@@ -4470,8 +4530,9 @@ void CloseActivityComplete(int choice, const char* why) {
     }
     g_shop.useDown = true;
     rfa::LogDetail("Activity-complete screen closed: choice %d (%s)", choice, why);
-    // The choice is for guerrilla_campaign's GuerrillaCampaign_ActivityCompleteChoose(choice), which the campaign hasn't
-    // yet: once campaign_api.h has it, call it here when choice != kAcNoChoice and the screen isn't the console's test.
+    // The choice goes to the campaign (its activity replays or ends), unless it's the console's test or no choice was
+    // made (a level load: the campaign's activity goes with the level).
+    if (choice != kAcNoChoice && !s.test) GuerrillaCampaign_ActivityCompleteChoose(choice);
 }
 
 // Each HUD update while it's open: the tallies counting, then its keys, once its script lets them in.
@@ -4547,6 +4608,11 @@ void FollowCampaignScreens() {
         for (int i = 0; i < count && i < kMostMapRings; ++i) g_mapRings.push_back(found[i]);
     }
 }
+
+// Whether the activity-complete screen is asked for or open (our frame runs while the player is dead then: HudPartAlone).
+// Only that screen: of the campaign's, only the Transporter takes a death yet (GuerrillaCampaign_TakePlayerDeath);
+// demolitions master's screens stay as they were while he lies dead.
+bool CampaignScreenWanted() { return g_activityComplete.pending || g_activityComplete.open; }
 
 // Each HUD update while one is open: its keys.
 void StepCampaignScreens() {
@@ -4747,7 +4813,7 @@ std::string WeaponPicture(const std::string& name) {
 }
 
 // rfg_activity() -> screen, version, mode, title, subtitle, body, objective, timer, result, failure, limit, par, best,
-//   elapsed, status, success, pro_time, out_of_range, salvage
+//   elapsed, status, success, pro_time, out_of_range, salvage, distance (Transporter's to its end)
 //   The campaign's activity (screen 0 none, 1 the briefing, 2 running, 3 the results), its texts as Guerrilla's (from
 //   its tags), its times "mm:ss" ("" for none: limit 0, no best yet); status 0, 1 unstable, 2 destroyed.
 //   rfg_activity_weapon(i) -> picture, rounds: its i-th weapon (1-4), nothing past the last.
@@ -4774,7 +4840,8 @@ int __cdecl LuaActivity(lua_State* L) {
     lua_pushboolean(L, i.proTime != 0);
     lua_pushboolean(L, i.outOfRange != 0);
     lua_pushnumber(L, i.salvage);
-    return 19;
+    lua_pushstring(L, s.distance.c_str());  // Transporter's distance to its end
+    return 20;
 }
 
 int __cdecl LuaActivityWeapon(lua_State* L) {
@@ -4912,7 +4979,10 @@ int __cdecl LuaActivityCompleteTallys(lua_State* L) {
 int __cdecl LuaActivityCompleteTally(lua_State* L) {
     using namespace rfa::game;
     const int index = static_cast<int>(lua_tonumber(L, 1)) - 1;
-    if (g_activityComplete.open && index >= 0 && index < 3) g_activityComplete.tallies[index].progress = 0.0f;
+    if (g_activityComplete.open && index >= 0 && index < 3) {
+        g_activityComplete.tallies[index].progress = 0.0f;
+        RFA_LOG_FIRST(12, "Activity-complete screen: tally %d counts up", index + 1);
+    }
     return 0;
 }
 
@@ -5639,6 +5709,10 @@ void guerrilla_hud::Init() {
         rfa::Log("Could not hook the HUD's update; Guerrilla's HUD stays off");
         return;
     }
+    const BYTE* part = reinterpret_cast<const BYTE*>(kHudPart);
+    if (part[0] == 0x55 && part[1] == 0x8B && part[2] == 0xEC && part[3] == 0x83 && part[4] == 0xEC && part[5] == 0x38)
+        g_hudPart = reinterpret_cast<HudUpdateFn>(rfa::HookFunction(kHudPart, kHudPartPrologue, reinterpret_cast<void*>(&HudPartAlone)));
+    if (!g_hudPart) rfa::Log("Could not hook the HUD's part 0x57B8F0; an activity's results screen won't come up while the player lies dead");
     g_drawPass = reinterpret_cast<DrawPassFn>(rfa::HookFunction(kDrawPass, kDrawPassPrologue, reinterpret_cast<void*>(&DrawPass)));
     if (!g_drawPass) rfa::Log("Could not hook the interface's draw pass; Guerrilla's HUD may stay up on loading screens and menus");
     g_loadStart = reinterpret_cast<LoadStartFn>(rfa::HookFunction(kLoadStart, kLoadStartPrologue, reinterpret_cast<void*>(&LoadStart)));

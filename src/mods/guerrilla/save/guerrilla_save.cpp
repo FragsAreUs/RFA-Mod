@@ -35,6 +35,13 @@
 //     CHECKPOINT opens it. See ChooseSpot and StepRespawn below. That save is made after the death,
 //     when a dead human's weapons are gone, so the weapons he had alive (noted every gameplay step) go
 //     with it as a block of ours and are given back when it opens (TakeKit, GiveKit).
+//   - guerrilla_campaign can ask for a reload at a spot (GuerrillaSave_ReloadAt, save_api.h: a Transporter's
+//     RETRY, Guerrilla's world::save_and_reload with the player saved at the activity's start): the save with
+//     him put there (0x6DA3D0; a respawn's after a death), then the game-over screen's fade and LOAD
+//     CHECKPOINT's reload, called here (see StepReload).
+//   - a death the campaign's running activity takes (Guerrilla's: its results screen in place of the death
+//     screen, as the death timer runs out) raises no game-over screen (see GameOverStart); after that
+//     screen's EXIT a dead player respawns as CONTINUE would (GuerrillaSave_Respawn).
 //
 // The game's save, found in its exe:
 //   world 0x6DA1B0(message, b) asks for one: +0x2514 bit 2, +0x2515 bit 0 the "Checkpoint" message,
@@ -82,6 +89,41 @@ constexpr DWORD kSaveAndWarp = 0x6DA3D0;     // thiscall (world, position, orien
 constexpr DWORD kFailureLoadCheckpoint = 0x578E50;  // void(): the game-over screen's LOAD CHECKPOINT (rf4_failure_load_checkpoint)
 constexpr DWORD kMissionActive = 0x504A50;   // bool()
 constexpr DWORD kRespawnWaitLimitMs = 10000;
+// A reload at a spot (GuerrillaSave_ReloadAt): after the save, the game-over screen's fade before LOAD CHECKPOINT (its
+// process 0x578BF0: 0x58D820(false, true, 1 s), asked each step: true once the screen is dark), then the world asked to
+// open again from the save in memory as Armageddon's own save and reload does it (0x6DA2B0: world 0x6C88B0, +0x2515
+// bit 2; the next gameplay step's 0x542030 opens the level again; the level load's exit 0x55E210 fades back in).
+// LOAD CHECKPOINT's own 0x58D940 (the sounds paused, 0xB8AB30 / 0xB8ABF0, then 0x6C88B0) and 0x55F7B0 (0x1331855, the
+// load screen's flag) were used at first: after that reload the sound stayed off until the pause menu was opened and
+// closed (2026-11-19 20:54). I: 0xB8ABF0(1, 1) mutes (the gameplay state's exit 0x540C50 calls it too), and on LOAD
+// CHECKPOINT's way the game-over screen's close posts its Failure_Screen_UnMute; with no game-over screen nothing
+// unmuted it, until the pause menu's close (Interface_UnMute_State).
+constexpr DWORD kFadeOut = 0x58D820;         // bool(bool at once, bool b, float seconds)
+constexpr DWORD kAskReload = 0x6C88B0;       // thiscall bool (world): +0x2515 bit 2
+constexpr DWORD kReloadWaitLimitMs = 10000;
+constexpr DWORD kFadeLimitMs = 3000;
+// The sound's pause (0xB8AB30(a, b): +a, b at 0x274552C / 0x274552D, nothing when already so) and resume (0xB8ABA0(a, b)):
+// Armageddon's pause (0x520280, at its first count) and a level load (0x55DBD1) pause it, its unpause (0x520310, at its
+// last count) and a load's end (0x55F44A) resume it, each with (1, 1).
+constexpr DWORD kSoundPausedA = 0x274552C, kSoundPausedB = 0x274552D;
+constexpr DWORD kGamePaused = 0x520260;      // bool(): the game's pause count above 0
+using AskReloadFn = bool(__thiscall*)(void* world);
+using ResumeSoundFn = int(__cdecl*)(bool a, bool b);
+auto const ResumeSound = reinterpret_cast<ResumeSoundFn>(0xB8ABA0);
+// Armageddon's game-over screen's start (0x578DA0, cdecl, no arguments): called only by the gameplay process (0x5410D0)
+// once the local player's death timer (+0x1844) ran out, outside a mission (0x504B70 takes a mission's). With him
+// dead: its title MENU_GAME_OVER (0xF9395C) into 0x135AE60 (64 bytes) and its reason MENU_YOU_DIED (0xF9394C) into
+// 0x135ADE0 (128) (0xC9B390: a text copied, cut to its room), then the screen system 0x135CE10's 0x58C040(0x15) and
+// (0x18). Replaced whole here (see GameOverStart).
+constexpr DWORD kGameOverStart = 0x578DA0;
+constexpr DWORD kGameOverTitle = 0x135AE60, kGameOverTitleRoom = 0x40, kGameOverTitleText = 0xF9395C;
+constexpr DWORD kGameOverReason = 0x135ADE0, kGameOverReasonRoom = 0x80, kGameOverReasonText = 0xF9394C;
+constexpr DWORD kScreenSystem = 0x135CE10;
+constexpr int kGameOverScreen = 0x15, kGameOverScreenToo = 0x18;
+using CopyTextFn = char*(__cdecl*)(char* to, const char* from, int room);
+using RaiseScreenFn = void(__fastcall*)(void* screens, void* unused, int screen);
+auto const CopyText = reinterpret_cast<CopyTextFn>(0xC9B390);
+auto const RaiseScreen = reinterpret_cast<RaiseScreenFn>(0x58C040);
 constexpr DWORD kGameplayStep = 0x542110;    // void(): the gameplay state's step, every frame (on the main thread)
 constexpr size_t kGameplayStepPrologue = 6;  // push ebp / mov ebp,esp / sub esp,30h
 constexpr DWORD kLocalPlayer = 0x8B92D0;     // object*(): the local player, or null
@@ -99,6 +141,7 @@ using GameplayStepFn = void(__cdecl*)();
 using SaveAndWarpFn = void(__thiscall*)(void* world, const float* position, const float* orientation);
 using MissionActiveFn = bool(__cdecl*)();
 using FailureChoiceFn = void(__cdecl*)();
+using FadeOutFn = bool(__cdecl*)(bool atOnce, bool b, float seconds);
 
 AskForSaveFn g_askForSave = nullptr;
 MakeSaveFn g_makeSave = nullptr;
@@ -193,6 +236,15 @@ bool g_respawnPending = false;
 bool g_respawnSaving = false;  // its save is the next one made (the campaign is told it follows a death)
 DWORD g_respawnAskedAt = 0;
 Spot g_respawnSpot;
+
+// GuerrillaSave_ReloadAt asked for a reload at a spot: its save (once the world can take one), the save made with
+// our blocks in it, the fade, the world asked to open again (until OpenWorld runs).
+enum class ReloadStage { None, Asked, Saving, Fading, Opening };
+ReloadStage g_reloadStage = ReloadStage::None;  // set to None by OpenWorld too (the loading thread): under g_blockLock
+bool g_reloadOpened = false;  // OpenWorld opened a reload at a spot's save: its first gameplay step looks at the sound
+DWORD g_reloadSince = 0;
+float g_reloadPosition[3] = {};
+float g_reloadOrientation[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
 
 std::mutex g_blockLock;  // the world opens on the loading thread; the rest is on the main thread
 std::vector<unsigned char> g_blockToAdd;   // taken when the world was saved, added once the save is done
@@ -619,6 +671,151 @@ void StepRespawn() {
     reinterpret_cast<FailureChoiceFn>(kFailureLoadCheckpoint)();
 }
 
+// The weapons a respawn's save keeps: those he had alive, as of the last gameplay step he was (a dead human's are
+// gone). For CONTINUE (LuaRespawn) and a reload at a spot after a death (StepReload), so that the two can't drift apart.
+void TakeRespawnKit() { g_respawnKit = g_aliveKitTaken ? g_aliveKit : Kit{}; }
+
+ReloadStage CurrentReloadStage() {
+    std::lock_guard<std::mutex> hold(g_blockLock);
+    return g_reloadStage;
+}
+
+void SetReloadStage(ReloadStage stage) {
+    std::lock_guard<std::mutex> hold(g_blockLock);
+    g_reloadStage = stage;
+    g_reloadSince = GetTickCount();
+}
+
+// Every gameplay step while a reload at a spot waits (GuerrillaSave_ReloadAt, guerrilla_campaign's RETRY): once the
+// world can take a save, the save with the player put at the spot (0x6DA3D0, as a respawn's: a respawn's after a
+// death); once it is made and our blocks are in it, the game-over screen's fade, then the world asked to open again as
+// Armageddon's own save and reload asks it (kAskReload above). Its save and reload at a spot (0x6DA320) asks for both at once, and the
+// gameplay step then makes the save and opens the world in the same call (0x542030), maybe before the save's last
+// stream-out job and our blocks; hence the steps.
+void StepReload() {
+    const ReloadStage stage = CurrentReloadStage();
+    if (stage == ReloadStage::None) return;
+    const DWORD waited = GetTickCount() - g_reloadSince;
+    if (!InGuerrillaWorld()) {
+        rfa::Log("Reload at a spot: not in a Guerrilla world any more; given up");
+        SetReloadStage(ReloadStage::None);
+        return;
+    }
+    if (stage == ReloadStage::Asked) {
+        const bool busy = Int(kStreamingState) != 0 || (Byte(kSaveFlags) & (kSaveAsked | kSaveBeingMade)) != 0 ||
+                          reinterpret_cast<MissionActiveFn>(kMissionActive)() || g_respawnPending || g_waitingToSave;
+        if (busy) {
+            if (waited <= kReloadWaitLimitMs) return;
+            rfa::Log("Reload at a spot: the world couldn't take a save for %lu s (flags 0x%02X, streaming %d); no reload",
+                     kReloadWaitLimitMs / 1000, Byte(kSaveFlags), Int(kStreamingState));
+            SetReloadStage(ReloadStage::None);
+            return;
+        }
+        void* player = reinterpret_cast<LocalPlayerFn>(kLocalPlayer)();
+        const bool dead = player && reinterpret_cast<IsDeadFn>((*reinterpret_cast<void***>(player))[4])(player);
+        if (dead) {  // as a respawn's save: the death's cost is in this state, his weapons are gone from him
+            g_respawnSaving = true;
+            TakeRespawnKit();
+        }
+        reinterpret_cast<SaveAndWarpFn>(kSaveAndWarp)(World(), g_reloadPosition, g_reloadOrientation);
+        if (!(Byte(kSaveFlags) & kSaveAsked)) {
+            g_respawnSaving = false;
+            rfa::Log("Reload at a spot: the world didn't take the save (flags 0x%02X); no reload", Byte(kSaveFlags));
+            SetReloadStage(ReloadStage::None);
+            return;
+        }
+        const std::string afterDeath = dead ? " (after his death, a respawn's save: keeps his weapons as he had them alive: " + KitText(g_respawnKit) + ")" : "";
+        rfa::Log("Reload at a spot: the save asked with the player put at %.1f %.1f %.1f%s", g_reloadPosition[0], g_reloadPosition[1],
+                 g_reloadPosition[2], afterDeath.c_str());
+        SetReloadStage(ReloadStage::Saving);
+        return;
+    }
+    if (stage == ReloadStage::Saving) {
+        bool blockPending;
+        {
+            std::lock_guard<std::mutex> hold(g_blockLock);
+            blockPending = g_blockPending;
+        }
+        if (SaveRunning() || blockPending) {
+            if (waited <= kReloadWaitLimitMs) return;
+            rfa::Log("Reload at a spot: the save wasn't done after %lu s (flags 0x%02X 0x%02X, streaming %d); no reload",
+                     kReloadWaitLimitMs / 1000, Byte(kSaveFlags), Byte(kSaveFlags2), Int(kStreamingState));
+            SetReloadStage(ReloadStage::None);
+            return;
+        }
+        if (Int(kSavedSize) <= 0) {
+            rfa::Log("Reload at a spot: the save came out empty (it may not fit in its %d KB); no reload", Int(kSavedRoom) / 1024);
+            SetReloadStage(ReloadStage::None);
+            return;
+        }
+        rfa::Log("Reload at a spot: saved in memory (%d KB, %lu ms); the screen fades", Int(kSavedSize) / 1024, waited);
+        SetReloadStage(ReloadStage::Fading);
+        return;
+    }
+    if (stage == ReloadStage::Fading) {
+        const bool dark = reinterpret_cast<FadeOutFn>(kFadeOut)(false, true, 1.0f);
+        if (!dark && waited <= kFadeLimitMs) return;
+        SetReloadStage(ReloadStage::Opening);
+        reinterpret_cast<AskReloadFn>(kAskReload)(World());
+        rfa::Log("Reload at a spot: the world opens again from that save%s", dark ? "" : " (the fade wasn't done after 3 s)");
+        return;
+    }
+    if (stage == ReloadStage::Opening && waited > kReloadWaitLimitMs) {  // OpenWorld ends it; this only if the open never came
+        rfa::Log("Reload at a spot: the world didn't open again within %lu s of asking (flags 0x%02X 0x%02X); given up",
+                 kReloadWaitLimitMs / 1000, Byte(kSaveFlags), Byte(kSaveFlags2));
+        SetReloadStage(ReloadStage::None);
+    }
+}
+
+// Armageddon's game-over screen raised, as its own 0x578DA0 does (see kGameOverStart).
+void RaiseGameOver() {
+    void* player = reinterpret_cast<LocalPlayerFn>(kLocalPlayer)();
+    if (!player || !reinterpret_cast<IsDeadFn>((*reinterpret_cast<void***>(player))[4])(player)) return;
+    CopyText(reinterpret_cast<char*>(kGameOverTitle), reinterpret_cast<const char*>(kGameOverTitleText), kGameOverTitleRoom);
+    CopyText(reinterpret_cast<char*>(kGameOverReason), reinterpret_cast<const char*>(kGameOverReasonText), kGameOverReasonRoom);
+    RaiseScreen(reinterpret_cast<void*>(kScreenSystem), nullptr, kGameOverScreen);
+    RaiseScreen(reinterpret_cast<void*>(kScreenSystem), nullptr, kGameOverScreenToo);
+}
+
+// The game-over screen's start (0x578DA0, replaced whole): the moment Guerrilla's gamestate_gp_simulate_frame (RM
+// 0x7EDB49) gave a death to the running activity, in place of its death screen (save_and_continue and game state
+// 0x10). In one of these worlds guerrilla_campaign is asked first (GuerrillaCampaign_TakePlayerDeath: a Transporter's
+// run shows its results, FAILED, with RETRY and EXIT); only when it doesn't take the death does the game-over screen
+// come, as before.
+void __cdecl GameOverStart() {
+    if (InGuerrillaWorld() && CampaignThere() && GuerrillaCampaign_TakePlayerDeath()) {
+        rfa::Log("Death: the campaign's running activity takes it (its results screen, Guerrilla's); no game-over screen");
+        return;
+    }
+    RaiseGameOver();
+}
+
+// The first gameplay step in a world a reload at a spot opened (its campaign state given back before it, when it had
+// some): the reload is over (GuerrillaSave_Reloading answers 0 from here), the campaign is told (GuerrillaCampaign_
+// ReloadedAtSpot), and the sound looked at as the load left it. With the game running and the
+// sound still paused (0x274552C / 0x274552D set), it is resumed as the game's unpause does (0xB8ABA0(1, 1)): 2026-11-19
+// 20:54, after the retry's reload it stayed off until the pause menu was opened and closed.
+void FollowSoundAfterReload() {
+    {
+        std::lock_guard<std::mutex> hold(g_blockLock);
+        if (!g_reloadOpened) return;
+        g_reloadOpened = false;
+    }
+    // The campaign told at once (a retry's start set up again): a save carries its state only when it has some, so the
+    // state's being handed back can't be the sign (2026-11-19 21:26, a fresh campaign's first retry: no state, no sign).
+    if (CampaignThere()) GuerrillaCampaign_ReloadedAtSpot();
+    const int a = Byte(kSoundPausedA), b = Byte(kSoundPausedB);
+    const bool gamePaused = reinterpret_cast<MissionActiveFn>(kGamePaused)();
+    if ((a || b) && !gamePaused) {
+        ResumeSound(true, true);
+        rfa::Log("Reload at a spot: the world runs again, but its sound was left paused (%d %d); resumed as the game's unpause does "
+                 "(now %d %d)", a, b, Byte(kSoundPausedA), Byte(kSoundPausedB));
+    } else {
+        rfa::Log("Reload at a spot: the world runs again; its sound %s (%d %d), the game %s", a || b ? "paused" : "playing", a, b,
+                 gamePaused ? "paused" : "running");
+    }
+}
+
 // Each gameplay step in one of these worlds while Mason is alive: his weapons as they are, for a respawn
 // (a dead human's are gone by the time the game-over screen comes).
 void NoteKit() {
@@ -636,6 +833,7 @@ void NoteKit() {
 // is done, and his weapons noted while he is alive.
 void __cdecl GameplayStep() {
     StepRespawn();
+    StepReload();
     bool load = false, fresh = false, giveKit = false;
     std::vector<unsigned char> block;
     Kit kit;
@@ -671,6 +869,7 @@ void __cdecl GameplayStep() {
     AddCampaignBlock();
     EquipHeldGun();
     NoteKit();
+    FollowSoundAfterReload();
 }
 
 // Whether a level's name ("rfg_07_11") is one of the Guerrilla worlds'.
@@ -713,6 +912,10 @@ std::string SavedLevel(void* world) {
 int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool fresh, bool b) {
     {
         std::lock_guard<std::mutex> hold(g_blockLock);
+        if (g_reloadStage == ReloadStage::Opening) {  // a reload at a spot: done once its first gameplay step has run
+            g_reloadStage = ReloadStage::None;
+            g_reloadOpened = true;
+        }
         g_loadPending = false;
         g_blockToLoad.clear();
         g_kitPending = false;
@@ -837,7 +1040,7 @@ int __cdecl LuaRespawn(rfa::game::lua_State* L) {
     g_respawnSpot = *spot;
     g_respawnPending = true;
     g_respawnAskedAt = GetTickCount();
-    g_respawnKit = g_aliveKitTaken ? g_aliveKit : Kit{};
+    TakeRespawnKit();
     rfa::Log("Respawn: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f; keeps his weapons as he had them alive: %s",
              at[0], at[1], at[2], spot->name.c_str(), why.c_str(), spot->position[0], spot->position[1], spot->position[2],
              KitText(g_respawnKit).c_str());
@@ -873,6 +1076,65 @@ int GuerrillaSave_Saving(unsigned* savesMade) {
     return InGuerrillaWorld() && (g_waitingToSave || SaveRunning()) ? 1 : 0;
 }
 
+// For guerrilla_campaign (a Transporter's RETRY): the world saved with the player at a spot, then opened again from
+// that save; the steps are StepReload's. False when it can't be asked now.
+bool GuerrillaSave_ReloadAt(const float* position, const float* orientation) {
+    if (!guerrilla_save::Running() || !g_gameplayStep || !position || !orientation) return false;
+    if (!InGuerrillaWorld()) {
+        rfa::Log("Reload at a spot: not in a Guerrilla world; not asked");
+        return false;
+    }
+    if (CurrentReloadStage() != ReloadStage::None || g_respawnPending) {
+        rfa::Log("Reload at a spot: a %s already waits; not asked", g_respawnPending ? "respawn" : "reload");
+        return false;
+    }
+    memcpy(g_reloadPosition, position, sizeof(g_reloadPosition));
+    memcpy(g_reloadOrientation, orientation, sizeof(g_reloadOrientation));
+    SetReloadStage(ReloadStage::Asked);
+    rfa::Log("Reload at a spot: asked (%.1f %.1f %.1f); saved at the next gameplay step the world can take a save", position[0], position[1],
+             position[2]);
+    return true;
+}
+
+int GuerrillaSave_Reloading() {
+    if (!guerrilla_save::Running()) return 0;
+    bool opened;
+    {
+        std::lock_guard<std::mutex> hold(g_blockLock);
+        opened = g_reloadOpened;
+    }
+    return CurrentReloadStage() != ReloadStage::None || opened ? 1 : 0;
+}
+
+// For guerrilla_campaign, after an activity's EXIT with the player dead (Guerrilla's activity-complete screen then called
+// world::save_and_reload, which wakes him at the nearest safehouse): the spot CONTINUE would pick (ChooseSpot), through
+// the reload at a spot (a respawn's save: his weapons kept). With nowhere to put him, or no reload to be had, the
+// game-over screen instead. True when the reload was asked.
+bool GuerrillaSave_Respawn() {
+    if (!guerrilla_save::Running() || !g_gameplayStep || !InGuerrillaWorld()) return false;
+    ReadSpots();
+    void* player = reinterpret_cast<LocalPlayerFn>(kLocalPlayer)();
+    float at[3] = {};
+    if (player) memcpy(at, static_cast<const BYTE*>(player) + 4, sizeof(at));  // where he is (the object's +4)
+    std::string why;
+    const Spot* spot = ChooseSpot(at, why);
+    if (spot && GuerrillaSave_ReloadAt(spot->position, spot->orientation)) {
+        rfa::Log("Respawn after an activity: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f", at[0], at[1], at[2], spot->name.c_str(),
+                 why.c_str(), spot->position[0], spot->position[1], spot->position[2]);
+        return true;
+    }
+    rfa::Log("Respawn after an activity: %s; the game-over screen instead", spot ? "the reload couldn't be asked" : "nowhere to wake him");
+    RaiseGameOver();
+    return false;
+}
+
+// For guerrilla_campaign, when its results screen over a dead player can't come up: Armageddon's game-over screen now.
+void GuerrillaSave_GameOver() {
+    if (!guerrilla_save::Running()) return;
+    rfa::Log("Death: the campaign gives it back; the game-over screen");
+    RaiseGameOver();
+}
+
 void guerrilla_save::RegisterLua(rfa::game::lua_State* L) {
     rfa::game::lua_register(L, "rfg_save_can_save", LuaCanSave);
     rfa::game::lua_register(L, "rfg_save_game", LuaSaveGame);
@@ -906,6 +1168,9 @@ void guerrilla_save::Init() {
         rfa::Log("Could not hook the game's save functions; saving in the Guerrilla worlds is off");
         return;
     }
+    // The game-over screen's start, replaced whole (GameOverStart): its code as the game's, the campaign asked first.
+    if (!Starts(kGameOverStart, {0x55, 0x8B, 0xEC, 0x51, 0xE8}) || !rfa::ReplaceFunction(kGameOverStart, reinterpret_cast<const void*>(&GameOverStart)))
+        rfa::Log("The game-over screen's start isn't as expected; a death in an activity raises it as the game does");
     rfa::Log("Saving in the Guerrilla worlds: SAVE GAME in the pause menu saves the moment you are in; saves stay in "
              "memory until you pick a slot (never written into the campaign's autosave slot)");
 }

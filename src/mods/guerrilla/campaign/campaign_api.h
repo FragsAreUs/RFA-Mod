@@ -38,6 +38,7 @@ struct GuerrillaCampaignActivity {
     int success, proTime;    // the results: won; done within the par time
     int outOfRange;          // running: the 5 s back into the area are counting
     int salvage;             // the results: salvage given
+    const char* distance;    // running: Transporter's distance to its end ("%.2f" under 10 m, else "%.0f"), "" for others
 };
 
 // The running activity's screen: 1 and *info filled in, or 0 (*info all 0) when none is up.
@@ -45,6 +46,21 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info);
 
 // The HUD's answer: the briefing, 1 accept or 0 cancel; the results, anything closes them.
 void GuerrillaCampaign_ActivityChoose(int accept);
+
+// For guerrilla_save, as the player's death timer runs out outside a mission (Armageddon's game-over screen's start,
+// 0x578DA0): Guerrilla's gamestate_gp_simulate_frame gave the death to the running activity that takes one (its
+// process_player_death: the Transporter's results screen, FAILED), and raised the death screen only when none did. 1
+// when the campaign's activity took it (no game-over screen then), 0 otherwise.
+int GuerrillaCampaign_TakePlayerDeath();
+
+// For guerrilla_save: the world a reload at a spot (GuerrillaSave_ReloadAt) asked for has opened and runs again (its
+// first gameplay step). Told directly: a save carries the campaign's state only when it has some, so the state's being
+// handed back (GuerrillaCampaign_LoadState) can't say it (2026-11-19 21:26: a fresh campaign's first retry).
+void GuerrillaCampaign_ReloadedAtSpot();
+
+// Guerrilla's activity-complete screen's answer (guerrilla_hud's CloseActivityComplete, delivery.cpp): 1 its first
+// hint (CONTINUE after a win, RETRY after a loss), 2 its second (RETRY after a won Transporter, EXIT after a loss).
+void GuerrillaCampaign_ActivityCompleteChoose(int choice);
 
 // The use prompt at the start of one of Guerrilla's activities: its icon (Guerrilla's use_object_icon; 1 the
 // default hand), 0 none. The use key itself the campaign reads.
@@ -60,6 +76,22 @@ struct GuerrillaCampaignMapRing {
 // The rings on the minimap's ground now (render_regions): demolitions master's play area, green (50, 200, 50, 80),
 // red (200, 50, 50, 255) while the 5 s back into it are counting, and its target. How many were written.
 int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most);
+
+// One of the campaign's map icons for this frame: what Guerrilla's activities gave its cartographer each frame
+// (cartographer::add_temporary_icon from their render_icons), drawn on the minimap and, when its row of
+// minimap_icon_info.xtbl is VisibleOnFSMap, on the world map.
+struct GuerrillaCampaignIcon {
+    int size;              // sizeof(GuerrillaCampaignIcon): the caller sets it
+    float x, y, z;         // where
+    const char* picture;   // its IconName in minimap_icon_info.xtbl ("ui_map_icon_end_point")
+    int placement;         // 0 plain (inside the minimap's zoom), 1 sticky (pinned to its rim beyond it)
+    unsigned long color;   // 0xAARRGGBB, or 0 for the picture's own colour
+    int onWorldMap;        // 1: on the world map too
+};
+
+// The campaign's map icons now: a running Transporter's end point (render_icons RM 0x7977F0: element 31
+// MAP_ELEMENT_GUERILLA_EXP_END_POINT, sticky, teal 0, 0x77, 0x77). How many were written.
+int GuerrillaCampaign_MapIcons(GuerrillaCampaignIcon* icons, int most);
 
 // One item of Guerrilla's diversions panel (its DiversionInfo data item: which_one, diversion_type, fade_this_in,
 // flash_this, header_text, status_text, value_text), worked out as hud_ui_missions_process_diversion_info (RM 0x8C56A0)

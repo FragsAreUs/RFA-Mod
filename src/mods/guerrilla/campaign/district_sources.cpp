@@ -262,6 +262,7 @@ void HumanKilled(BYTE* victim, BYTE* attacker) {
     if (!player || !victim) return;
     if (victim == player) {
         activities::DemolitionsPlayerDied();
+        activities::DeliveryPlayerDied();
         if (g_playerDeathCounted) return;
         g_playerDeathCounted = true;
         if (activities::CurrentMode() == activities::DemolitionsMaster) return;

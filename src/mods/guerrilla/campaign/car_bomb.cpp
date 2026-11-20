@@ -272,7 +272,9 @@ CarBombActivity* g_carBomb = nullptr;
 
 // blast_from_the_past_touch_item: the player's car on a M.O.A.B.
 void Touch(Bomb& bomb, BYTE* car) {
-    if (g_carBomb->IsActive()) return;
+    // Refused while a car bomb or Guerrilla Express (Transporter) runs (blast_from_the_past_touch_item RM 0xA6137A).
+    const Activity* delivery = Get(Delivery);
+    if (g_carBomb->IsActive() || (delivery && delivery->IsActive())) return;
     if (*reinterpret_cast<const int*>(car + kBombStatus) != kBombNone) {
         if (!bomb.said) messages::Primary("HM_BFTP_CAR_ALREADY_ARMED");
         bomb.said = true;
@@ -383,6 +385,7 @@ int GuerrillaCampaign_BombIconShown(int pair) {
     using namespace campaign::activities;
     if (!guerrilla_campaign::Running() || !campaign::Playing()) return 1;
     if (g_carBomb && g_carBomb->IsActive()) return 0;
+    if (const Activity* delivery = Get(Delivery); delivery && delivery->IsActive()) return 0;  // the cartographer's, RM 0x877D28
     if (const BYTE* car = PlayersCar(); car && *reinterpret_cast<const int*>(car + kBombStatus) != kBombNone) return 0;
     if (Spent(pair)) return 0;
     if (const Bomb* bomb = BombOfPair(pair); bomb && bomb->inUse) return 0;

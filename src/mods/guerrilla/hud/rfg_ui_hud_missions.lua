@@ -14,13 +14,17 @@
 
 local SCREEN_RUNNING = 2					-- the mod's (the campaign's) screen while an activity runs
 local MODE_DEMOLITIONS_MASTER = 11		-- the campaign's activity modes
+local MODE_DELIVERY = 4					-- Transporter (Guerrilla Express)
 local LUA_ACTIVITY_DEMOLITIONS_TYPE = 6	-- Guerrilla's LUA_ACTIVITY_DEMOLITIONS (its script's)
+local LUA_ACTIVITY_EXPRESS_TYPE = 4		-- its LUA_ACTIVITY_GUERILLA_EXPRESS
 local LUA_INVALID_TYPE = 0				-- its LUA_MISSION_ACTIVITY_INVALID
 -- The document's own texts named by Guerrilla's string tags (set in the document, not by its script), which Armageddon's
 -- string tables haven't: Guerrilla's text for each, from the mod, set at the start, so the diversion items its script
--- clones from the first carry it. (Its other tags, HM_CONVOY_*, HM_SHOTGUN_*, HM_TARGET_*, HM_GOTO_TARGET, are the
--- convoys' and riding shotgun's panels', for when those kinds come.)
-local DOCUMENT_TAGS = { diversion_millions = "HUD_MILLION" }
+-- clones from the first carry it. The convoy labels are Transporter's panel's too (its handle_express shows the convoy
+-- group); the riding shotgun ones wait for that kind.
+local DOCUMENT_TAGS = { diversion_millions = "HUD_MILLION", convoy_target_title_1 = "HM_TARGET_TITLE",
+	convoy_target_title_2 = "HM_TARGET_DISTANCE", convoy_target_title_3 = "HM_GOTO_TARGET", convoy_strength_title_1 = "HM_CONVOY_TITLE",
+	convoy_strength_title_2 = "HM_CONVOY_STRENGTH", shotgun_title = "HM_SHOTGUN_DESTRUCTION", shotgun_millions = "HM_SHOTGUN_MILLION" }
 local Thread = -1
 local Shown = ""							-- what was sent last ("" none)
 local Failed = {}
@@ -106,12 +110,13 @@ local function follow_diversions()
 end
 
 -- MissionInfo: type, title, objective, activity info, txt1-3 (demolitions master: the structure's indicator, the time,
--- the structure's title and label).
+-- the structure's title and label; Transporter, hud_ui_missions_get_activity_delivery_info RM 0x896910: the time left
+-- and the distance to the end, its script's handle_express).
 local function follow()
 	while true do
 		follow_diversions()
 		local screen, version, mode, title, subtitle, body, objective, timer, result, failure, limit, par, best, elapsed,
-			status = rfg_activity()
+			status, success, pro_time, out_of_range, salvage, distance = rfg_activity()
 		local values = nil
 		local key = ""
 		if screen == SCREEN_RUNNING and mode == MODE_DEMOLITIONS_MASTER then
@@ -121,14 +126,17 @@ local function follow()
 			end
 			values = { LUA_ACTIVITY_DEMOLITIONS_TYPE, text("MISS_DEMO_MASTER"), objective, status or 0, timer,
 				text("ACT_DM_BUILDING_STRUCTURE"), label, n = 7 }
-			key = tostring(objective) .. "|" .. tostring(status) .. "|" .. tostring(timer)
+			key = "dm|" .. tostring(objective) .. "|" .. tostring(status) .. "|" .. tostring(timer)
+		elseif screen == SCREEN_RUNNING and mode == MODE_DELIVERY then
+			values = { LUA_ACTIVITY_EXPRESS_TYPE, title, objective, 0, timer, distance or "", "", n = 7 }
+			key = "td|" .. tostring(objective) .. "|" .. tostring(timer) .. "|" .. tostring(distance)
 		end
 		if key ~= Shown then
 			if values == nil then
 				values = { LUA_INVALID_TYPE, "", "", 0, "", "", "", n = 7 }
 				log("the corner panel hidden")
 			elseif Shown == "" then
-				log("the corner panel: demolitions master, " .. tostring(objective))
+				log("the corner panel: " .. tostring(values[2]) .. ", " .. tostring(objective))
 			end
 			call(mission_info, "mission_info", values)
 			Shown = key

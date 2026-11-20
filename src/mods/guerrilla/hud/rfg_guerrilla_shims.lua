@@ -21,15 +21,42 @@ string = { find = rfg_string_find }
 -- All of it is local to this document's script (each document has its own copy of these shims): a global would live
 -- in one document's table, gone when that document unloads, and reading or making a global that isn't there is an
 -- error (2026-11-12: every document's script stopped on one, and the game crashed).
+-- Texts with no size of their own in the document (no text_scale or scale the builder could change: it changes a
+-- document's values in place, adding none) are named again in a list of their own: rfg_size_unsized_texts gives each
+-- its text_scale as the document starts (the builder wraps the document's init so: 2026-11-19, the Transporter's
+-- results screen's PRO / TARGET / BEST TIME labels, left at Armageddon's bigger font, ran into each other).
 local Text_scale_document = nil		-- this document's name, nil if its texts weren't scaled
 local Text_scale_names = {}			-- { { element name, scale }, ... }
+local Text_scale_unsized = {}		-- { element name, ... }: those of them with no size of their own
 local Text_scale_found = 0			-- the document's handle the names were last looked up in
 local Text_scale_of = {}			-- element handle -> scale
 
-local function rfg_text_scales(document, scales)
+local function rfg_text_scales(document, scales, unsized)
 	Text_scale_document = document
 	Text_scale_names = scales
+	Text_scale_unsized = unsized or {}
 	Text_scale_found = 0
+end
+
+local function rfg_size_unsized_texts()
+	if Text_scale_document == nil then
+		return
+	end
+	local found = vint_document_find(Text_scale_document)
+	if found == nil or found == 0 then
+		return
+	end
+	local scale_of = {}
+	for i, pair in ipairs(Text_scale_names) do
+		scale_of[pair[1]] = pair[2]
+	end
+	for i, name in ipairs(Text_scale_unsized) do
+		local element = vint_object_find(name, 0, found)
+		local scale = scale_of[name]
+		if element ~= nil and element ~= 0 and scale ~= nil then
+			vint_set_property(element, "text_scale", scale, scale)	-- Armageddon's own call: the shims' would scale it again
+		end
+	end
 end
 
 local function rfg_text_scale(handle)
@@ -62,7 +89,58 @@ end
 
 -- Guerrilla's scripts give and read tints as 0-1, Armageddon's interface as 0-255 (in its documents both are 0-1):
 -- GuerrillaBuilder.exe makes their vint_set_property and vint_get_property calls these (local to the document too).
+-- Guerrilla's tweens' start events (vint_set_property(tween, "start_event", "a_callback"): its callback called as the
+-- tween starts). Armageddon's interface never called them (2026-11-19: the activity-complete screen's tallies never
+-- counted and its keys came only by guerrilla_hud's 10 s fallback), so they're kept here instead and the document's
+-- own script calls rfg_follow_start_events() each frame: each callback once, as soon as its tween's start time is
+-- reached. Only the activity-complete screen's script sets any.
+local Start_events = {}				-- tween handle -> its callback's name
+
+local function rfg_follow_start_events()
+	local now = vint_get_time_index()
+	for tween, name in pairs(Start_events) do
+		local at = vint_get_property(tween, "start_time")
+		if at == nil or now >= at then
+			Start_events[tween] = nil
+			local callback = _GetAnyGlobalSilent(name)
+			if callback ~= nil then
+				local ok, problem = pcall(callback)
+				if not ok and rfa_log ~= nil then
+					rfa_log("[shims] the start event " .. tostring(name) .. ": " .. tostring(problem))
+				end
+			end
+		end
+	end
+end
+
+-- Guerrilla's vint_lib: a tween's start event taken away (its callbacks do it as they run).
+function remove_tween_start_callback(tween)
+	Start_events[tween] = nil
+end
+
+-- The tweens' end events its scripts set, as well as given to Armageddon (which calls them, but not for a tween whose
+-- object is hidden: Armageddon's interface doesn't run those, Guerrilla's did), for a document's own script to call
+-- one itself where Guerrilla's script hides that object (rfg_end_event_of).
+local End_events = {}				-- tween handle -> its callback's name
+
+local function rfg_end_event_of(tween)
+	return End_events[tween]
+end
+
 local function rfg_vint_set_property(handle, property, ...)
+	if property == "end_event" then
+		local name = ...
+		End_events[handle] = type(name) == "string" and name ~= "" and name or nil
+	end
+	if property == "start_event" then
+		local name = ...
+		if type(name) == "string" and name ~= "" then
+			Start_events[handle] = name
+		else
+			Start_events[handle] = nil
+		end
+		return
+	end
 	-- Guerrilla's game named many texts by their string tag's hash (text_tag_crc), which Armageddon's
 	-- string tables don't have: our bridges hand the words instead, as a string.
 	if property == "text_tag_crc" then

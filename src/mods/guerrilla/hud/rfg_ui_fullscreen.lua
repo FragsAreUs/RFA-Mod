@@ -13,7 +13,8 @@
 -- centred, its zoom: rfg_map_full()) and its keys, and this script:
 --   - draws the map: Guerrilla's world map picture, the zones' own pictures once zoomed in close
 --     (rfg_map_full_tiles()), Guerrilla's map icons (its safehouses and its missions' and
---     activities' starts) and the player's icon, turned the way the camera looks;
+--     activities' starts), a running activity's own icons (a Transporter's end point) and the player's
+--     icon, turned the way the camera looks;
 --   - calls Guerrilla's own script as Guerrilla's game did, with the values in a table in place of a
 --     data item (the shims' rfg_vint_dataitem_get reads either): its places' labels and the zoom
 --     readout (rfg_ui_fs_update_poi_group_item, for FS_POI_Group), the box naming the icon under the
@@ -188,6 +189,48 @@ local function highlight(item)
 	end
 end
 
+-- The campaign's icons Guerrilla's world map drew too (its activities' temporary icons whose row is VisibleOnFSMap: a
+-- running Transporter's end point): the map markers whose last value (rfg_map_marker's ninth) says so, tinted as on
+-- the minimap, at Guerrilla's map icon size.
+local CAMPAIGN_ICONS = 8
+local Campaign_icons = {}               -- { handle, image }, made as they're needed
+
+local function place_campaign_icons(screen, on_screen)
+	local used = 0
+	if rfg_map_markers ~= nil then
+		for i = 1, rfg_map_markers() do
+			local mx, my, image, placement, r, g, b, age, on_world_map = rfg_map_marker(i)
+			if on_world_map == true and used < CAMPAIGN_ICONS then
+				local x, y = screen(mx, my)
+				if on_screen(x, y) then
+					used = used + 1
+					local icon = Campaign_icons[used]
+					if icon == nil then
+						icon = { handle = picture("rfg_fullmap_campaign" .. used, Map, image), image = image }
+						vint_set_property(icon.handle, "auto_offset", "c")
+						vint_set_property(icon.handle, "scale", ICON_SCALE, ICON_SCALE)
+						vint_set_property(icon.handle, "depth", 5)	-- as the map's icons: over the map, under the player
+						Campaign_icons[used] = icon
+					elseif icon.image ~= image then
+						vint_set_property(icon.handle, "image", image)
+						icon.image = image
+					end
+					if r ~= nil and r >= 0 then
+						vint_set_property(icon.handle, "tint", r, g, b)
+					else
+						vint_set_property(icon.handle, "tint", 255, 255, 255)
+					end
+					vint_set_property(icon.handle, "anchor", x, y)
+					vint_set_property(icon.handle, "visible", true)
+				end
+			end
+		end
+	end
+	for i = used + 1, #Campaign_icons do
+		vint_set_property(Campaign_icons[i].handle, "visible", false)
+	end
+end
+
 -- One frame while the map is open.
 local function frame(map_x, map_y, heading, centre_x, centre_y, view, zoom_pct, district)
 	local scale = SCREEN_H / view		-- screen units a world map pixel
@@ -243,6 +286,7 @@ local function frame(map_x, map_y, heading, centre_x, centre_y, view, zoom_pct, 
 			consider(icon, x, y)
 		end
 	end
+	place_campaign_icons(screen, on_screen)
 	local player_x, player_y = screen(map_x, map_y)
 	vint_set_property(Marker, "anchor", player_x, player_y)
 	vint_set_property(Marker, "rotation", heading)

@@ -106,8 +106,11 @@ Activity* Get(Mode mode);
 void Register(Activity* activity);
 Mode CurrentMode();
 void SetCurrentMode(Mode mode);
-// After a modal run ends, no other is offered for a while (Guerrilla's cooldown).
+// After a modal run ends, no other is offered for a while (Guerrilla's cooldown). A level's start clears it (Guerrilla's
+// level_init 0x797120, as a retry's reload does: ClearCooldown); the seconds left (CooldownLeft) for the log.
 void StartCooldown();
+void ClearCooldown();
+float CooldownLeft();
 
 // activity_register_damage_is_player_controlled (RM 0x785790): whether something was the player's doing: an object
 // marked (below); the player; his vehicle, or the one he last drove for 40 s after he left it (while no one else has
@@ -136,6 +139,18 @@ int DispositionToPlayer(const void* human);
 // Something died (a human: district_sources' wrap of Armageddon's human death; a vehicle or a prop: damage_feeds.cpp
 // and guerrilla_world's prop wrap): each listener is told, once a death.
 void ReportDeath(void* victim, void* killer);
+
+// Transporter (delivery.cpp): the running run's corner panel and ring, the activity-complete screen's answer (1 its first
+// hint, 2 its second), the player's death (as he dies; and as his death timer runs out, DeliveryTakePlayerDeath: true
+// when the run took it), a start node's progress (completed), its progress read again after a load.
+Activity* MakeDelivery();
+bool DeliveryScreen(Screen& screen);
+void DeliveryChoose(int choice);
+void DeliveryPlayerDied();
+bool DeliveryTakePlayerDeath();
+void DeliveryReopened(const char* how);  // the world opened again (a retry's reload): its start is set up
+bool DeliveryNodeDone(unsigned node);
+void DeliveryReloadProgress();
 
 // Killing spree (killing_spree.cpp), mayhem (mayhem.cpp), the car bomb with its M.O.A.B.s (car_bomb.cpp: its
 // world items made and touched each frame, CarBombFrame).

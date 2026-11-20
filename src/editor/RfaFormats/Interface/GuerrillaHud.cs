@@ -238,10 +238,15 @@ public static partial class GuerrillaHud
             // Its texts at Guerrilla's sizes (HudDocument.GuerrillaTextSizes): each text_scale times its font's
             // FontScale, and the shims told which elements, for the text_scale Guerrilla's script sets.
             var textScales = new List<(string Element, float Scale)>();
+            // Its texts with no size of their own in the document (no text_scale or scale to change: a document's values
+            // are changed in place, not added): the shims give them their text_scale as the document starts, before its
+            // init (2026-11-19: the Transporter's results screen's PRO / TARGET / BEST TIME labels, at Armageddon's
+            // bigger font, ran into each other).
+            var unsizedTexts = new List<(string Element, float Scale)>();
             if (hud.GuerrillaTextSizes)
             {
                 var fontScales = new Dictionary<string, float?>(StringComparer.OrdinalIgnoreCase);
-                int unscaled = 0, scaledByElement = 0;
+                int scaledByElement = 0;
                 foreach (VintElement element in document.Elements().Where(e => e.Type.Equals("text", StringComparison.OrdinalIgnoreCase)))
                 {
                     if (element.Properties.FirstOrDefault(p => p.NameHash == FontHash && p.ValueType == VintDocument.StringValue) is not { } fontProperty)
@@ -257,7 +262,7 @@ public static partial class GuerrillaHud
                     if (byElementScale) sizes = element.Properties.Where(p => p.NameHash == ScaleHash && p.ValueType == 7).ToList();
                     if (sizes.Count == 0)
                     {
-                        unscaled++;  // no size of its own to change (a document's values are changed in place, not added)
+                        unsizedTexts.Add((element.Name, by));  // sized by the shims as the document starts
                         continue;
                     }
                     foreach (VintProperty size in sizes)
@@ -271,7 +276,9 @@ public static partial class GuerrillaHud
                 report.Add($"{name}: {textScales.Count + scaledByElement} texts made Guerrilla's size (" +
                            string.Join(", ", fontScales.Where(f => f.Value != null).Select(f => $"{f.Key} x{f.Value:0.###}")) + ")" +
                            (scaledByElement > 0 ? $", {scaledByElement} of them by their element's scale" : "") +
-                           (unscaled > 0 ? $"; {unscaled} with no size of their own left as they are" : ""));
+                           (unsizedTexts.Count == 0 ? "" : hud.GuerrillaScript
+                               ? $"; {unsizedTexts.Count} with no size of their own sized as it starts ({string.Join(", ", unsizedTexts.Select(t => t.Element))})"
+                               : $"; {unsizedTexts.Count} with no size of their own left as they are (no Guerrilla script to size them)"));
             }
 
             // The textures it can show: those of the texture files it depends on, from Guerrilla's
@@ -396,10 +403,11 @@ public static partial class GuerrillaHud
             byte[] scriptBytes = guerrillaScript != null
                 ? Encoding.Latin1.GetBytes(GuerrillaScriptFor(name, guerrillaScript,
                                                               File.ReadAllText(Path.Combine(scriptsFolder, ShimsScript), Encoding.Latin1),
-                                                              TextScalesScript(name, textScales) +
+                                                              TextScalesScript(name, textScales, unsizedTexts) +
                                                               (hud.WeaponPictures == HudWeaponPictures.Reticles ? WeaponReticlesScript(weaponPictures) : "") +
                                                               (hud.UpgradePictures ? UpgradePicturesScript(upgradePictures, picture => TextureFor(picture) != null) : "") +
-                                                              File.ReadAllText(script, Encoding.Latin1), sheetOf.Keys, hud.BridgedItems,
+                                                              File.ReadAllText(script, Encoding.Latin1) +
+                                                              UnsizedTextsScript(name, unsizedTexts), sheetOf.Keys, hud.BridgedItems,
                                                               hud.RenamedGlobals ?? []))
                 : File.ReadAllBytes(script);
             byte[] main = Packfile.CreateContainer(documentTemplate, [(name + ".vint_doc", documentBytes), (name + ".lua", scriptBytes)]);
@@ -686,17 +694,44 @@ public static partial class GuerrillaHud
     /// For a document whose texts were made Guerrilla's size (HudDocument.GuerrillaTextSizes): which, and by how much,
     /// for the shims' text_scale (rfg_text_scales). Nothing for the others.
     /// </summary>
-    static string TextScalesScript(string document, IReadOnlyList<(string Element, float Scale)> scales)
+    static string TextScalesScript(string document, IReadOnlyList<(string Element, float Scale)> scales,
+                                   IReadOnlyList<(string Element, float Scale)> unsized)
     {
-        if (scales.Count == 0) return "";
+        if (scales.Count == 0 && unsized.Count == 0) return "";
         const string newline = "\r\n";
         var text = new StringBuilder();
         text.Append("-- Its texts made Guerrilla's size by their fonts (GuerrillaBuilder.exe): the text_scale its script sets is too." + newline);
+        text.Append("-- Those after the table's end have no size of their own in the document: they're given it as it starts." + newline);
         text.Append($"rfg_text_scales(\"{document}\", {{" + newline);
-        foreach (var (element, scale) in scales)
+        foreach (var (element, scale) in scales.Concat(unsized))
             text.Append($"\t{{ \"{element}\", {scale.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture)} }}," + newline);
+        text.Append("}, {" + newline);
+        foreach (var (element, _) in unsized)
+            text.Append($"\t\"{element}\"," + newline);
         text.Append("})" + newline + newline);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// After our script: its document's init wrapped, so that the texts with no size of their own (see
+    /// TextScalesScript) are given their text_scale first (the shims' rfg_size_unsized_texts), before our init and
+    /// Guerrilla's lay anything out. Nothing when it has none.
+    /// </summary>
+    static string UnsizedTextsScript(string document, IReadOnlyList<(string Element, float Scale)> unsized)
+    {
+        if (unsized.Count == 0) return "";
+        const string newline = "\r\n";
+        return newline + newline +
+               "-- Its texts with no size of their own in the document sized before anything else (GuerrillaBuilder.exe)." + newline +
+               "do" + newline +
+               $"\tlocal init_before_sizes = _GetAnyGlobalSilent(\"{document}_init\")" + newline +
+               $"\tfunction {document}_init()" + newline +
+               "\t\trfg_size_unsized_texts()" + newline +
+               "\t\tif init_before_sizes ~= nil then" + newline +
+               "\t\t\tinit_before_sizes()" + newline +
+               "\t\tend" + newline +
+               "\tend" + newline +
+               "end" + newline;
     }
 
     /// <summary>

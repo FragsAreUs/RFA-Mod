@@ -45,6 +45,13 @@ public static class GuerrillaCampaign
     /// <summary>The buildings with a value of their own, for mayhem's score: see <see cref="BuildingValues"/>.</summary>
     public const string BuildingValuesFile = "building_values.txt";
 
+    /// <summary>
+    /// Guerrilla's effects the campaign's activities play themselves, built with the world's effects (GuerrillaWorld, as
+    /// rfg_ effects): Transporter's ground ring at its end (gp_marker_target_a, objective_highlight_ground_marker_add,
+    /// Re-Mars-tered 0xB2E1E0).
+    /// </summary>
+    public static readonly string[] CampaignEffects = ["gp_marker_target_a"];
+
     /// <summary>The campaign's markers, in mods\guerrilla_campaign\: see <see cref="CampaignObjects"/>.</summary>
     public const string CampaignObjectsFile = @"world\campaign_objects.xml";
 
@@ -263,6 +270,15 @@ public static class GuerrillaCampaign
                             demoMasterCentre.TryAdd(Path.GetFileNameWithoutExtension(entry.Name), PlaceOf(o));
             }
         }
+        // Each object's children by its parent's handle, for a Transporter start node's spawn node and player start.
+        uint vehicleSpawnClass = NameHashes.ClassHash("object_vehicle_spawn_node"), playerStartClass = NameHashes.ClassHash("player_start");
+        var childrenOf = new Dictionary<uint, List<GuerrillaZoneObject>>();
+        foreach (var objects in objectsOf.Values)
+            foreach (var o in objects.Where(o => o.Parent != 0xFFFFFFFF && (o.ClassHash == vehicleSpawnClass || o.ClassHash == playerStartClass)))
+            {
+                if (!childrenOf.TryGetValue(o.Parent, out var list)) childrenOf[o.Parent] = list = [];
+                if (!list.Any(c => c.Handle == o.Handle)) list.Add(o);
+            }
         foreach (var entry in zoneEntries)
         {
             string guerrillaZone = Path.GetFileNameWithoutExtension(entry.Name);
@@ -291,6 +307,22 @@ public static class GuerrillaCampaign
                     string text = placeAndTurn ? Floats(value) : Value(property!.Type, value);
                     xml.Append($"  <property><name>{Escape(name)}</name><value>{Escape(text)}</value></property>\n");
                 }
+                // A Transporter start node's two children (Guerrilla's zones; neither is a campaign marker): its car's
+                // vehicle spawn node (child_vehicle_spawn_node: its handle, place and spawn_set; the world build places it,
+                // so the game parks the car there) and the player_start a retry puts the player at (child_player_start:
+                // its op, place and turn).
+                if (className == "object_delivery_node" && childrenOf.TryGetValue(o.Handle, out var children))
+                    foreach (var child in children)
+                    {
+                        if (child.ClassHash == vehicleSpawnClass)
+                        {
+                            var place = PlaceOf(child);
+                            xml.Append($"  <property><name>child_vehicle_spawn_node</name><value>{child.Handle:X8} {F(place.X)} {F(place.Y)} {F(place.Z)} " +
+                                       $"{Escape(child.Text("spawn_set")?.Trim() ?? "")}</value></property>\n");
+                        }
+                        else if (child.ClassHash == playerStartClass && child.Value("op") is { Length: >= 48 } childOp)
+                            xml.Append($"  <property><name>child_player_start</name><value>{Floats(childOp)}</value></property>\n");
+                    }
                 xml.Append("</object>\n");
             }
         }

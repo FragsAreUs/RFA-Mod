@@ -79,7 +79,7 @@ int Fail(const std::wstring& message) {
 // The Guerrilla world's format this RFA-Mod's mods need: the world builder's GuerrillaWorld.Format
 // (raised whenever a world built before won't work with the mods any more), which it writes into
 // mods\guerrilla_world\world.txt ("RFA-Mod Guerrilla world, format N") once a world is built.
-constexpr int kGuerrillaWorldFormat = 10;
+constexpr int kGuerrillaWorldFormat = 11;
 
 // When a Guerrilla world is here (overrides\build\pc\cache\rfg_l0.vpp_pc) but its stamp is missing
 // (built before worlds were stamped) or names another format, says what to do and asks whether to

@@ -461,6 +461,9 @@ void StartCooldown() {
     g_cooldown = cooldown > kCooldownMax ? kCooldownMax : cooldown;
 }
 
+void ClearCooldown() { g_cooldown = 0.0f; }
+float CooldownLeft() { return g_cooldown; }
+
 const BaseData* FindBaseData(const std::string& name) {
     for (const BaseData& data : g_baseData)
         if (_stricmp(data.name.c_str(), name.c_str()) == 0) return &data;
@@ -609,6 +612,7 @@ void Init() {
     managed_layers::Init();
     LoadBaseData();
     Register(MakeDemolitionsMaster());
+    Register(MakeDelivery());
     Register(MakeKillingSpree());
     Register(MakeMayhem());
     Register(MakeCarBomb());
@@ -741,7 +745,12 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     memset(info, 0, sizeof(*info));
     if (!guerrilla_campaign::Running()) return 0;
     g_shown = {};
-    if (!Playing() || !activities::DemolitionsScreen(g_shown) || g_shown.screen == 0) return 0;
+    if (!Playing()) return 0;
+    // The running kind's: demolitions master's (briefing, corner panel, results), else Transporter's corner panel.
+    if (!activities::DemolitionsScreen(g_shown) || g_shown.screen == 0) {
+        g_shown = {};
+        if (!activities::DeliveryScreen(g_shown) || g_shown.screen == 0) return 0;
+    }
     info->mode = static_cast<int>(g_shown.mode);
     info->screen = g_shown.screen;
     info->title = g_shown.title.c_str();
@@ -764,6 +773,7 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     info->proTime = g_shown.proTime;
     info->outOfRange = g_shown.outOfRange;
     info->salvage = g_shown.salvage;
+    info->distance = g_shown.distance.c_str();
     return 1;
 }
 
@@ -842,7 +852,13 @@ int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most) {
     using namespace campaign;
     if (!rings || most <= 0 || !guerrilla_campaign::Running() || !Playing()) return 0;
     activities::Screen screen;
-    if (!activities::DemolitionsScreen(screen) || screen.screen != 2) return 0;
+    if (!activities::DemolitionsScreen(screen) || screen.screen != 2) {
+        // Transporter's end (render_regions RM 0x76C780: add_decal of CIRCLE_FILLED_OUTLINE, End_Radius, 0, 0, 255, 192).
+        activities::Screen delivery;
+        if (!activities::DeliveryScreen(delivery) || delivery.screen != 2) return 0;
+        rings[0] = {delivery.center.x, delivery.center.z, delivery.range, 0, 0, 255, 192, 0};
+        return 1;
+    }
     GuerrillaCampaignMapRing& ring = rings[0];
     ring = {screen.center.x, screen.center.z, screen.range, 50, 200, 50, 80, 0};
     if (screen.outOfRange) ring = {screen.center.x, screen.center.z, screen.range, 200, 50, 50, 255, 0};
@@ -853,4 +869,40 @@ int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most) {
     rings[1] = {screen.target.x, screen.target.z, screen.targetRadius, 148, 13, 0, 255, 0};
     if (screen.targetDown) rings[1] = {screen.target.x, screen.target.z, screen.targetRadius, 55, 55, 55, 255, 0};
     return 2;
+}
+
+// The player's death timer ran out (guerrilla_save, from Armageddon's game-over screen's start): Guerrilla's
+// gamestate_gp_simulate_frame (RM 0x7EDB49) gave the death to the running activity, in this order: demolitions master
+// (mode 11), raids (8, 9), house arrest (10), Collateral Damage (1), the Transporter (4), area defense (16); none: its
+// death screen. Of those the Transporter takes it here (demolitions master's still ends its run as the player dies: how
+// Guerrilla brings its dead player back isn't found yet).
+int GuerrillaCampaign_TakePlayerDeath() {
+    using namespace campaign;
+    if (!guerrilla_campaign::Running() || !Playing()) return 0;
+    return activities::DeliveryTakePlayerDeath() ? 1 : 0;
+}
+
+// guerrilla_save's reload at a spot runs again: a retry's start is set up (delivery.cpp).
+void GuerrillaCampaign_ReloadedAtSpot() {
+    if (guerrilla_campaign::Running()) campaign::activities::DeliveryReopened("guerrilla_save's reload runs again");
+}
+
+// The campaign's map icons now (each activity's render_icons): a running Transporter's end point (RM 0x7977F0:
+// cartographer::add_temporary_icon(the end node, 31 MAP_ELEMENT_GUERILLA_EXP_END_POINT, true, -1, 0, 0x77, 0x77, ...);
+// its row: ui_map_icon_end_point, VisibleOnFSMap). (Its GPS marker, add_player_marker, comes with the GPS.)
+int GuerrillaCampaign_MapIcons(GuerrillaCampaignIcon* icons, int most) {
+    using namespace campaign;
+    if (!icons || most <= 0 || icons[0].size < static_cast<int>(sizeof(GuerrillaCampaignIcon)) || !guerrilla_campaign::Running() || !Playing())
+        return 0;
+    activities::Screen delivery;
+    if (!activities::DeliveryScreen(delivery) || delivery.screen != 2) return 0;
+    GuerrillaCampaignIcon& icon = icons[0];
+    icon.x = delivery.center.x;
+    icon.y = delivery.center.y;
+    icon.z = delivery.center.z;
+    icon.picture = "ui_map_icon_end_point";
+    icon.placement = 1;
+    icon.color = 0xFF007777;
+    icon.onWorldMap = 1;
+    return 1;
 }

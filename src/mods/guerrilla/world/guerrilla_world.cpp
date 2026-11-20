@@ -1139,6 +1139,76 @@ void RunClock(bool ours) {
     }
 }
 
+// ---- Armageddon's achievements and stats: off in our worlds (the user, 2026-11-19: "Yes, block them")
+//
+// Armageddon's stats (gamewide\stats.cpp) and its Steam achievements test nothing but that the profile owns its saves
+// (0x557770), so play in our worlds counted as its campaign: kills, shots, salvage, time, and achievements such as
+// SMP - Total Salvage, SP - Salvage Piles, SP - Flyer Bash Kills and the Nano ones could be won there. In our worlds
+// both are off; everywhere else they run as the game's own.
+// - Counting: every stat change goes through 0x553DC0 (cdecl: the stat's number, the value's address; a stat +1 is
+//   0x554630, which only calls it; so do 0x554660, the "most" stats' 0x554690 and 0x554750, the salvage 0x8C9E70 and the
+//   pods 0x8CEC80). A count also checks the stat's achievements (0x554330 → 0x554F80, Steam's award). Not held: the
+//   setters 0x5549A0 and 0x554AC0, which only the mission system, the save ("last mission saved", "completion percent",
+//   with a mission) and the profile's load call.
+// - Awarding by name: 0x554F30 (cdecl bool: the name, two flags; the only caller of 0x555060): the missions' code, the
+//   upgrades ("SMP - Upgrade Ring", "SMP - All Upgrades"), the scripts' sf_achievement_unlock, Infestation. In our worlds
+//   it refuses (false, as for a name it doesn't know).
+// - What reads the stats: the statistics screens, the menus' mission state (missions completed, game completed, last
+//   mission saved), Ruin's map unlocks (its high scores), Infestation (waves, totals, hidden challenges), the telemetry
+//   of a mission done and an upgrade bought (salvage total collected, rf4_gds_log_*). None of them is in our worlds'
+//   way. The salvage the player spends is another number: 0x8C9E70 adds a pickup to the stats, then to its holder's +0x10
+//   (held under the most at 0x227D9CC), which this leaves alone.
+constexpr DWORD kStatAdd = 0x553DC0;
+constexpr size_t kStatAddPrologue = 6;            // push ebp / mov ebp,esp / sub esp,34h
+constexpr DWORD kAwardAchievement = 0x554F30;
+constexpr size_t kAwardAchievementPrologue = 7;  // push ebp / mov ebp,esp / push ecx / mov eax,[ebp+8]
+using StatAddFn = void(__cdecl*)(int stat, const void* value);
+using AwardAchievementFn = bool(__cdecl*)(const char* name, bool b1, bool b2);
+StatAddFn g_statAdd = nullptr;
+AwardAchievementFn g_awardAchievement = nullptr;
+bool g_statsOffSaid = false;  // the log line said for this stay in one of our worlds
+
+void __cdecl StatAdd(int stat, const void* value) {
+    if (InOurWorld()) return;
+    g_statAdd(stat, value);
+}
+
+bool __cdecl AwardAchievement(const char* name, bool b1, bool b2) {
+    if (InOurWorld()) {
+        RFA_LOG_DETAIL_FIRST(8, "Achievements and stats: \"%s\" not awarded in world \"%s\"", name ? name : "?", WorldName());
+        return false;
+    }
+    return g_awardAchievement(name, b1, b2);
+}
+
+// At the sky step, as the clock: one line on entering one of our worlds, one on leaving it.
+void RunStatsBlock(bool ours) {
+    if (!g_statAdd && !g_awardAchievement) return;
+    if (ours && !g_statsOffSaid) {
+        g_statsOffSaid = true;
+        rfa::Log("Achievements and stats: Armageddon's off in world \"%s\"", WorldName());
+    } else if (!ours && g_statsOffSaid) {
+        g_statsOffSaid = false;
+        rfa::Log("Achievements and stats: Armageddon's on again in world \"%s\"", WorldName());
+    }
+}
+
+void InstallStatsBlock() {
+    const BYTE addOpening[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x34};
+    const BYTE awardOpening[] = {0x55, 0x8B, 0xEC, 0x51, 0x8B, 0x45, 0x08};
+    if (memcmp(reinterpret_cast<const void*>(kStatAdd), addOpening, sizeof(addOpening)) == 0)
+        g_statAdd = reinterpret_cast<StatAddFn>(rfa::HookFunction(kStatAdd, kStatAddPrologue, reinterpret_cast<void*>(&StatAdd)));
+    if (memcmp(reinterpret_cast<const void*>(kAwardAchievement), awardOpening, sizeof(awardOpening)) == 0)
+        g_awardAchievement = reinterpret_cast<AwardAchievementFn>(
+            rfa::HookFunction(kAwardAchievement, kAwardAchievementPrologue, reinterpret_cast<void*>(&AwardAchievement)));
+    if (!g_statAdd)
+        rfa::Log("Achievements and stats: the game's stat counting isn't as expected; Armageddon's stats (and the achievements "
+                 "they win) still count in our worlds");
+    if (!g_awardAchievement)
+        rfa::Log("Achievements and stats: the game's award by name isn't as expected; Armageddon's achievements awarded by name "
+                 "can still be won in our worlds");
+}
+
 // The radius setter, wrapped: in our worlds, held to what each layer can track.
 void __fastcall SetStreamRadiusHeld(void* manager, void* unused, int layer, float radius) {
     if ((layer == kSubzoneLayer || layer == kZoneLayer) && InOurWorld() && radius > MostRadius(layer)) {
@@ -5589,6 +5659,7 @@ void __fastcall RenderSkybox(void* renderer, void* unused) {
         TellAmbient();
     }
     RunClock(ours);
+    RunStatsBlock(ours);
     RunStreaming(ours);
     StreamWatchUpdate(ours);
     RunGroundDetail(ours);
@@ -10557,22 +10628,21 @@ PropFollow g_follows[8];
 
 bool PropLineLeft() { return g_propLines < kPropLines; }
 
-// True when `size` bytes at `at` are committed, readable memory (asked of Windows, so nothing faults finding out).
-bool ReadableMemory(const void* at, size_t size) {
-    MEMORY_BASIC_INFORMATION info;
-    if (!at || !VirtualQuery(at, &info, sizeof(info)) || info.State != MEM_COMMIT) return false;
-    if (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
-    const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    if (!(info.Protect & readable)) return false;
-    return static_cast<const BYTE*>(at) + size <= static_cast<const BYTE*>(info.BaseAddress) + info.RegionSize;
-}
+// A value of the game's, read with care: false when the memory went away, as CopyIfReadable catches. The prop log reads
+// the world's object lists and the objects in them while the game may be freeing them (a zone streaming out). Asking
+// Windows first (VirtualQuery, as this log once did) wasn't enough: the 19:02 run faulted reading an object's vtable
+// just after VirtualQuery had called it readable, with the search running every frame, and the game crashed in its heap
+// 0.4 s later.
+template <typename T> bool ReadGame(const void* at, T& value) { return CopyIfReadable(&value, at, sizeof(T)); }
 
 // Its body's mass, local balance point and speed, as text; "no body" or "body layout not found" otherwise.
 std::string PropBodyText(BYTE* prop) {
     char text[200];
-    BYTE* body = PropBody(*reinterpret_cast<const DWORD*>(prop + kObjectBody));
+    DWORD bodyHandle = 0;
+    float at[3];
+    if (!ReadGame(prop + kObjectBody, bodyHandle) || !ReadGame(prop + kObjectPos, at)) return "gone";
+    BYTE* body = PropBody(bodyHandle);
     if (!body) return "no body";
-    const float* at = reinterpret_cast<const float*>(prop + kObjectPos);
     if (g_propTranslation < 0) {
         for (int o = 0x40; o < 0x300; o += 16) {
             float v[3];
@@ -10597,13 +10667,8 @@ std::string PropBodyText(BYTE* prop) {
     return text;
 }
 
-// Which way its top faces (its orientation's second row) and how high its box reaches.
-void PropUp(const BYTE* prop, float* up) {
-    const float* m = reinterpret_cast<const float*>(prop + kObjectOrient);
-    up[0] = m[3];
-    up[1] = m[4];
-    up[2] = m[5];
-}
+// Which way its top faces (its orientation's second row); false when it can't be read.
+bool PropUp(const BYTE* prop, float (&up)[3]) { return ReadGame(prop + kObjectOrient + 3 * sizeof(float), up); }
 
 // Guerrilla's melee hit on a loose prop. Both games' melee (Guerrilla's object_mover::process_melee_hit RM 0xA139C0,
 // Armageddon's 0x8DA940, vtable +0x78) apply the move's structure figure as damage of kind 5, then push the body with the
@@ -10675,8 +10740,7 @@ void PropLogUpdate() {
         if (!f.handle || static_cast<LONG>(now - f.due) < 0) continue;
         BYTE* prop = ObjectInWorld(reinterpret_cast<void*>(kWorld), nullptr, f.handle);
         if (!prop) rfa::LogDetail("Props: %08lX 0.3 s after its hit: gone from the world", f.handle);
-        else {
-            const float* at = reinterpret_cast<const float*>(prop + kObjectPos);
+        else if (float at[3]; ReadGame(prop + kObjectPos, at)) {
             const float dx = at[0] - f.from[0], dy = at[1] - f.from[1], dz = at[2] - f.from[2];
             rfa::LogDetail("Props: %08lX 0.3 s after its hit: moved %.1f m (up %.1f); %s", f.handle, sqrtf(dx * dx + dy * dy + dz * dz), dy,
                      PropBodyText(prop).c_str());
@@ -10686,19 +10750,22 @@ void PropLogUpdate() {
     }
     const BYTE* world = reinterpret_cast<const BYTE*>(kWorld);
     // Which list is the props' is found once, with the level loaded: not every list holds objects (the 18:22 and
-    // 18:51 runs faulted reading one's entries as objects as the world loaded), so each list, and each entry before it
-    // is read as an object, is checked to be readable memory, and the object found must say it is of that type (+0x7A).
-    if (g_propType < 0) {
+    // 18:51 runs faulted reading one's entries as objects as the world loaded), so every entry and object is read with
+    // care (ReadGame), and the object found must say it is of that type (+0x7A).
+    if (g_propType == -1) {  // -2: searched and not found, not searched again
         if (*reinterpret_cast<const BYTE*>(kLevelLoaded) == 0) return;
         for (int t = 0; t < 64 && g_propType < 0; ++t) {
             const BYTE* entry = world + kWorldTypeLists + t * 12;
-            BYTE* const* list = *reinterpret_cast<BYTE* const* const*>(entry);
-            const int room = *reinterpret_cast<const int*>(entry + 4), count = *reinterpret_cast<const int*>(entry + 8);
-            if (!list || count <= 0 || count > room || room > 65536 || !ReadableMemory(list, count * sizeof(BYTE*))) continue;
+            BYTE* const* list = nullptr;
+            int room = 0, count = 0;
+            if (!ReadGame(entry, list) || !ReadGame(entry + 4, room) || !ReadGame(entry + 8, count)) continue;
+            if (!list || count <= 0 || count > room || room > 65536) continue;
             for (int i = 0; i < count && i < 64; ++i) {
-                BYTE* object = list[i];
-                if (!object || !ReadableMemory(object, kObjectTypeNumber + 1) || *reinterpret_cast<const DWORD*>(object) != kPropVtable) continue;
-                if (object[kObjectTypeNumber] != t) continue;
+                BYTE* object = nullptr;
+                DWORD vtable = 0;
+                BYTE type = 0;
+                if (!ReadGame(list + i, object) || !object || !ReadGame(object, vtable) || vtable != kPropVtable) continue;
+                if (!ReadGame(object + kObjectTypeNumber, type) || type != t) continue;
                 g_propType = t;
                 rfa::LogDetail("Props: the world's props are its type %d objects (%d now)", t, count);
                 break;
@@ -10710,25 +10777,25 @@ void PropLogUpdate() {
         }
     }
     if (g_propType < 0) return;
-    BYTE* const* list = *reinterpret_cast<BYTE* const* const*>(world + kWorldTypeLists + g_propType * 12);
-    const int count = *reinterpret_cast<const int*>(world + kWorldTypeLists + g_propType * 12 + 8);
-    if (!list || count <= 0) return;
-    const float* me = reinterpret_cast<const float*>(player + kObjectPos);
+    const BYTE* entry = world + kWorldTypeLists + g_propType * 12;
+    BYTE* const* list = nullptr;
+    int count = 0;
+    float me[3];
+    if (!ReadGame(entry, list) || !ReadGame(entry + 8, count) || !list || count <= 0 || !ReadGame(player + kObjectPos, me)) return;
     for (int n = 0; n < kPropsPerFrame && n < count; ++n) {
         g_propScan = (g_propScan + 1) % count;
-        BYTE* prop = list[g_propScan];
-        if (!prop || *reinterpret_cast<const DWORD*>(prop) != kPropVtable) continue;
-        const float* at = reinterpret_cast<const float*>(prop + kObjectPos);
+        BYTE* prop = nullptr;
+        DWORD vtable = 0, handle = 0;
+        float at[3], up[3];
+        if (!ReadGame(list + g_propScan, prop) || !prop || !ReadGame(prop, vtable) || vtable != kPropVtable) continue;
+        if (!ReadGame(prop + kObjectPos, at) || !ReadGame(prop + kObjectHandle, handle) || !PropUp(prop, up)) continue;
         const float dx = at[0] - me[0], dz = at[2] - me[2];
-        const DWORD handle = *reinterpret_cast<const DWORD*>(prop + kObjectHandle);
         TrackedProp* slot = nullptr;
         TrackedProp* spare = nullptr;
         for (TrackedProp& t : g_tracked) {
             if (t.handle == handle) slot = &t;
             else if (!spare && (!t.handle || now - t.seen > 20000)) spare = &t;
         }
-        float up[3];
-        PropUp(prop, up);
         if (!slot) {
             if (dx * dx + dz * dz > kPropTipNear * kPropTipNear || !spare) continue;
             *spare = {handle, {up[0], up[1], up[2]}, now, false};
@@ -11608,14 +11675,21 @@ bool __fastcall GeneralMoverBody(BYTE* mover, void* unused, bool flag) {
     return made;
 }
 
-// Its level object's name, read with care (the body is made as it streams in), or null.
-const char* PropName(const BYTE* mover) {
+// Its level object's name, read with care (the body is made as it streams in) into `name`, or false.
+bool PropName(const BYTE* mover, char (&name)[64]) {
     const BYTE* custom = nullptr;
-    if (!CopyIfReadable(&custom, mover + kMoverLevelObject, sizeof(custom)) || !ReadableMemory(custom, sizeof(void*))) return nullptr;
-    const BYTE* levelObject = *reinterpret_cast<BYTE* const*>(custom);
-    if (!ReadableMemory(levelObject, sizeof(void*))) return nullptr;
-    const char* name = *reinterpret_cast<const char* const*>(levelObject);
-    return ReadableMemory(name, 1) ? name : nullptr;
+    const BYTE* levelObject = nullptr;
+    const char* text = nullptr;
+    if (!ReadGame(mover + kMoverLevelObject, custom) || !custom || !ReadGame(custom, levelObject) || !levelObject ||
+        !ReadGame(levelObject, text) || !text)
+        return false;
+    for (size_t i = 0; i < sizeof(name); ++i)
+        if (!ReadGame(text + i, name[i]) || name[i] == '\0') {
+            name[i] = '\0';
+            return i > 0;
+        }
+    name[sizeof(name) - 1] = '\0';
+    return true;
 }
 
 void __cdecl BoxMassProperties(const float* from, const float* to, float mass, float* centre, float* inertia) {
@@ -11623,9 +11697,9 @@ void __cdecl BoxMassProperties(const float* from, const float* to, float mass, f
     const BYTE* const mover = t_bodyOf;
     if (!mover || !centre) return;
     if (InterlockedIncrement(&g_balanceLines) <= 8) {
-        const char* name = PropName(mover);
+        char name[64];
         rfa::LogDetail("Props: %s (%.0f kg): its balance point at its origin, as Guerrilla's (Armageddon's: its box's middle, %.2f %.2f %.2f m off)",
-                       name ? name : "a prop", mass, centre[0], centre[1], centre[2]);
+                       PropName(mover, name) ? name : "a prop", mass, centre[0], centre[1], centre[2]);
     }
     centre[0] = centre[1] = centre[2] = 0;
 }
@@ -11960,6 +12034,7 @@ void guerrilla_world::Init() {
     InstallBuildings();
     InstallTurbines();
     InstallPropBalance();
+    InstallStatsBlock();
     InstallLadders();
     MoreSoundEngineRoom();
     MoreStreamRoom();

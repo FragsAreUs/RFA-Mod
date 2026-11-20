@@ -80,8 +80,10 @@ public static class GuerrillaWorld
     /// 10 (v0.6.6-beta): sound fades in Wwise's own curve units, compressed (ADPCM) sound banks, Guerrilla's
     /// ground heights for the cars, the placed effects, wheel dust and gusts, the 475 m view distance,
     /// the carried propane tank's explosion, and the map icons.
+    /// 11 (v0.6.7-beta): Transporter's start nodes with their car and player start, its end marker effect,
+    /// the buildings' values for Mayhem, the M.O.A.B. item, and Guerrilla's text sizes on the HUD's screens.
     /// </summary>
-    public const int Format = 10;
+    public const int Format = 11;
     // The effects' emitters the game holds (guerrilla_world makes its pool 6,600) and Armageddon's own files' (639 files).
     const int EmitterRoom = 6600, ArmageddonEmitters = 3457;
 
@@ -591,7 +593,7 @@ public static class GuerrillaWorld
                                                         .. GuerrillaMaterialEvents.Effects(rfgTables), .. GuerrillaFootsteps.Effects(rfgTables),
                                                         .. GuerrillaKiosks.Effects(rfgTables), .. GuerrillaActions.PropEffects(rfgTables),
                                                         .. GuerrillaWheelEffects.Effects(rfgTables), .. GuerrillaPlacedEffects.Effects(guerrillaObjects.Values),
-                                                        .. GuerrillaGusts.Effects(rfgTables)],
+                                                        .. GuerrillaGusts.Effects(rfgTables), .. GuerrillaCampaign.CampaignEffects],
                                                        DlcExplosions(game), [.. vehicleEffects.Explosions, .. GuerrillaWeapons.Explosions(rfgTables)],
                                                        (cue, explosion) => effectSounds.EffectSound(cue, explosion) is { } sound
                                                            ? new GuerrillaEffectTables.Sound(sound.Event, sound.HeardTo) : null,
