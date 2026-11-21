@@ -104,7 +104,7 @@ BOOL CALLBACK LogMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM param) {
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(monitor, &mi);
     const RECT& r = mi.rcMonitor;
-    rfa::Log("  Monitor=%d: %ls %ldx%ld at %ld,%ld%s", ++*reinterpret_cast<int*>(param), mi.szDevice,
+    rfa::LogDetail("  Monitor=%d: %ls %ldx%ld at %ld,%ld%s", ++*reinterpret_cast<int*>(param), mi.szDevice,
              r.right - r.left, r.bottom - r.top, r.left, r.top, (mi.dwFlags & MONITORINFOF_PRIMARY) ? " (primary)" : "");
     return TRUE;
 }
@@ -133,8 +133,8 @@ void NoteGameMode(LONG style) {
     if (known && windowed == g_gameWindowed) return;
     known = true;
     g_gameWindowed = windowed;
-    if (windowed) rfa::Log("Game is in Windowed mode: making it borderless fullscreen");
-    else rfa::Log("Game is in its own exclusive Fullscreen mode, so this mod stays out of the way. "
+    if (windowed) rfa::LogDetail("Game is in Windowed mode: making it borderless fullscreen");
+    else rfa::LogInfo("Game is in its own exclusive Fullscreen mode, so this mod stays out of the way. "
                   "For borderless, set Options > Display to Windowed.");
 }
 
@@ -255,7 +255,7 @@ LRESULT CALLBACK WndProcHook(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         bool docked = Docked();
         if (docked != wasDocked) {
             wasDocked = docked;
-            rfa::Log(docked ? "The editor docked the game's window" : "The game's window is its own again");
+            rfa::LogDetail(docked ? "The editor docked the game's window" : "The game's window is its own again");
             if (docked) {
                 bool focused = GetFocus() == hwnd;
                 if (!focused && GetCapture() == hwnd) o_ReleaseCapture();
@@ -365,7 +365,7 @@ HWND WINAPI Hk_CreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR title, DWORD style
 // the game gets its own window back and changes mode as it always does; the editor sees the window
 // gone from its panel and docks it again a few seconds later.
 void TakeWindowBack() {
-    rfa::Log("The game is changing its display mode: taking its window out of the editor for that");
+    rfa::LogDetail("The game is changing its display mode: taking its window out of the editor for that");
     LONG style = GetWindowLongW(g_hwnd, GWL_STYLE);
     o_SetWindowLongW(g_hwnd, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP);
     SetParent(g_hwnd, nullptr);
@@ -547,7 +547,7 @@ void MakeDpiAware() {
     using SetContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
     auto set = reinterpret_cast<SetContextFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"),
                                                              "SetProcessDpiAwarenessContext"));
-    if (set && set(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) rfa::Log("Process is now per-monitor DPI aware");
+    if (set && set(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) rfa::LogDetail("Process is now per-monitor DPI aware");
     else rfa::Log("Could not change DPI awareness (error %lu); continuing", GetLastError());
 }
 
@@ -562,20 +562,20 @@ void borderless::Init() {
         g_pauseMenuRequest = reinterpret_cast<BYTE*>(0x135B3F1);
     else
         rfa::Log("Not the publicbeta build; switching away won't open the pause menu");
-    if (!g_enabled) rfa::Log("Enabled=0: the game runs unmodified (with [Loader] Log=1 what its window does is logged)");
+    if (!g_enabled) rfa::LogDetail("Enabled=0: the game runs unmodified (with [Loader] Log=1 what its window does is logged)");
     if (g_enabled && rfa::IniInt(L"Borderless", L"DpiAware", 1)) MakeDpiAware();
 
     int count = 0;
-    rfa::Log("Monitors (set [Borderless] Monitor= to pick one, 0 = primary):");
+    rfa::LogDetail("Monitors (set [Borderless] Monitor= to pick one, 0 = primary):");
     EnumDisplayMonitors(nullptr, nullptr, LogMonitor, reinterpret_cast<LPARAM>(&count));
     RECT r = TargetRect();
-    rfa::Log("In Windowed mode the game will cover %ldx%ld at %ld,%ld", r.right - r.left, r.bottom - r.top, r.left,
+    rfa::LogInfo("In Windowed mode the game will cover %ldx%ld at %ld,%ld", r.right - r.left, r.bottom - r.top, r.left,
              r.top);
 
     if (g_enabled && rfa::game::IsSupportedBuild()) {
         o_ApplyDisplayMode = reinterpret_cast<ApplyDisplayModeFn>(
             rfa::HookFunction(kApplyDisplayMode, kApplyDisplayModePrologue, reinterpret_cast<void*>(&Hk_ApplyDisplayMode)));
-        rfa::Log("Hook of the game's display mode change: %s", o_ApplyDisplayMode ? "ok" : "FAILED");
+        rfa::LogDetail("Hook of the game's display mode change: %s", o_ApplyDisplayMode ? "ok" : "FAILED");
     }
 
     HMODULE game = GetModuleHandleW(nullptr);
@@ -610,5 +610,5 @@ void borderless::Init() {
         if (h.ok) ++hooked;
         else rfa::Log("Hook %s!%s: FAILED", h.dll, h.func);
     }
-    rfa::Log("Hooked %d of the game's %d window, cursor and input functions", hooked, static_cast<int>(sizeof(hooks) / sizeof(hooks[0])));
+    rfa::LogDetail("Hooked %d of the game's %d window, cursor and input functions", hooked, static_cast<int>(sizeof(hooks) / sizeof(hooks[0])));
 }

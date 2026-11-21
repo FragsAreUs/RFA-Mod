@@ -137,7 +137,7 @@ int Level() { return ToGuerrillaLevel(g_level); }
 
 void Init() {
     if (rfa::IniInt(L"GuerrillaCampaign", L"GuerrillaDifficulty", 1) == 0) {
-        rfa::Log("Difficulty: Armageddon's own combat values in every world (GuerrillaDifficulty=0)");
+        rfa::LogDetail("Difficulty: Armageddon's own combat values in every world (GuerrillaDifficulty=0)");
         return;
     }
     const int taken = LoadValues();
@@ -151,7 +151,7 @@ void Init() {
         rfa::Log("Difficulty: could not hook the game's difficulty lookup; Armageddon's combat values stay");
         return;
     }
-    rfa::Log("Difficulty: in our worlds %d of Armageddon's difficulty items take Guerrilla's values (enemy damage, vehicle damage, "
+    rfa::LogDetail("Difficulty: in our worlds %d of Armageddon's difficulty items take Guerrilla's values (enemy damage, vehicle damage, "
              "spread, aim drift, bursts, collisions, the player's damage, regen delay and rate, vehicle damage and mass, explosions, "
              "falls); Custom reads as Medium",
              taken);

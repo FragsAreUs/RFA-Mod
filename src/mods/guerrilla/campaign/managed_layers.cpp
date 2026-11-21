@@ -91,8 +91,10 @@ void Create(const char* activity) {
     const int before = *reinterpret_cast<const int*>(kLayerObjects + 8);
     const bool made = reinterpret_cast<SetCallFn>(kSerialize)(g_set, nullptr);
     const int after = *reinterpret_cast<const int*>(kLayerObjects + 8);
-    rfa::Log(made ? "Managed layers: %s's layers made: %d objects" : "Managed layers: the game didn't make %s's layers' objects (%d listed)", activity,
-             after - before);
+    if (made)
+        rfa::LogDetail("Managed layers: %s's layers made: %d objects", activity, after - before);
+    else
+        rfa::Log("Managed layers: the game didn't make %s's layers' objects (%d listed)", activity, after - before);
 }
 
 void Release(const char* activity) {

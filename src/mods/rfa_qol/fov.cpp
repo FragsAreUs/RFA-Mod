@@ -83,7 +83,7 @@ float HorizontalFov(float vertical) {
 int ReadVerticalFov() {
     int vertical = rfa::IniInt(L"FOV", L"VerticalFov", 60);
     if (vertical < kMinFov || vertical > kMaxFov) {
-        rfa::Log("VerticalFov=%d is outside %d-%d; using the game's 45", vertical, kMinFov, kMaxFov);
+        rfa::LogDetail("VerticalFov=%d is outside %d-%d; using the game's 45", vertical, kMinFov, kMaxFov);
         vertical = 45;
     }
     return vertical;
@@ -91,7 +91,7 @@ int ReadVerticalFov() {
 
 void SetFov(int vertical) {
     g_scale = vertical / kDefaultFov;
-    rfa::Log("FOV: %d vertical (about %.0f horizontal on this screen), %.3fx the game's 45", vertical,
+    rfa::LogInfo("FOV: %d vertical (about %.0f horizontal on this screen), %.3fx the game's 45", vertical,
              HorizontalFov(static_cast<float>(vertical)), g_scale);
 }
 
@@ -109,10 +109,10 @@ void fov::Init() {
     }
     SetFov(ReadVerticalFov());
     if (rfa::ReplaceFunction(kFinaliseFov, reinterpret_cast<void*>(&FinaliseFov)))
-        rfa::Log("On-foot FOV set (capped at %d)", kMaxFov);
+        rfa::LogDetail("On-foot FOV set (capped at %d)", kMaxFov);
     if (rfa::IniInt(L"FOV", L"Vehicles", 1)) {
         g_vehicleCameraUpdate = reinterpret_cast<VehicleCameraUpdateFn>(rfa::HookFunction(
             kVehicleCameraUpdate, kVehicleCameraUpdatePrologue, reinterpret_cast<void*>(&VehicleCameraUpdate)));
-        if (g_vehicleCameraUpdate) rfa::Log("Vehicle and exo-suit FOV set (capped at %d)", kMaxFov);
+        if (g_vehicleCameraUpdate) rfa::LogDetail("Vehicle and exo-suit FOV set (capped at %d)", kMaxFov);
     }
 }

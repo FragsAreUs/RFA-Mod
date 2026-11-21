@@ -180,7 +180,7 @@ void ReadNodes() {
         if (sscanf_s(line, "node %lx %f %f %f", &node.handle, &node.at.x, &node.at.y, &node.at.z) == 4) g_nodes.push_back(node);
     }
     fclose(file);
-    rfa::Log("Reinforcements: %u of the EDF's squad nodes as places for squads on foot", static_cast<unsigned>(g_nodes.size()));
+    rfa::LogDetail("Reinforcements: %u of the EDF's squad nodes as places for squads on foot", static_cast<unsigned>(g_nodes.size()));
 }
 
 // A random loaded EDF squad node between the two distances (build_node_info: no sight test, uniform), or false.
@@ -249,7 +249,7 @@ bool SpawnOne(Allocation& a, BYTE* player, const SquadInfo& info) {
         if (!RoadPlace(here, nearest, farthest, place)) {
             where = "a nav cell";
             if (!CellPlace(here, nearest, farthest, inVehicle, place)) {
-                RFA_LOG_FIRST(16, "Reinforcements (%s): no squad node, road or nav cell %.0f to %.0f m from the player; %s waits", a.name, nearest, farthest,
+                RFA_LOG_DETAIL_FIRST(16, "Reinforcements (%s): no squad node, road or nav cell %.0f to %.0f m from the player; %s waits", a.name, nearest, farthest,
                               name.c_str());
                 return false;
             }
@@ -270,14 +270,14 @@ bool SpawnOne(Allocation& a, BYTE* player, const SquadInfo& info) {
     std::string why;
     const attack_squads::Made made = attack_squads::Make(order, squad, why);
     if (made == attack_squads::Made::Failed) {
-        RFA_LOG_FIRST(16, "Reinforcements (%s): %s; skipped", a.name, why.c_str());
+        RFA_LOG_DETAIL_FIRST(16, "Reinforcements (%s): %s; skipped", a.name, why.c_str());
         return true;
     }
     if (made == attack_squads::Made::Wait) {
         const int now = GameTime();
         if (a.tryingSince < 0) a.tryingSince = now;
         if (now - a.tryingSince < kSpawnTriesMs) return false;  // its vehicle's model may still be streaming in
-        rfa::Log("Reinforcements (%s): %s at (%.0f, %.0f, %.0f) in %d s; given up", a.name, why.c_str(), place.x, place.y, place.z, kSpawnTriesMs / 1000);
+        rfa::LogDetail("Reinforcements (%s): %s at (%.0f, %.0f, %.0f) in %d s; given up", a.name, why.c_str(), place.x, place.y, place.z, kSpawnTriesMs / 1000);
         return true;
     }
     a.squads.push_back(squad);
@@ -287,7 +287,7 @@ bool SpawnOne(Allocation& a, BYTE* player, const SquadInfo& info) {
 }
 
 void Release(Allocation& a, const char* why) {
-    if (!a.squads.empty()) rfa::Log("Reinforcements (%s): %u squads let go (%s)", a.name, static_cast<unsigned>(a.squads.size()), why);
+    if (!a.squads.empty()) rfa::LogDetail("Reinforcements (%s): %u squads let go (%s)", a.name, static_cast<unsigned>(a.squads.size()), why);
     for (Squad& squad : a.squads) attack_squads::LetGo(squad);
     a.squads.clear();
     a.profile = nullptr;
@@ -343,7 +343,7 @@ void FrameAllocation(Allocation& a, BYTE* player, int level, bool allowed, int n
     if (a.profile && a.squads.empty()) {
         // The wave is over: the next after the profile's spawn_delay.
         a.readyAt = now + a.profile->delayMs;
-        rfa::Log("Reinforcements (%s): %s's squads are all gone; another in %d s", a.name, a.profile->name.c_str(), a.profile->delayMs / 1000);
+        rfa::LogDetail("Reinforcements (%s): %s's squads are all gone; another in %d s", a.name, a.profile->name.c_str(), a.profile->delayMs / 1000);
         a.profile = nullptr;
         a.next = 0;
         return;
@@ -361,13 +361,13 @@ void FrameAllocation(Allocation& a, BYTE* player, int level, bool allowed, int n
         const int progression = liberation::EdfProgressionLevel();
         a.profile = PickProfile(a.level, progression, kind);
         if (!a.profile) {
-            RFA_LOG_FIRST(16, "Reinforcements (%s): no profile for progression %d, the player %s", a.name, progression, why);
+            RFA_LOG_DETAIL_FIRST(16, "Reinforcements (%s): no profile for progression %d, the player %s", a.name, progression, why);
             a.readyAt = now + 5000;
             return;
         }
         a.next = 0;
         a.tryingSince = -1;
-        rfa::Log("Reinforcements (%s): profile %s (progression %d, the player %s%s), %u squads", a.name, a.profile->name.c_str(), progression, why,
+        rfa::LogDetail("Reinforcements (%s): profile %s (progression %d, the player %s%s), %u squads", a.name, a.profile->name.c_str(), progression, why,
                  flyer && offMesh >= 0 ? (" " + std::to_string(static_cast<int>(offMesh)) + " m").c_str() : "",
                  static_cast<unsigned>(a.profile->squads.size()));
     }
@@ -383,9 +383,9 @@ void Init() {
     g_on = rfa::IniInt(L"GuerrillaCampaign", L"Reinforcements", 1) != 0;
     LoadProfiles();
     ReadNodes();
-    if (!g_on) rfa::Log("Reinforcements: off (Reinforcements=0 in [GuerrillaCampaign])");
+    if (!g_on) rfa::LogDetail("Reinforcements: off (Reinforcements=0 in [GuerrillaCampaign])");
     else if (g_profiles.empty()) rfa::Log("Reinforcements: no reinforcement_profile.xtbl; the EDF send no squads");
-    else rfa::Log("reinforcement_profile.xtbl: %u profiles; the EDF send squads at orange and red", static_cast<unsigned>(g_profiles.size()));
+    else rfa::LogDetail("reinforcement_profile.xtbl: %u profiles; the EDF send squads at orange and red", static_cast<unsigned>(g_profiles.size()));
 }
 
 void Enter() {

@@ -165,7 +165,7 @@ const char* Gone(Squad& squad, const std::vector<BYTE*>& members, int now) {
             squad.usefulUntil = now + kFirstUseMs;  // Guerrilla's squad is whole at its spawn: its timer from now
             if (squad.rides) {
                 FindVehicle(squad, members);
-                RFA_LOG_FIRST(24, "Attack squads: %s came %.1f s after it was made (%u of it; its vehicle %s)", squad.what.c_str(),
+                RFA_LOG_DETAIL_FIRST(24, "Attack squads: %s came %.1f s after it was made (%u of it; its vehicle %s)", squad.what.c_str(),
                               (now - squad.madeAt) / 1000.0f, static_cast<unsigned>(members.size()), squad.vehicle != kNone ? "with them" : "not seen");
             }
         }
@@ -274,6 +274,19 @@ void RetireLeaving(BYTE* player) {
         }
         ++i;
     }
+}
+
+void RemoveNow(Squad& squad) {
+    const std::vector<BYTE*> members = Members(squad.squad);
+    FindVehicle(squad, members);
+    if (squad.chased && squad.vehicle != kNone && guerrilla_vehicles::Running()) GuerrillaVehicles_Release(squad.vehicle);
+    squad.chased = false;
+    BYTE* player = static_cast<BYTE*>(Player());
+    const DWORD playersVehicle = player ? *reinterpret_cast<const DWORD*>(player + kInVehicle) : kNone;
+    for (BYTE* member : members) RemoveObject(kWorld, nullptr, HandleOf(member), 0);
+    if (squad.vehicle != kNone && squad.vehicle != playersVehicle && ObjectFromHandle(squad.vehicle)) RemoveObject(kWorld, nullptr, squad.vehicle, 0);
+    if (ObjectFromHandle(squad.squad)) RemoveObject(kWorld, nullptr, squad.squad, 0);
+    squad.vehicle = kNone;
 }
 
 size_t Leaving() { return g_leaving.size(); }

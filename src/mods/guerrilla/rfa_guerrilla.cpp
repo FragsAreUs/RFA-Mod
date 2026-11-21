@@ -61,7 +61,7 @@ bool CallInit(InitFn init) {
 // functions then, and the parts before it in the list are already running.
 void StartPart(Part& part) {
     if (!rfa::IniInt(L"Mods", part.name, 1)) {
-        rfa::Log("Skipping %ls (disabled in [Mods])", part.name);
+        rfa::LogDetail("Skipping %ls (disabled in [Mods])", part.name);
         return;
     }
     part.running = true;
@@ -95,11 +95,14 @@ bool guerrilla_world::Running() { return g_parts[kWorld].running; }
 
 extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     int running = 0;
+    std::wstring names;  // the parts running, for the start-up line
     for (Part& part : g_parts) {
         StartPart(part);
-        if (part.running) ++running;
+        if (!part.running) continue;
+        ++running;
+        names += (names.empty() ? L"" : L", ") + std::wstring(part.name);
     }
-    rfa::Log("%d of %d parts running", running, static_cast<int>(kParts));
+    rfa::LogInfo("%d of %d parts running: %ls", running, static_cast<int>(kParts), names.c_str());
 }
 
 // The in-game menus (rfa_menu.h): guerrilla_gear's upgrades window, then guerrilla_hud's keys window. A part whose

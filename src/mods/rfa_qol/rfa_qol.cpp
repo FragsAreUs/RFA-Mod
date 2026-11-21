@@ -41,7 +41,7 @@ bool CallInit(InitFn init) {
 // Starts a part unless its switch under [Mods] is 0. Returns whether it is running.
 bool StartPart(const wchar_t* name, InitFn init) {
     if (!rfa::IniInt(L"Mods", name, 1)) {
-        rfa::Log("Skipping %ls (disabled in [Mods])", name);
+        rfa::LogDetail("Skipping %ls (disabled in [Mods])", name);
         return false;
     }
     if (!CallInit(init)) {
@@ -75,7 +75,7 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     if (rfa::IniInt(L"Mcp", L"Enabled", 0))
         StartPart(L"rfa_live_analysis", live_analysis::Init);
     else
-        rfa::Log("Live analysis is off ([Mcp] Enabled=0): no pipe is opened");
+        rfa::LogDetail("Live analysis is off ([Mcp] Enabled=0): no pipe is opened");
 }
 
 // A console command for the next frame, from the loader's rfa_console_command (the main menu's Guerrilla

@@ -75,7 +75,7 @@ int __cdecl Disposition(BYTE* human, BYTE* other) {
 
 void Init() {
     if (rfa::IniInt(L"GuerrillaCampaign", L"Undercover", 1) == 0) {
-        rfa::Log("Undercover: off (Undercover=0 in [GuerrillaCampaign]): the EDF take the player for an enemy at any alert level");
+        rfa::LogDetail("Undercover: off (Undercover=0 in [GuerrillaCampaign]): the EDF take the player for an enemy at any alert level");
         return;
     }
     if (memcmp(reinterpret_cast<const void*>(kDisposition), kDispositionStart, kDispositionPrologue) != 0) {
@@ -83,8 +83,10 @@ void Init() {
         return;
     }
     g_disposition = reinterpret_cast<DispositionFn>(rfa::HookFunction(kDisposition, kDispositionPrologue, reinterpret_cast<void*>(&Disposition)));
-    rfa::Log(g_disposition ? "Undercover: at green the EDF take the player for a civilian until he attacks them, is seen in one of their bases or the alert rises"
-                           : "Undercover: could not hook the game's disposition function; the rule is left out");
+    if (g_disposition)
+        rfa::LogDetail("Undercover: at green the EDF take the player for a civilian until he attacks them, is seen in one of their bases or the alert rises");
+    else
+        rfa::Log("Undercover: could not hook the game's disposition function; the rule is left out");
 }
 
 void Frame() {
@@ -97,15 +99,15 @@ void Frame() {
         g_wasGreen = green;
         g_holding = -1;
         const std::string place = restricted_areas::PlayerPlace();
-        if (green) rfa::Log("Undercover: green again; the EDF who don't hold the player for an enemy take him for a civilian (the player %s)", place.c_str());
-        else rfa::Log("Undercover: the alert rose; all of the EDF take the player for an enemy (the player %s)", place.c_str());
+        if (green) rfa::LogDetail("Undercover: green again; the EDF who don't hold the player for an enemy take him for a civilian (the player %s)", place.c_str());
+        else rfa::LogDetail("Undercover: the alert rose; all of the EDF take the player for an enemy (the player %s)", place.c_str());
     }
     if (!green) return;
     const int holding = alert_sources::EdfHoldingPlayerForEnemy();
     if ((holding > 0) != (g_holding > 0) && g_holding >= 0) {
         const std::string place = restricted_areas::PlayerPlace();
-        if (holding > 0) rfa::Log("Undercover: %d of the EDF hold the player for an enemy (attacked, or seen in one of their bases); the player %s", holding, place.c_str());
-        else rfa::Log("Undercover: none of the EDF holds the player for an enemy now; the player %s", place.c_str());
+        if (holding > 0) rfa::LogDetail("Undercover: %d of the EDF hold the player for an enemy (attacked, or seen in one of their bases); the player %s", holding, place.c_str());
+        else rfa::LogDetail("Undercover: none of the EDF holds the player for an enemy now; the player %s", place.c_str());
     }
     g_holding = holding;
 }

@@ -235,7 +235,7 @@ void ActionFrame(BYTE* player) {
 
 void StartEdf() {
     g_on = rfa::IniInt(L"GuerrillaVehicles", L"EdfPatrols", 1) != 0;
-    rfa::Log(g_on ? "EDF: Guerrilla's drive-bys, fly-bys and harassing in the Guerrilla world" : "EDF: off ([GuerrillaVehicles] EdfPatrols=0)");
+    rfa::LogDetail(g_on ? "EDF: Guerrilla's drive-bys, fly-bys and harassing in the Guerrilla world" : "EDF: off ([GuerrillaVehicles] EdfPatrols=0)");
 }
 
 void EdfFrame() {

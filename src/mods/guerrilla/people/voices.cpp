@@ -54,7 +54,7 @@ bool Play() {
     if (!guerrilla_voices::Running()) return false;
     if (!g_told) {
         g_told = true;
-        rfa::Log("Voices: Guerrilla's people speak their free-roam lines through guerrilla_voices (pain, death, spotting, grenades, panic, joining, "
+        rfa::LogDetail("Voices: Guerrilla's people speak their free-roam lines through guerrilla_voices (pain, death, spotting, grenades, panic, joining, "
                  "ambushes, everyday lines)");
     }
     return true;

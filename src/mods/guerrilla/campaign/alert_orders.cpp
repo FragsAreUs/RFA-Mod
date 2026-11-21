@@ -167,7 +167,7 @@ void Free(Orders& orders, const char* why) {
 
 void Init() {
     g_on = rfa::IniInt(L"GuerrillaCampaign", L"AlertOrders", 1) != 0;
-    rfa::Log(g_on ? "Alert orders: at yellow and orange the EDF send their nearest squad (within 160 m) at the player"
+    rfa::LogDetail(g_on ? "Alert orders: at yellow and orange the EDF send their nearest squad (within 160 m) at the player"
                   : "Alert orders: off (AlertOrders=0 in [GuerrillaCampaign])");
 }
 
@@ -178,7 +178,7 @@ void Enter() {
     }
     g_haveSeen = false;
     g_next = 0;
-    if (g_on && !guerrilla_people::Running()) rfa::Log("Alert orders: guerrilla_people is off; a guard post's squad stays at its post");
+    if (g_on && !guerrilla_people::Running()) rfa::LogDetail("Alert orders: guerrilla_people is off; a guard post's squad stays at its post");
 }
 
 void Frame() {

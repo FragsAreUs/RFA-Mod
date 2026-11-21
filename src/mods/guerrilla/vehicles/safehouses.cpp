@@ -218,7 +218,7 @@ void StartSafehouses() {
     if (g_houses.empty())
         rfa::Log("Safehouses: no mods\\guerrilla_vehicles\\safehouses.txt (build the vehicles); a safehouse's spots aren't filled again");
     else
-        rfa::Log("Safehouses: %zu of Guerrilla's with %zu parked vehicles' spots; a safehouse's spots are filled again as the player walks into it, as Guerrilla's",
+        rfa::LogDetail("Safehouses: %zu of Guerrilla's with %zu parked vehicles' spots; a safehouse's spots are filled again as the player walks into it, as Guerrilla's",
                  g_houses.size(), spots);
 }
 

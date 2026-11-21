@@ -6,6 +6,8 @@
 #include "campaign.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <map>
+#include <mutex>
 
 namespace campaign::save {
 namespace {
@@ -17,21 +19,75 @@ const std::wstring& File() {
 
 std::wstring Wide(const char* text) { return std::wstring(text, text + strlen(text)); }
 
+// What has been read, kept. Windows' profile functions open and search the file on every call, and some readers
+// ask every frame (the car bomb's M.O.A.B. places, each up to twice a frame: 1.5 ms of an 8.4 ms frame in the
+// 2026-11-21 profile). Only the functions here change the file, and each change forgets everything kept, so a read
+// still gives what the file says. Kept by section, key and fallback (the answer when the key isn't there). A read
+// that overlapped a change isn't kept: the generation it began in has passed.
+std::mutex g_keptLock;
+std::map<std::string, int> g_keptInts;
+std::map<std::string, float> g_keptNumbers;
+unsigned g_generation = 0;
+
+std::string KeptName(const char* section, const char* key, const char* fallback) {
+    return std::string(section) + '\n' + key + '\n' + fallback;
+}
+
+unsigned Generation() {
+    std::lock_guard<std::mutex> lock(g_keptLock);
+    return g_generation;
+}
+
+// After a change to the file: nothing kept is known to be what it says.
+void Forget() {
+    std::lock_guard<std::mutex> lock(g_keptLock);
+    g_keptInts.clear();
+    g_keptNumbers.clear();
+    ++g_generation;
+}
+
 }  // namespace
 
 int Int(const char* section, const char* key, int fallback) {
-    return static_cast<int>(GetPrivateProfileIntW(Wide(section).c_str(), Wide(key).c_str(), fallback, File().c_str()));
+    char fallbackText[16];
+    sprintf_s(fallbackText, "%d", fallback);
+    const std::string name = KeptName(section, key, fallbackText);
+    {
+        std::lock_guard<std::mutex> lock(g_keptLock);
+        const auto found = g_keptInts.find(name);
+        if (found != g_keptInts.end()) return found->second;
+    }
+    const unsigned generation = Generation();
+    const int value = static_cast<int>(GetPrivateProfileIntW(Wide(section).c_str(), Wide(key).c_str(), fallback, File().c_str()));
+    std::lock_guard<std::mutex> lock(g_keptLock);
+    if (generation == g_generation) g_keptInts[name] = value;
+    return value;
 }
 
 float Number(const char* section, const char* key, float fallback) {
+    char fallbackText[16];
+    unsigned bits;
+    memcpy(&bits, &fallback, sizeof(bits));
+    sprintf_s(fallbackText, "%08X", bits);
+    const std::string name = KeptName(section, key, fallbackText);
+    {
+        std::lock_guard<std::mutex> lock(g_keptLock);
+        const auto found = g_keptNumbers.find(name);
+        if (found != g_keptNumbers.end()) return found->second;
+    }
+    const unsigned generation = Generation();
     wchar_t text[64];
     GetPrivateProfileStringW(Wide(section).c_str(), Wide(key).c_str(), L"", text, 64, File().c_str());
-    return text[0] ? static_cast<float>(_wtof(text)) : fallback;
+    const float value = text[0] ? static_cast<float>(_wtof(text)) : fallback;
+    std::lock_guard<std::mutex> lock(g_keptLock);
+    if (generation == g_generation) g_keptNumbers[name] = value;
+    return value;
 }
 
 void SetInt(const char* section, const char* key, int value) {
     CreateDirectoryW(ModFolder().c_str(), nullptr);
     WritePrivateProfileStringW(Wide(section).c_str(), Wide(key).c_str(), std::to_wstring(value).c_str(), File().c_str());
+    Forget();
 }
 
 void SetNumber(const char* section, const char* key, float value) {
@@ -39,6 +95,7 @@ void SetNumber(const char* section, const char* key, float value) {
     wchar_t text[64];
     swprintf_s(text, L"%.6g", value);
     WritePrivateProfileStringW(Wide(section).c_str(), Wide(key).c_str(), text, File().c_str());
+    Forget();
 }
 
 std::string ForObject(const char* kind, unsigned handle) {
@@ -75,14 +132,18 @@ std::string Bytes() {
 }
 
 void Replace(const unsigned char* data, int size) {
-    // Windows' profile functions keep no copy: the file itself is the save, so replacing it is enough.
+    // Windows' profile functions keep no copy: the file itself is the save, so replacing it, and forgetting what
+    // Int and Number kept of the old one, is enough.
     DeleteFileW(File().c_str());
-    if (!data || size <= 0) return;
-    CreateDirectoryW(ModFolder().c_str(), nullptr);
-    FILE* file = nullptr;
-    if (_wfopen_s(&file, File().c_str(), L"wb") != 0 || !file) return;
-    fwrite(data, 1, static_cast<size_t>(size), file);
-    fclose(file);
+    if (data && size > 0) {
+        CreateDirectoryW(ModFolder().c_str(), nullptr);
+        FILE* file = nullptr;
+        if (_wfopen_s(&file, File().c_str(), L"wb") == 0 && file) {
+            fwrite(data, 1, static_cast<size_t>(size), file);
+            fclose(file);
+        }
+    }
+    Forget();
 }
 
 }  // namespace campaign::save

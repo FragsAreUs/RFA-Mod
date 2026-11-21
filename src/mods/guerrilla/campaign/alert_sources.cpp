@@ -154,7 +154,7 @@ void ReadVehicleTeams() {
     if (g_vehicleTeams.empty())
         rfa::Log("No vehicle_teams.txt (editor\\GuerrillaBuilder.exe build people writes it): the EDF's wrecked vehicles won't raise the alert");
     else
-        rfa::Log("vehicle_teams.txt: %u vehicles, %d the EDF's", static_cast<unsigned>(g_vehicleTeams.size()), edf);
+        rfa::LogDetail("vehicle_teams.txt: %u vehicles, %d the EDF's", static_cast<unsigned>(g_vehicleTeams.size()), edf);
 }
 
 // The team a vehicle is made for (Guerrilla's Default_Team), or -1.
@@ -335,7 +335,7 @@ void LookAtBuildings() {
     }
     if (!g_buildingsSaid && !g_buildings.empty()) {
         g_buildingsSaid = true;
-        rfa::Log("Watching %u of the EDF's buildings in the zones loaded (of %d buildings)", static_cast<unsigned>(g_buildings.size()), count);
+        rfa::LogDetail("Watching %u of the EDF's buildings in the zones loaded (of %d buildings)", static_cast<unsigned>(g_buildings.size()), count);
     }
 }
 

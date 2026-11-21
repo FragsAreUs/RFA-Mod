@@ -124,7 +124,7 @@ void LoadRows() {
         if (r.name.empty() || r.entries.empty()) continue;
         g_rows.push_back(r);
     }
-    rfa::Log("activity_continuous_attack.xtbl: %u continuous attacks", static_cast<unsigned>(g_rows.size()));
+    rfa::LogDetail("activity_continuous_attack.xtbl: %u continuous attacks", static_cast<unsigned>(g_rows.size()));
 }
 
 const Row* RowNamed(const char* name) {
@@ -156,7 +156,7 @@ void ReadRegions() {
         if (r.layer != "-") ++fromLayers;
         g_regions.push_back(r);
     }
-    rfa::Log("Continuous attacks: %u spawn regions (%d in the world's zones, %d in activities' layers)%s", static_cast<unsigned>(g_regions.size()),
+    rfa::LogDetail("Continuous attacks: %u spawn regions (%d in the world's zones, %d in activities' layers)%s", static_cast<unsigned>(g_regions.size()),
              static_cast<int>(g_regions.size()) - fromLayers, fromLayers,
              g_regions.empty() ? ": none (editor\\GuerrillaBuilder.exe build campaign makes them); no attacker can come" : "");
 }
@@ -232,7 +232,7 @@ public:
             return false;
         }
         if (IsActive()) {
-            rfa::Log("Continuous attack %s (%s): %s runs already", row->name.c_str(), who, row_ ? row_->name.c_str() : "one");
+            rfa::LogDetail("Continuous attack %s (%s): %s runs already", row->name.c_str(), who, row_ ? row_->name.c_str() : "one");
             return false;
         }
         // level_init → activity_reset: its disable flags cleared (a mission's doesn't stop it) and back to WAIT, so an
@@ -252,25 +252,35 @@ public:
             Clear();
             return false;
         }
-        rfa::Log("Continuous attack %s (%s): started at %08X: %d squads at once, one every %d s, %u kinds", row->name.c_str(), who, target_, count_,
+        rfa::LogDetail("Continuous attack %s (%s): started at %08X: %d squads at once, one every %d s, %u kinds", row->name.c_str(), who, target_, count_,
                  row->periodMs / 1000, static_cast<unsigned>(row->entries.size()));
         return true;
     }
 
     void Stop(const char* why) {
         if (!IsActive()) return;
-        rfa::Log("Continuous attack %s: ended (%s)", row_ ? row_->name.c_str() : "?", why);
+        rfa::LogDetail("Continuous attack %s: ended (%s)", row_ ? row_->name.c_str() : "?", why);
+        End();
+    }
+
+    // Ended with its squads taken away at once (area defense's clean-up behind its fade: player_equipment_cleanup RM
+    // 0x7A0890 destroys every hostile NPC a continuous attack made).
+    void Clear(const char* why) {
+        if (!IsActive()) return;
+        rfa::LogDetail("Continuous attack %s: ended, its %u squads taken away (%s)", row_ ? row_->name.c_str() : "?", static_cast<unsigned>(squads_.size()), why);
+        for (attack_squads::Squad& squad : squads_) attack_squads::RemoveNow(squad);
+        squads_.clear();
         End();
     }
 
     void SetCount(int count) {
         count_ = count < 0 ? 0 : count > kMostByScript ? kMostByScript : count;
-        rfa::Log("Continuous attack %s: %d squads at once", row_ ? row_->name.c_str() : "-", count_);
+        rfa::LogDetail("Continuous attack %s: %d squads at once", row_ ? row_->name.c_str() : "-", count_);
     }
     void ChangeCount(int change) { SetCount(count_ + change); }
     void SetSubGroup(int group) {
         subGroup_ = group;
-        rfa::Log("Continuous attack %s: its squads from group %d", row_ ? row_->name.c_str() : "-", group);
+        rfa::LogDetail("Continuous attack %s: its squads from group %d", row_ ? row_->name.c_str() : "-", group);
     }
 
 protected:
@@ -284,7 +294,7 @@ protected:
             attack_squads::Squad& squad = squads_[i];
             const std::vector<BYTE*> members = attack_squads::Members(squad.squad);
             if (const char* gone = attack_squads::Gone(squad, members, now)) {
-                if (squad.rides && !squad.hadMembers) RFA_LOG_FIRST(24, "Continuous attack %s: %s is let go (%s)", row_->name.c_str(), squad.what.c_str(), gone);
+                if (squad.rides && !squad.hadMembers) RFA_LOG_DETAIL_FIRST(24, "Continuous attack %s: %s is let go (%s)", row_->name.c_str(), squad.what.c_str(), gone);
                 else RFA_LOG_DETAIL_FIRST(60, "Continuous attack %s: %s is done (%s)", row_->name.c_str(), squad.what.c_str(), gone);
                 attack_squads::LetGo(squad);  // what's left of it (its car, its squad object) freed
                 squads_.erase(squads_.begin() + i);
@@ -314,7 +324,7 @@ protected:
         const bool targetAlive = attack_squads::TargetAlive(target_);
         if (targetAlive != targetAlive_) {
             targetAlive_ = targetAlive;
-            rfa::Log("Continuous attack %s: %s", row_->name.c_str(),
+            rfa::LogDetail("Continuous attack %s: %s", row_->name.c_str(),
                      targetAlive ? "its target is alive again: squads come" : "its target is dead or gone: no more squads until it lives again or the level starts again");
         }
         // The spawn timer: when it runs out a squad comes (if fewer than the count live); with none set and room, it's
@@ -338,7 +348,7 @@ protected:
         Clear();
     }
     void Kill() override {
-        if (IsActive()) rfa::Log("Continuous attack %s: stopped (another activity began)", row_ ? row_->name.c_str() : "?");
+        if (IsActive()) rfa::LogDetail("Continuous attack %s: stopped (another activity began)", row_ ? row_->name.c_str() : "?");
         End();
     }
 
@@ -378,12 +388,12 @@ private:
         // Once each time it begins to find none (and once when it finds one again): Guerrilla tries again each period.
         if (!region) {
             if (!noRegion_)
-                rfa::Log("Continuous attack %s: no spawn region %.0f to %.0f m from the player (of %u; loaded: the world's and its activities' loaded layers); tried again each period",
+                rfa::LogDetail("Continuous attack %s: no spawn region %.0f to %.0f m from the player (of %u; loaded: the world's and its activities' loaded layers); tried again each period",
                          row_->name.c_str(), onFoot ? kFootNear : kVehicleNear, kFar, static_cast<unsigned>(g_regions.size()));
             noRegion_ = true;
             return;
         }
-        if (noRegion_) rfa::Log("Continuous attack %s: a spawn region in reach again", row_->name.c_str());
+        if (noRegion_) rfa::LogDetail("Continuous attack %s: a spawn region in reach again", row_->name.c_str());
         noRegion_ = false;
         attack_squads::Order order;
         order.squad = entry->squad;
@@ -403,10 +413,10 @@ private:
                            static_cast<unsigned>(squads_.size()), count_);
             break;
         case attack_squads::Made::Wait:
-            RFA_LOG_FIRST(12, "Continuous attack %s: %s; tried again next period", row_->name.c_str(), why.c_str());
+            RFA_LOG_DETAIL_FIRST(12, "Continuous attack %s: %s; tried again next period", row_->name.c_str(), why.c_str());
             break;
         case attack_squads::Made::Failed:
-            RFA_LOG_FIRST(20, "Continuous attack %s: %s", row_->name.c_str(), why.c_str());
+            RFA_LOG_DETAIL_FIRST(20, "Continuous attack %s: %s", row_->name.c_str(), why.c_str());
             break;
         }
     }
@@ -431,25 +441,25 @@ private:
             // still sits in its seats for a moment, and a chase handed then ends the next frame (2026-11-20: in pairs
             // 10 ms apart). By then it is out, or the chase lost it farther off and may take it again.
             squad.handAgainAt = now + kHandAgainMs;
-            RFA_LOG_FIRST(24, "Continuous attack %s: %s's chase ended by itself, %.0f m from the target", row_->name.c_str(), squad.what.c_str(), away);
+            RFA_LOG_DETAIL_FIRST(24, "Continuous attack %s: %s's chase ended by itself, %.0f m from the target", row_->name.c_str(), squad.what.c_str(), away);
         }
         if (now < squad.handAgainAt) return;
         if (VehicleSubtype(vehicle, nullptr) != kAutomobile) {
             squad.ownAi = true;
-            RFA_LOG_FIRST(24, "Continuous attack %s: %s keeps its own AI (not a car)", row_->name.c_str(), squad.what.c_str());
+            RFA_LOG_DETAIL_FIRST(24, "Continuous attack %s: %s keeps its own AI (not a car)", row_->name.c_str(), squad.what.c_str());
             return;
         }
         if (away > kChaseReach) {
             if (std::find(farTold_.begin(), farTold_.end(), squad.squad) == farTold_.end()) {  // once a squad
                 farTold_.push_back(squad.squad);
                 if (farTold_.size() > 64) farTold_.erase(farTold_.begin());
-                RFA_LOG_FIRST(24, "Continuous attack %s: %s's car is %.0f m from the target, beyond the chase's %.0f m: not handed over yet", row_->name.c_str(),
+                RFA_LOG_DETAIL_FIRST(24, "Continuous attack %s: %s's car is %.0f m from the target, beyond the chase's %.0f m: not handed over yet", row_->name.c_str(),
                               squad.what.c_str(), away, kChaseReach);
             }
             return;
         }
         squad.chased = GuerrillaVehicles_ChaseWithin(squad.vehicle, target_, kChaseReach);  // false (no driver seated yet...): tried again later
-        if (squad.chased) RFA_LOG_FIRST(24, "Continuous attack %s: %s handed to the chase driver, %.0f m from the target", row_->name.c_str(), squad.what.c_str(), away);
+        if (squad.chased) RFA_LOG_DETAIL_FIRST(24, "Continuous attack %s: %s handed to the chase driver, %.0f m from the target", row_->name.c_str(), squad.what.c_str(), away);
     }
 
     void Clear() {
@@ -504,7 +514,7 @@ void StartCommand() {
         return;
     }
     g_consoleLayer = layer;  // for this run (its first squad comes at its next frame); cleared as it ends
-    rfa::Log("rfg_ca_start %s: at the player%s", row->name.c_str(), layer.empty() ? "" : (", with " + layer + "'s spawn regions counted as loaded").c_str());
+    rfa::LogDetail("rfg_ca_start %s: at the player%s", row->name.c_str(), layer.empty() ? "" : (", with " + layer + "'s spawn regions counted as loaded").c_str());
     ConsolePrint("rfg_ca_start: %s started at you\n", row->name.c_str());
 }
 
@@ -534,6 +544,9 @@ bool ContinuousAttackStart(unsigned target, const char* row, const char* who) {
 }
 void ContinuousAttackEnd(const char* why) {
     if (g_attack) g_attack->Stop(why);
+}
+void ContinuousAttackClear(const char* why) {
+    if (g_attack) g_attack->Clear(why);
 }
 void ContinuousAttackSetCount(int count) {
     if (g_attack) g_attack->SetCount(count);

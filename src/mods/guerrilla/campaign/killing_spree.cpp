@@ -66,7 +66,7 @@ void LoadTweaks() {
         for (const Tweak& tweak : tweaks)
             if (_stricmp(row.Text("Name").c_str(), tweak.name) == 0)
                 *tweak.value = static_cast<int>(row.Number("Value", static_cast<float>(*tweak.value)));
-    rfa::Log("Killing spree: %d kills in %d ms start one, %d ms to go on, %d ms after each kill", g_initialKills, g_initialTimeMs,
+    rfa::LogDetail("Killing spree: %d kills in %d ms start one, %d ms to go on, %d ms after each kill", g_initialKills, g_initialTimeMs,
              g_startPeriodMs, g_additionalPeriodMs);
 }
 
@@ -118,7 +118,7 @@ public:
             if (count_ >= g_initialKills) StartSpree();
         } else if (disposition >= kFriendly) {
             if (IsActive()) {
-                rfa::Log("Killing spree: a friend killed; it ends with %d kills", count_);
+                rfa::LogDetail("Killing spree: a friend killed; it ends with %d kills", count_);
                 End();
             }
         }
@@ -137,7 +137,7 @@ protected:
     // end 0x7ADA20: morale, one point a kill, then end_common.
     void End() override {
         if (!IsActive()) return;
-        rfa::Log("Killing spree: over with %d kills: morale %+d", count_, count_);
+        rfa::LogDetail("Killing spree: over with %d kills: morale %+d", count_, count_);
         if (count_ > 0) liberation::ChangeMorale(static_cast<float>(count_), -1);
         Activity::End();
         ResetSpree();
@@ -145,7 +145,7 @@ protected:
 
     // kill 0x798990: no morale.
     void Kill() override {
-        if (IsActive()) rfa::Log("Killing spree: stopped with %d kills (nothing given)", count_);
+        if (IsActive()) rfa::LogDetail("Killing spree: stopped with %d kills (nothing given)", count_);
         Activity::End();
         ResetSpree();
     }
@@ -155,7 +155,7 @@ private:
         if (!StartFree()) return;
         expiresAt_ = GameTime() + g_startPeriodMs;
         messages::Tip("Killing_Spree", kTipMs);
-        rfa::Log("Killing spree: started with %d kills", count_);
+        rfa::LogDetail("Killing spree: started with %d kills", count_);
     }
 
     void ResetSpree() {

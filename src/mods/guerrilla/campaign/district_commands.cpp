@@ -77,7 +77,7 @@ void Set() {
     const float value = static_cast<float>(atof(number.c_str()));
     if (what == "control") liberation::SetEdfControl(value, here);
     else liberation::SetMorale(value, here);
-    rfa::Log("rfg_district_set %s %.0f in %s", what.c_str(), value, liberation::GetDistrict(here)->name.c_str());
+    rfa::LogDetail("rfg_district_set %s %.0f in %s", what.c_str(), value, liberation::GetDistrict(here)->name.c_str());
     PrintDistrict(here, "Now ");
 }
 
@@ -91,7 +91,7 @@ void MissionsDone() {
         return;
     }
     const int marked = liberation::MarkMissionsDone(here);
-    rfa::Log("rfg_district_missions_done in %s: %d story missions marked done (testing)", liberation::GetDistrict(here)->name.c_str(), marked);
+    rfa::LogDetail("rfg_district_missions_done in %s: %d story missions marked done (testing)", liberation::GetDistrict(here)->name.c_str(), marked);
     ConsolePrint("%d story missions of %s marked done (testing); it liberates once its EDF control is 0 (rfg_district_set control 0)\n", marked,
                  liberation::GetDistrict(here)->name.c_str());
     PrintDistrict(here, "Now ");

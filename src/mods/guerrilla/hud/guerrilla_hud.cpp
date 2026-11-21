@@ -140,7 +140,7 @@ void EnlargeInterfacePool() {
             rfa::Log("The interface's memory: could not change the game's code at 0x%08lX", at);
             return;
         }
-    rfa::Log("The interface's memory: %lu MB (the game's 10 MB is too little for Guerrilla's map pictures)",
+    rfa::LogDetail("The interface's memory: %lu MB (the game's 10 MB is too little for Guerrilla's map pictures)",
              kInterfacePoolOurs / (1024 * 1024));
 }
 
@@ -189,7 +189,7 @@ void* __fastcall DocumentArrayMake(void* array, void* unused) {
     }
     for (int i = 0; i < kMaxDocuments; ++i) DocumentRecordMake(records + i * kDocumentRecordSize, nullptr);
     ArraySet(array, nullptr, records, kMaxDocuments, 0);
-    rfa::Log("Interface documents: room for %d in the project (the game's 128)", kMaxDocuments);
+    rfa::LogDetail("Interface documents: room for %d in the project (the game's 128)", kMaxDocuments);
     return array;
 }
 
@@ -205,7 +205,7 @@ void __fastcall OpenPoolInit(void* pool, void* unused, void* gameMempool, unsign
     MempoolMake(mempool, nullptr, buffer, static_cast<unsigned>(size), kOpenPoolName, 1, 0);
     g_openPoolInit(pool, unused, mempool, kMaxOpenDocuments);
     MempoolRelease(mempool, nullptr);
-    rfa::Log("Interface documents: %d open at once (the game's %u)", kMaxOpenDocuments, count);
+    rfa::LogDetail("Interface documents: %d open at once (the game's %u)", kMaxOpenDocuments, count);
 }
 
 // The interface keeps the documents it is loading, unloading and drawing in eight lists of handles
@@ -291,7 +291,7 @@ void MoveDocumentSlots() {
             rfa::Log("Interface document slots: could not change the game's count at 0x%08lX", at);
             return;
         }
-    rfa::Log("Interface document slots: %u (the game's %u), moved to 0x%08lX", kDocumentSlotCount, kGameDocumentSlots, ours);
+    rfa::LogDetail("Interface document slots: %u (the game's %u), moved to 0x%08lX", kDocumentSlotCount, kGameDocumentSlots, ours);
 }
 
 // The project's reader (vint_project.cpp, 0xC50360) keeps the documents it reads from rfg.vint_proj
@@ -375,7 +375,7 @@ void RaiseElementPools() {
             return;
         }
     }
-    rfa::Log("Interface elements: three times the game's pools (bitmaps %lu, tweens %lu, groups %lu, texts %lu, "
+    rfa::LogDetail("Interface elements: three times the game's pools (bitmaps %lu, tweens %lu, groups %lu, texts %lu, "
              "animations %lu, documents %lu), in %lu MB (the game's 640 KB)", 3 * 0x514ul, 3 * 0x334ul, 3 * 0x1DCul,
              3 * 0x118ul, 3 * 0x16Cul, 3 * 0xC4ul, kVintPermOurs / (1024 * 1024));
 }
@@ -436,13 +436,13 @@ void MovePictureTables() {
         const DWORD bytes = kPictureNamePlacesOurs * 4;
         rfa::PatchCode(reinterpret_cast<void*>(kPictureNamePlaces), &kPictureNamePlacesOurs, sizeof(kPictureNamePlacesOurs));
         rfa::PatchCode(reinterpret_cast<void*>(kPictureNamePlaceBytes), &bytes, sizeof(bytes));
-        rfa::Log("Interface picture names: the dictionary has %lu places (the game's %lu)", kPictureNamePlacesOurs, kGamePictureNamePlaces);
+        rfa::LogDetail("Interface picture names: the dictionary has %lu places (the game's %lu)", kPictureNamePlacesOurs, kGamePictureNamePlaces);
     }
     bool poolAsExpected = true;
     for (DWORD at : kPictureNamePool) poolAsExpected = poolAsExpected && rfa::CodeValue(at) == kGamePictureNamePool;
     if (poolAsExpected) {
         for (DWORD at : kPictureNamePool) rfa::PatchCode(reinterpret_cast<void*>(at), &kPictureNamePoolOurs, sizeof(kPictureNamePoolOurs));
-        rfa::Log("Interface picture names: %lu KB for them (the game's %lu KB)", kPictureNamePoolOurs / 1024, kGamePictureNamePool / 1024);
+        rfa::LogDetail("Interface picture names: %lu KB for them (the game's %lu KB)", kPictureNamePoolOurs / 1024, kGamePictureNamePool / 1024);
     } else {
         rfa::Log("Interface picture names: the game's code at 0x%08lX isn't as expected; they keep the game's %lu KB",
                  kPictureNamePool[0], kGamePictureNamePool / 1024);
@@ -457,7 +457,7 @@ void LogPictureCounts() {
     const unsigned* counts = reinterpret_cast<const unsigned*>(kPictureCounts);
     const DWORD sheetRoom = g_sheetTableAt == kSheetTable ? kGameSheets : kMaxSheets;
     const DWORD pictureRoom = rfa::CodeValue(kPictureTableLimits[0]);
-    rfa::Log("Interface pictures: %u sheets (room for %lu), %u pictures (room for %lu)%s", counts[0], sheetRoom, counts[1],
+    rfa::LogDetail("Interface pictures: %u sheets (room for %lu), %u pictures (room for %lu)%s", counts[0], sheetRoom, counts[1],
              pictureRoom, counts[0] >= sheetRoom || counts[1] >= pictureRoom ? ": FULL, the last ones are missing" : "");
 }
 
@@ -472,7 +472,7 @@ void RaiseDocumentLimits() {
     for (DWORD at : kAssetNameSizes) namesAsExpected = namesAsExpected && rfa::CodeValue(at) == kGameAssetNameBytes;
     if (namesAsExpected) {
         for (DWORD at : kAssetNameSizes) rfa::PatchCode(reinterpret_cast<void*>(at), &kAssetNameBytes, sizeof(kAssetNameBytes));
-        rfa::Log("Interface documents: %lu bytes for their asset lists' names (the game's %lu)", kAssetNameBytes, kGameAssetNameBytes);
+        rfa::LogDetail("Interface documents: %lu bytes for their asset lists' names (the game's %lu)", kAssetNameBytes, kGameAssetNameBytes);
     } else {
         rfa::Log("Interface documents: the game's code at 0x%08lX isn't as expected; their names keep the game's %lu bytes",
                  kAssetNameSizes[0], kGameAssetNameBytes);
@@ -558,7 +558,7 @@ void NameGuerrillaFonts() {
             else if (FontName("font_numbers", numbers) < 0)
                 rfa::Log("Guerrilla's fonts: the game's font names are full; font_numbers loaded but not named");
             else
-                rfa::Log("Guerrilla's fonts: font_numbers loaded (font %d; the font pool %u to %u of %u bytes)", numbers,
+                rfa::LogDetail("Guerrilla's fonts: font_numbers loaded (font %d; the font pool %u to %u of %u bytes)", numbers,
                          before, FontPoolUsed(), FontPoolSize());
         }
     }
@@ -716,7 +716,7 @@ void ReadDistricts() {
         g_districts[column * 100 + row] = name;
     }
     fclose(file);
-    rfa::Log("Districts of %u zones, for the minimap", static_cast<unsigned>(g_districts.size()));
+    rfa::LogDetail("Districts of %u zones, for the minimap", static_cast<unsigned>(g_districts.size()));
 }
 
 // Guerrilla's map icons and places (map_icons.txt, made by GuerrillaBuilder.exe): its safehouses,
@@ -744,6 +744,7 @@ void CloseCabinet(const char* why, bool giveAmmo);
 bool LiberationIsOpen();    // Guerrilla's district-liberated screen (below)
 bool ActivityScreenOpen();  // an activity's briefing or results screen (below)
 bool ActivityCompleteOpen();  // Guerrilla's activity-complete screen (below)
+bool ActivityCompleteWants(const std::string& document);  // its number's document (the activity-complete or mission-complete screen)
 // A screen of ours that pauses the game and hides the HUD: a safehouse's (the shop or the cabinet), or one the campaign
 // raises (a district liberated, an activity's briefing or results, Guerrilla's activity-complete screen).
 bool StationScreenOpen() {
@@ -810,7 +811,7 @@ void ReadMapIcons() {
         g_mapIcons.push_back(icon);
     }
     fclose(file);
-    rfa::Log("%u map icons and places, for the maps", static_cast<unsigned>(g_mapIcons.size()));
+    rfa::LogDetail("%u map icons and places, for the maps", static_cast<unsigned>(g_mapIcons.size()));
 }
 
 // Whether a zone has its own picture (in one of the zone pictures' documents), asked once.
@@ -1193,7 +1194,7 @@ bool Wanted(const Document& doc) {
     if (doc.whileCabinet) return CabinetIsOpen();
     if (doc.whileLiberation) return LiberationIsOpen();
     if (doc.whileActivity) return ActivityScreenOpen();
-    if (doc.whileActivityComplete) return ActivityCompleteOpen();
+    if (doc.whileActivityComplete) return ActivityCompleteWants(doc.name);
     if (doc.whileHandbook) return HandbookIsOpen() || AnyHandbookPictureLoaded();
     if (doc.handbookPicture) {
         if (doc.loaded && HandbookPictureKept(doc)) return true;
@@ -1211,12 +1212,13 @@ bool ShouldDraw(const Document& doc, bool hudRuns) {
     const bool liberation = LiberationIsOpen(), activity = ActivityScreenOpen(), activityComplete = ActivityCompleteOpen();
     if ((shop || cabinet || handbook || liberation || activity || activityComplete) && !(shop && doc.whileShop) &&
         !(cabinet && doc.whileCabinet) && !(handbook && doc.whileHandbook) && !(liberation && doc.whileLiberation) &&
-        !(activity && doc.whileActivity) && !(activityComplete && doc.whileActivityComplete) && !doc.zoneSet && !doc.handbookPicture &&
+        !(activity && doc.whileActivity) && !(activityComplete && doc.whileActivityComplete && ActivityCompleteWants(doc.name)) && !doc.zoneSet &&
+        !doc.handbookPicture &&
         !doc.onTop)
         return false;
     return doc.drawn && hudRuns && (!doc.whileOpen || g_mapOpen) && (!doc.whileShop || shop) && (!doc.whileCabinet || cabinet) &&
            (!doc.whileHandbook || handbook) && (!doc.whileLiberation || liberation) && (!doc.whileActivity || activity) &&
-           (!doc.whileActivityComplete || activityComplete);
+           (!doc.whileActivityComplete || ActivityCompleteWants(doc.name));
 }
 
 // The draw list draws in the order documents were added to it, and adds a new one last: a document added after one that
@@ -1260,7 +1262,7 @@ bool LevelLoading() {
 void FollowTheWorld(bool dead) {
     const bool ours = InOurWorld();
     if (static_cast<int>(ours) != g_inOurWorld) {
-        rfa::Log(ours ? "World %s: Guerrilla's HUD" : "World %s: Armageddon's own HUD", WorldName());
+        rfa::LogDetail(ours ? "World %s: Guerrilla's HUD" : "World %s: Armageddon's own HUD", WorldName());
         if (ours) LogPictureCounts();
         g_inOurWorld = ours;
         if (!ours) CloseMap("another world");
@@ -1400,7 +1402,7 @@ void RaiseVintHeap() {
             rfa::Log("The interface's heap (Dl_mempool): could not change the game's code at 0x%08lX", at);
             return;
         }
-    rfa::Log("The interface's heap (Vint and its Lua, Dl_mempool): %lu KB, was 0x%08lX (%lu KB) at 0x%08lX and 0x%08lX "
+    rfa::LogDetail("The interface's heap (Vint and its Lua, Dl_mempool): %lu KB, was 0x%08lX (%lu KB) at 0x%08lX and 0x%08lX "
              "(the game's 1.5 MB ran out in the Guerrilla world's Options > Controls)", kVintHeapOurs / 1024, kVintHeapGame,
              kVintHeapGame / 1024, kVintHeapSizeValues[0], kVintHeapSizeValues[1]);
 }
@@ -1426,7 +1428,7 @@ bool CampaignScreenWanted();
 void __cdecl HudPartAlone(void* hud) {
     g_hudPart(hud);
     if (g_inHudUpdate || !InOurWorld() || !g_player || !ObjectIsDead(g_player) || !CampaignScreenWanted()) return;
-    RFA_LOG_FIRST(10, "Guerrilla's HUD runs while the player is dead: the activity-complete screen is asked for or open (its parts only)");
+    RFA_LOG_DETAIL_FIRST(10, "Guerrilla's HUD runs while the player is dead: the activity-complete screen is asked for or open (its parts only)");
     OurHudFrame(true);
 }
 
@@ -1617,7 +1619,7 @@ void ReadRadioTags() {
         fclose(file);
     }
     ShowBombsOfTagsFound();
-    rfa::Log("%u radio tags and M.O.A.B.s; %u tags found so far, %u M.O.A.B.s shown", static_cast<unsigned>(g_radioTags.size()),
+    rfa::LogDetail("%u radio tags and M.O.A.B.s; %u tags found so far, %u M.O.A.B.s shown", static_cast<unsigned>(g_radioTags.size()),
              static_cast<unsigned>(g_tagsFound.size()), static_cast<unsigned>(g_bombsShown.size()));
 }
 
@@ -1666,7 +1668,7 @@ void FollowRadioTags() {
             message = left == 1 ? RadioTagMessage("tag_found", 1) : RadioTagMessage("tags_found", left);
         }
         ShowMessage(message, true);  // bftp_touch_tag: a primary message (hud_message_add)
-        rfa::Log("Radio tag %d found (%u of 36): %s", node.pair, static_cast<unsigned>(g_tagsFoundOrder.size()), message.c_str());
+        rfa::LogDetail("Radio tag %d found (%u of 36): %s", node.pair, static_cast<unsigned>(g_tagsFoundOrder.size()), message.c_str());
     }
 }
 
@@ -1685,7 +1687,7 @@ void FollowRadioTags() {
 // Whether guerrilla_gear's upgrades are there (it runs): the shops stay shut without them.
 bool GearReady() {
     const bool running = guerrilla_gear::Running();
-    if (!running) RFA_LOG_FIRST(1, "Safehouses: guerrilla_gear is off: the shops stay shut");
+    if (!running) RFA_LOG_DETAIL_FIRST(1, "Safehouses: guerrilla_gear is off: the shops stay shut");
     return running;
 }
 
@@ -1747,7 +1749,7 @@ void ReadSafehouses() {
         }
     }
     fclose(file);
-    rfa::Log("%u safehouse stations", static_cast<unsigned>(g_stations.size()));
+    rfa::LogDetail("%u safehouse stations", static_cast<unsigned>(g_stations.size()));
 }
 
 void RefreshShopList() {
@@ -2148,7 +2150,7 @@ void ReadCabinet() {
         }
         fclose(file);
     }
-    rfa::Log("Weapon cabinet: %u of Guerrilla's weapons (%u built), %u weapon upgrades, %u weapons in the cabinet so far",
+    rfa::LogDetail("Weapon cabinet: %u of Guerrilla's weapons (%u built), %u weapon upgrades, %u weapons in the cabinet so far",
              static_cast<unsigned>(g_cabinetWeapons.size()),
              static_cast<unsigned>(std::count_if(g_cabinetWeapons.begin(), g_cabinetWeapons.end(), [](const CabinetWeapon& w) { return !w.ours.empty(); })),
              static_cast<unsigned>(g_cabinetUpgrades.size()), static_cast<unsigned>(g_cabinet.list.size()));
@@ -2192,14 +2194,14 @@ void CabinetAdd(int weapon, bool unlocked) {
                 item.unlocked = true;
                 ++g_cabinet.version;
                 SaveCabinetList();
-                rfa::Log("Weapon cabinet: %s bought", g_cabinetWeapons[weapon].guerrilla.c_str());
+                rfa::LogDetail("Weapon cabinet: %s bought", g_cabinetWeapons[weapon].guerrilla.c_str());
             }
             return;
         }
     g_cabinet.list.push_back({weapon, unlocked});
     ++g_cabinet.version;
     SaveCabinetList();
-    rfa::Log("Weapon cabinet: %s added (%s)", g_cabinetWeapons[weapon].guerrilla.c_str(), unlocked ? "found" : "on sale, not bought");
+    rfa::LogDetail("Weapon cabinet: %s added (%s)", g_cabinetWeapons[weapon].guerrilla.c_str(), unlocked ? "found" : "on sale, not bought");
 }
 
 // The level bought of an upgrade (guerrilla_gear's), and whether its next can be bought now.
@@ -2695,7 +2697,7 @@ void ReadHandbook() {
         }
         fclose(file);
     }
-    rfa::Log("Handbook: %u entries on %u pages, %u read so far", static_cast<unsigned>(g_handbookEntries.size()),
+    rfa::LogDetail("Handbook: %u entries on %u pages, %u read so far", static_cast<unsigned>(g_handbookEntries.size()),
              static_cast<unsigned>(g_handbookPages.size()), static_cast<unsigned>(g_handbookRead.size()));
 }
 
@@ -2905,7 +2907,7 @@ void TieSheetAgain(const std::string& sheet) {
         const int now = FindBitmapByName(entry.name);
         if (logged < 40) {
             ++logged;
-            rfa::Log("Handbook picture %s: its sheet had texture slot %d, the texture is at %d now%s", sheet.c_str(), entry.bitmap, now,
+            rfa::LogDetail("Handbook picture %s: its sheet had texture slot %d, the texture is at %d now%s", sheet.c_str(), entry.bitmap, now,
                      now == -1 ? " (not found: left as it was)" : now == entry.bitmap ? "" : " (tied again)");
         }
         if (now != -1) entry.bitmap = now;
@@ -3291,7 +3293,7 @@ void ReadHudMessages() {
             g_guerrillaStrings[static_cast<unsigned>(strtoul(fields[1].c_str(), nullptr, 16))] = Unescaped(fields[2]);
     }
     fclose(file);
-    rfa::Log("The campaign's messages: %zu texts; Guerrilla's strings: %zu", g_hudMessageTexts.size(), g_guerrillaStrings.size());
+    rfa::LogDetail("The campaign's messages: %zu texts; Guerrilla's strings: %zu", g_hudMessageTexts.size(), g_guerrillaStrings.size());
 }
 
 // Guerrilla's text with the number in place of its first %ls, %s, %d or %i (as Guerrilla's HUD formatted it).
@@ -4150,6 +4152,12 @@ constexpr int kMostMapRings = 8;
 const char* const kEnterKeyPicture = "rfg_key_178";   // Guerrilla's PC key pictures (ui_bms_pc_buttons): Enter
 const char* const kEscKeyPicture = "rfg_key_124";     // and Esc
 
+// Guerrilla's large logo, a one-picture sheet both the district-liberated screen and the mission-complete screen bring a
+// copy of (each is loaded only while it's open). The game ties a sheet to its texture's slot once, at start-up; a copy
+// loaded later needn't land in that slot (then the picture draws as one small grey box, as the handbook's pictures did),
+// so each screen ties it again once its document has settled (TieSheetAgain).
+const char* const kGuerrillaLogoSheet = "rfg_ui_large_guerrilla_logo_sheet";
+
 struct LiberationScreen {
     bool open = false, paused = false;
     std::string district;      // as shown
@@ -4163,6 +4171,7 @@ struct LiberationScreen {
     unsigned version = 0;
     bool enterDown = true, spaceDown = true, clickDown = true;
     ULONGLONG lastStep = 0;
+    bool logoTied = false;     // its logo sheet tied again (kGuerrillaLogoSheet)
 };
 LiberationScreen g_liberation;
 
@@ -4221,7 +4230,7 @@ void OpenLiberation(const std::string& district, const std::string& key, float c
     s.busySince = GetTickCount64();
     PauseGame(1, 1, 0, 0);
     s.paused = true;
-    rfa::Log("District-liberated screen: %s (%s); the game paused", district.c_str(), why);
+    rfa::LogDetail("District-liberated screen: %s (%s); the game paused", district.c_str(), why);
 }
 
 void CloseLiberation(const char* why) {
@@ -4260,6 +4269,11 @@ void LiberationNext() {
 
 void StepLiberation() {
     LiberationScreen& s = g_liberation;
+    if (!s.logoTied)
+        if (Document* doc = FindDocument("rfg_ui_district_liberated"); doc && DocumentSettled(*doc)) {
+            TieSheetAgain(kGuerrillaLogoSheet);
+            s.logoTied = true;
+        }
     const ULONGLONG now = GetTickCount64();
     const bool resumed = now - s.lastStep > kHudGoneAfterMs;
     s.lastStep = now;
@@ -4304,7 +4318,7 @@ void OpenActivityScreen(int screen) {
         PauseGame(1, 1, 0, 0);
         s.paused = true;
     }
-    rfa::Log("Activity screen: the %s of %s; the game paused", screen == kActivityBriefing ? "briefing" : "results", s.title.c_str());
+    rfa::LogDetail("Activity screen: the %s of %s; the game paused", screen == kActivityBriefing ? "briefing" : "results", s.title.c_str());
 }
 
 void CloseActivityScreen(const char* why) {
@@ -4402,9 +4416,13 @@ using ActivityResults = GuerrillaHudActivityResults;
 static_assert(sizeof(ActivityResults) == 44, "GuerrillaHud_ActivityComplete's results are 44 bytes");
 
 constexpr int kAcTransporter = 4, kAcCollateralDamage = 5;  // the screen's numbers of the two kinds it shows
+constexpr int kAcAreaDefense = 8;                           // area defense's, on Guerrilla's mission-complete screen
 constexpr int kAcNoChoice = 0, kAcFirstHint = 1, kAcSecondHint = 2;
 constexpr float kAcTallySeconds = 1.5f;                     // a tally's count up (process_activity_tallys)
 const char* const kActivityCompleteDocument = "rfg_ui_activity_complete";
+// Guerrilla's mission-complete screen, whose activity path its raids, house arrest and area defense showed their losses
+// on (cUI_activity_complete_doc RM 0x1660F60: the numbers 1, 2, 8 and 9). The same ActivityComplete values drive it.
+const char* const kMissionCompleteDocument = "rfg_ui_mission_complete";
 
 struct ActivityCompleteTally {  // one of process_activity_tallys' three (0x2B9DB3C, 0x28 bytes each)
     int count = 0;              // its numbers, at most 4
@@ -4425,6 +4443,7 @@ struct ActivityCompleteScreen {
     bool goalShown = false;     // Collateral Damage's goal (the first number, not counted)
     float goal = 0.0f;
     ActivityCompleteTally tallies[3];
+    bool logoTied = false;      // the mission-complete screen's logo sheet tied again (kGuerrillaLogoSheet)
     bool input = false;         // its script lets the keys in (rfg_enable_button_input)
     ULONGLONG openedAt = 0, lastStep = 0;
     unsigned version = 0;       // changes as it opens and as the keys come in (its hints show then)
@@ -4434,11 +4453,20 @@ ActivityCompleteScreen g_activityComplete;
 
 bool ActivityCompleteOpen() { return g_activityComplete.open; }
 
+// Which document a screen's number opens (cUI_activity_complete_doc): area defense's the mission-complete screen, the
+// others the activity-complete screen.
+const char* ActivityCompleteDocument(int ac) { return ac == kAcAreaDefense ? kMissionCompleteDocument : kActivityCompleteDocument; }
+
+bool ActivityCompleteWants(const std::string& document) {
+    return g_activityComplete.open && _stricmp(document.c_str(), ActivityCompleteDocument(g_activityComplete.ac)) == 0;
+}
+
 // The screen's number for Guerrilla's activity mode (hud_ui_activity_complete_start's table), 0 for one it doesn't show
-// (the raids, house arrest and area defense: Guerrilla's mission-complete screen, not ported).
+// yet (the raids and house arrest, not ported).
 int ActivityCompleteNumber(int mode) {
     if (mode == 1) return kAcCollateralDamage;  // ACTIVITY_MODE_VEHICLE_RAIL
     if (mode == 4) return kAcTransporter;       // ACTIVITY_MODE_DELIVERY
+    if (mode == 16) return kAcAreaDefense;      // ACTIVITY_MODE_AREA_DEFENSE
     return 0;
 }
 
@@ -4485,7 +4513,12 @@ void OpenActivityComplete() {
     s.success = r.success != 0;
     s.failure = s.success ? nullptr : ActivityFailureTag(r.reason);
     for (ActivityCompleteTally& tally : s.tallies) tally = ActivityCompleteTally{};
-    if (s.ac == kAcTransporter) {
+    if (s.ac == kAcAreaDefense) {
+        // area_defense_load_info 0x8463B0 (as the raids' and house arrest's): the activity's title, no tallies.
+        s.title = "ACT_AREA_DEFENSE_NAME";
+        s.goalShown = false;
+        s.goal = 0.0f;
+    } else if (s.ac == kAcTransporter) {
         // guerrilla_express_load_info: no goal; the pro, target and best times; yours.
         s.title = "ACT_GEXPRESS_NAME";
         s.goalShown = false;
@@ -4508,6 +4541,7 @@ void OpenActivityComplete() {
         s.tallies[2].target[0] = r.numbers[6];
     }
     s.input = false;
+    s.logoTied = false;
     s.openedAt = GetTickCount64();
     s.enterDown = s.escDown = true;
     ++s.version;
@@ -4515,7 +4549,7 @@ void OpenActivityComplete() {
         PauseGame(1, 1, 0, 0);
         s.paused = true;
     }
-    rfa::Log("Activity-complete screen: %s %s%s%s (%s); the game paused", GuerrillaText(s.title).c_str(), s.success ? "complete" : "failed",
+    rfa::LogDetail("Activity-complete screen: %s %s%s%s (%s); the game paused", GuerrillaText(s.title).c_str(), s.success ? "complete" : "failed",
              s.failure ? ", " : "", s.failure ? s.failure : "", s.why.c_str());
 }
 
@@ -4542,11 +4576,17 @@ void StepActivityComplete() {
         for (ActivityCompleteTally& tally : s.tallies)
             if (tally.progress >= 0.0f)
                 tally.progress = (std::min)(tally.progress + static_cast<float>(g_hudFrameMs) / 1000.0f, kAcTallySeconds);
-    const Document* doc = FindDocument(kActivityCompleteDocument);
+    const char* const document = ActivityCompleteDocument(s.ac);
+    const Document* doc = FindDocument(document);
     if (!doc || doc->missing) {
-        CloseActivityComplete(kAcFirstHint, "no rfg_ui_activity_complete document");
+        CloseActivityComplete(kAcFirstHint, s.ac == kAcAreaDefense ? "no rfg_ui_mission_complete document" : "no rfg_ui_activity_complete document");
         return;
     }
+    if (s.ac == kAcAreaDefense && !s.logoTied)
+        if (Document* settled = FindDocument(document); settled && DocumentSettled(*settled)) {
+            TieSheetAgain(kGuerrillaLogoSheet);
+            s.logoTied = true;
+        }
     const ULONGLONG now = GetTickCount64();
     const bool resumed = now - s.lastStep > kHudGoneAfterMs;
     s.lastStep = now;
@@ -4689,24 +4729,29 @@ std::string NextCommandWord() {
 void ActivityCompleteCommand() {
     if (!g_consoleCommandRunning) return;
     const std::string kind = NextCommandWord(), outcome = NextCommandWord(), reasonWord = NextCommandWord();
-    const char* const usage = "rfg_activity_complete transporter|collateral [won|failed] [died|time|left_vehicle|vehicle_destroyed|"
+    const char* const usage = "rfg_activity_complete transporter|collateral|areadefense [won|failed] [died|time|left_vehicle|vehicle_destroyed|"
                               "escaped|left_area|ammo|hostages|building|damage]\n";
     ActivityResults results{};
     results.size = sizeof(ActivityResults);
     const bool transporter = _stricmp(kind.c_str(), "transporter") == 0 || _stricmp(kind.c_str(), "express") == 0;
     const bool collateral = _stricmp(kind.c_str(), "collateral") == 0 || _stricmp(kind.c_str(), "shotgun") == 0;
-    const bool failed = _stricmp(outcome.c_str(), "failed") == 0 || _stricmp(outcome.c_str(), "fail") == 0;
-    if ((!transporter && !collateral) || (!failed && !outcome.empty() && _stricmp(outcome.c_str(), "won") != 0 &&
-                                          _stricmp(outcome.c_str(), "success") != 0)) {
+    const bool areaDefense = _stricmp(kind.c_str(), "areadefense") == 0 || _stricmp(kind.c_str(), "heavymetal") == 0;
+    const bool failed = areaDefense || _stricmp(outcome.c_str(), "failed") == 0 || _stricmp(outcome.c_str(), "fail") == 0;
+    if ((!transporter && !collateral && !areaDefense) || (!failed && !outcome.empty() && _stricmp(outcome.c_str(), "won") != 0 &&
+                                                          _stricmp(outcome.c_str(), "success") != 0)) {
         ConsolePrint(usage);
         return;
     }
-    if (!FindDocument(kActivityCompleteDocument)) {
+    if (!FindDocument(areaDefense ? kMissionCompleteDocument : kActivityCompleteDocument)) {
         ConsolePrint("Guerrilla's activity-complete screen needs the HUD's map ([GuerrillaHud] Map=1)\n");
         return;
     }
     results.success = failed ? 0 : 1;
-    if (transporter) {
+    if (areaDefense) {
+        // area defense shows only its losses: left the area, by default.
+        results.mode = 16;
+        results.reason = 8;  // ACTIVITY_FAIL_LEFT_AREA
+    } else if (transporter) {
         // guerrilla_express_load_info's test numbers (30, 100, 25.23, 46.75), as seconds: pro, target, best, yours.
         results.mode = 4;
         const float numbers[] = {30000.0f, 100000.0f, 25230.0f, 46750.0f};
@@ -4734,7 +4779,7 @@ void ActivityCompleteCommand() {
         return;
     }
     ConsolePrint("Guerrilla's activity-complete screen: %s %s (close the console; once it has counted up, Enter goes on%s)\n",
-                 transporter ? "Transporter" : "Collateral Damage", failed ? "failed" : "won",
+                 areaDefense ? "Heavy Metal" : transporter ? "Transporter" : "Collateral Damage", failed ? "failed" : "won",
                  failed || transporter ? ", Esc too" : "");
 }
 
@@ -4746,7 +4791,7 @@ void AddCampaignScreenCommands() {
                     &LiberatedCommand);
     RegisterCommand(g_activityCompleteCommand, nullptr, "rfg_activity_complete",
                     "Shows Guerrilla's activity-complete screen with sample numbers (to see it; nothing changes): rfg_activity_complete "
-                    "transporter|collateral [won|failed] [reason]",
+                    "transporter|collateral|areadefense [won|failed] [reason]",
                     3, &ActivityCompleteCommand);
 }
 
@@ -4981,7 +5026,7 @@ int __cdecl LuaActivityCompleteTally(lua_State* L) {
     const int index = static_cast<int>(lua_tonumber(L, 1)) - 1;
     if (g_activityComplete.open && index >= 0 && index < 3) {
         g_activityComplete.tallies[index].progress = 0.0f;
-        RFA_LOG_FIRST(12, "Activity-complete screen: tally %d counts up", index + 1);
+        RFA_LOG_DETAIL_FIRST(12, "Activity-complete screen: tally %d counts up", index + 1);
     }
     return 0;
 }
@@ -4992,8 +5037,12 @@ int __cdecl LuaGuerrillaText(lua_State* L) {
     if (lua_type(L, 1) != 4) return 0;  // a string (lua_tolstring would turn a number into one in place)
     const char* tag = lua_tolstring(L, 1, nullptr);
     if (!tag || !*tag || strchr(tag, ' ')) return 0;
-    const std::string text = GuerrillaText(tag);
+    std::string text = GuerrillaText(tag);
     if (text.empty()) return 0;
+    // rfg_guerrilla_text(tag, true): upper-cased, as Guerrilla's code upper-cased some texts before handing them over (the
+    // activity stamp's MISS_COMPLETE_MALE); Armageddon's Lua has no string.upper.
+    if (lua_type(L, 2) == 1 && lua_toboolean(L, 2))
+        for (char& c : text) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     lua_pushstring(L, text.c_str());
     return 1;
 }
@@ -5314,7 +5363,7 @@ bool OwnsPersonnelDetector() {
     const int state = !GearReady() ? 2 : owned ? 1 : 0;
     if (state != logged) {
         logged = state;
-        rfa::Log("Minimap: the Personnel Detector is %s", state == 2 ? "unknown (guerrilla_gear's upgrades aren't there)"
+        rfa::LogDetail("Minimap: the Personnel Detector is %s", state == 2 ? "unknown (guerrilla_gear's upgrades aren't there)"
                                                        : owned ? "owned: every hostile in reach shows"
                                                        : found ? "not bought: hostiles show only while in combat"
                                                                : "not among guerrilla_gear's upgrades");
@@ -5622,7 +5671,7 @@ bool GuerrillaHud_BombShown(int pair) { return guerrilla_hud::Running() && g_bom
 
 void guerrilla_hud::Init() {
     // Log= also has Guerrilla's HUD scripts write what they find (rfg_ui_*.lua read it themselves).
-    if (rfa::ReadLogSwitch(L"GuerrillaHud")) rfa::Log("Log=1: routine lines (\"[guerrilla_hud:log]\") are on");
+    if (rfa::ReadLogSwitch(L"GuerrillaHud")) rfa::LogDetail("Log=1: routine lines (\"[guerrilla_hud:log]\") are on");
     if (!rfa::game::IsSupportedBuild()) {
         rfa::Log("Not the publicbeta build; nothing to do");
         return;
@@ -5668,6 +5717,9 @@ void guerrilla_hud::Init() {
         Document activityComplete{kActivityCompleteDocument};  // Guerrilla's activity-complete screen
         activityComplete.whileActivityComplete = true;
         g_documents.push_back(activityComplete);
+        Document missionComplete{kMissionCompleteDocument};  // its mission-complete screen (area defense's losses)
+        missionComplete.whileActivityComplete = true;
+        g_documents.push_back(missionComplete);
         Document handbook{"rfg_ui_handbook"};  // Guerrilla's handbook, loaded only while it's open (see Wanted)
         handbook.whileHandbook = true;
         g_documents.push_back(handbook);
@@ -5722,6 +5774,6 @@ void guerrilla_hud::Init() {
     std::string documents, worlds;
     for (const Document& doc : g_documents) documents += (documents.empty() ? "" : ", ") + doc.name;
     for (const std::string& world : g_worlds) worlds += (worlds.empty() ? "" : ", ") + world;
-    rfa::Log("Guerrilla's HUD (%s) in the worlds %s%s", documents.c_str(), worlds.c_str(),
+    rfa::LogDetail("Guerrilla's HUD (%s) in the worlds %s%s", documents.c_str(), worlds.c_str(),
              g_mapDocument.empty() ? "" : "; the world map's key is [GuerrillaKeys] Map= (F7 Guerrilla > Keys)");
 }

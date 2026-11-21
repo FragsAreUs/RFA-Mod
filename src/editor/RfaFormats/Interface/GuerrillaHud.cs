@@ -64,7 +64,7 @@ public static partial class GuerrillaHud
         // brought by the first document that needs it, and a screen's document is loaded only while it's open.
         new("rfg_ui_hud_missions", [], GuerrillaScript: true, BridgedItems: true, GuerrillaTextSizes: true),
         new("rfg_ui_upgrades", ["ui_hud_icon_salvage"], GuerrillaScript: true, BridgedItems: true, UpgradePictures: true,
-            RenamedGlobals: ["set_header", "set_button", "set_hints", "set_highlight"], GuerrillaTextSizes: true),
+            RenamedGlobals: ["set_header", "set_button", "set_hints", "set_highlight"], GuerrillaTextSizes: true, Screen: true),
         // Guerrilla's weapon cabinet (a safehouse's locker, every ammo crate): the weapons found or bought, to put into
         // three of the four slots. Its pictures: the weapons' icons, the teams' logos (the white one in the crate's
         // ammo line), the PC keys 1 2 3 4 for the slots and Esc for back (ui_bms_pc_buttons: key_20 key_43 key_66
@@ -72,19 +72,25 @@ public static partial class GuerrillaHud
         new("rfg_ui_safehouse_weapons", ["ui_hud_guerilla_logo_large", "ui_hud_edf_logo_large", "ui_hud_ultor_logo", "ui_hud_marauder_logo",
                                          "ui_hud_guerilla_logo_white", "key_20", "key_43", "key_66", "key_89", "key_124"],
             GuerrillaScript: true, BridgedItems: true, WeaponPictures: HudWeaponPictures.Icons, ExtraTextures: ["interface-pc"],
-            RenamedGlobals: ["LOCK", "MAX_ICONS", "handle_icon_scale", "handle_highlight"], GuerrillaTextSizes: true),
+            RenamedGlobals: ["LOCK", "MAX_ICONS", "handle_icon_scale", "handle_highlight"], GuerrillaTextSizes: true, Screen: true),
         // The campaign's screens: the district-liberated screen (the PC key Enter, key_178, in its hint) and demolitions
         // master's briefing and results (Enter and Esc, key_178 and key_124; the weapons' icons). STAMP_PAD is a global of
         // both rfg_ui_hud_missions and rfg_ui_demolitions: renamed in the latter, which comes and goes.
         new("rfg_ui_district_liberated", ["key_178"], GuerrillaScript: true, BridgedItems: true, ExtraTextures: ["interface-pc"],
-            UpgradePictures: true, GuerrillaTextSizes: true),
+            UpgradePictures: true, GuerrillaTextSizes: true, Screen: true),
         new("rfg_ui_demolitions", ["key_178", "key_124"], GuerrillaScript: true, BridgedItems: true, WeaponPictures: HudWeaponPictures.Icons,
-            ExtraTextures: ["interface-pc"], RenamedGlobals: ["STAMP_PAD"], GuerrillaTextSizes: true),
+            ExtraTextures: ["interface-pc"], RenamedGlobals: ["STAMP_PAD"], GuerrillaTextSizes: true, Screen: true),
         // Guerrilla's activity-complete screen, a Transporter's or a Collateral Damage's results (its raids', house arrest's
         // and area defense's are its mission-complete screen, rfg_ui_mission_complete): Enter and Esc (key_178, key_124)
         // in its hints. Its STAMP_PAD is rfg_ui_hud_missions' too, and its HINT_PAD the world map's: renamed.
         new("rfg_ui_activity_complete", ["key_178", "key_124"], GuerrillaScript: true, BridgedItems: true, ExtraTextures: ["interface-pc"],
-            RenamedGlobals: ["STAMP_PAD", "HINT_PAD"], GuerrillaTextSizes: true),
+            RenamedGlobals: ["STAMP_PAD", "HINT_PAD"], GuerrillaTextSizes: true, Screen: true),
+        // Guerrilla's mission-complete screen, its activity path: an area defense's loss (the title, FAILED, the reason, RETRY
+        // and EXIT with Enter and Esc, key_178 and key_124). Its pictures and the Guerrilla logo come from its own texture
+        // container. Its set_hints is named as Armageddon's scripts name theirs: renamed. It shares activity_complete and
+        // set_numbers with the activity-complete screen, but the two are never loaded at once.
+        new("rfg_ui_mission_complete", ["key_178", "key_124"], GuerrillaScript: true, BridgedItems: true, ExtraTextures: ["interface-pc"],
+            RenamedGlobals: ["set_hints"], GuerrillaTextSizes: true, Screen: true),
         // Guerrilla's handbook (its pause menu's HANDBOOK): its pages and entries (GuerrillaHandbook, handbook.txt), the
         // weapons' icons its combat page shows, the PC keys A, D and Esc for its hints (ui_bms_pc_buttons: key_48, key_50,
         // key_124). The mod loads it only while it's open, and each entry's own picture from a document of its own, the
@@ -97,7 +103,7 @@ public static partial class GuerrillaHud
                              "set_tool_tips", "set_cutscene", "ORANGE", "DARK_ORANGE", "BROWN", "MAX_ROWS", "MAX_PAGES", "Row_handles",
                              "Num_rows", "Row_base_pos_x", "Row_base_pos_y", "Highlight_bar_size_x", "Highlight_bar_size_y", "Page_base_x",
                              "Page_base_y", "Scroll_bar_height", "Scroll_bar_top_y", "Scroll_bar_top_x", "Scroll_bar_bottom_y",
-                             "INFO_ROTATION", "Icon_image_name"], GuerrillaTextSizes: true),
+                             "INFO_ROTATION", "Icon_image_name"], GuerrillaTextSizes: true, Screen: true),
         // Guerrilla's help box: its tool tips (GuerrillaToolTips, tool_tips.txt), one at a time, with their icons. Its
         // generic globals renamed (Armageddon's HUD has a help box of its own).
         new("rfg_ui_hud_help", [], GuerrillaScript: true, BridgedItems: true, GuerrillaTextSizes: true, ToolTipPictures: true,
@@ -228,6 +234,7 @@ public static partial class GuerrillaHud
         var documentNames = new List<string>();
         var texturesBrought = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // by an earlier document
         var broughtByUpgradeScreens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // by one showing upgrades
+        var broughtByScreens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // by a screen loaded only while open
         foreach (HudDocument hud in Documents)
         {
             string name = hud.Name;
@@ -362,11 +369,15 @@ public static partial class GuerrillaHud
             // The screens showing upgrades (the upgrade shop, the district-liberated screen) are each loaded only while
             // open, and never two at once: a texture one of them brought (the blueprints, each a texture of its own,
             // and the icons' sheet) isn't there while another is open, so that one brings its own copy.
-            bool BroughtBefore(string texture) => texturesBrought.Contains(texture) && !(hud.UpgradePictures && broughtByUpgradeScreens.Contains(texture));
+            // Any screen's texture likewise: one the district-liberated screen brought (Guerrilla's large logo) wasn't there
+            // under the mission-complete screen (2026-11-20: a grid of grey squares behind its title).
+            bool BroughtBefore(string texture) => texturesBrought.Contains(texture) && !broughtByScreens.Contains(texture) &&
+                                                  !(hud.UpgradePictures && broughtByUpgradeScreens.Contains(texture));
             var shared = needed.Where(BroughtBefore).ToList();
             needed.RemoveAll(BroughtBefore);
             foreach (string texture in needed) texturesBrought.Add(texture);
             if (hud.UpgradePictures) broughtByUpgradeScreens.UnionWith(needed);
+            if (hud.Screen) broughtByScreens.UnionWith(needed);
 
             // One texture file with every texture it needs, renamed. The document waits for its
             // first texture file; any others it named point at one Armageddon always has loaded.
@@ -1092,11 +1103,15 @@ public static partial class GuerrillaHud
 /// (the shims, told by rfg_text_scales).
 /// </param>
 /// <param name="ToolTipPictures">It shows Guerrilla's tool tips (tool_tips.xtbl): their icons come along.</param>
+/// <param name="Screen">
+/// A screen the mod loads only while it's open (a shop, the weapon cabinet, the handbook, the campaign's screens): a
+/// texture it brings isn't there while it's closed, so a later document that needs the same texture brings its own copy.
+/// </param>
 public sealed record HudDocument(string Name, IReadOnlyList<string> ScriptPictures, bool GuerrillaScript = false,
                                  HudWeaponPictures WeaponPictures = HudWeaponPictures.None, bool BridgedItems = false,
                                  IReadOnlyList<string>? ExtraTextures = null, bool UpgradePictures = false,
                                  IReadOnlyList<string>? RenamedGlobals = null, bool GuerrillaTextSizes = false,
-                                 bool ToolTipPictures = false);
+                                 bool ToolTipPictures = false, bool Screen = false);
 
 /// <summary>Which of Guerrilla's weapons' pictures a HUD document brings along (see <see cref="GuerrillaHud.Build"/>).</summary>
 public enum HudWeaponPictures { None, Icons, Reticles }

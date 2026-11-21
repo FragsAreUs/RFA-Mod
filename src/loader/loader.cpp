@@ -7,6 +7,7 @@
 #include "rfa_mod.h"
 #include "rfa_game.h"
 #include "menus.h"
+#include "profiler.h"
 #include <DbgHelp.h>
 #include <algorithm>
 #include <cstddef>
@@ -103,7 +104,7 @@ void WINAPI WriteLogAsGameExits(UINT code) {
     InitOnceExecuteOnce(&g_logOnce, StartLog, nullptr, nullptr);
     InterlockedExchange(&g_logExiting, 1);
     FlushLogQueue();
-    rfa::Log("The game exits (code %u)", code);
+    rfa::LogDetail("The game exits (code %u)", code);
     o_ExitProcess(code);
 }
 
@@ -176,7 +177,7 @@ void LogFrames(const CONTEXT* ctx) {
         const DWORD next = reinterpret_cast<const DWORD*>(ebp)[0], ret = reinterpret_cast<const DWORD*>(ebp)[1];
         if (!LooksLikeReturnAddress(ret)) break;
         DescribeAddress(ret, where, sizeof(where));
-        rfa::Log("  frame %d: %s", i, where);
+        rfa::LogDetail("  frame %d: %s", i, where);
         if (next <= ebp) break;
         ebp = next;
     }
@@ -190,10 +191,10 @@ void LogCrash(const CrashJob& job) {
     rfa::Log("CRASH: exception %08lX at %s (thread %lu)", rec->ExceptionCode, where, job.threadId);
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
         ULONG_PTR kind = rec->ExceptionInformation[0];
-        rfa::Log("  while %s address %08lX", kind == 8 ? "executing" : kind == 1 ? "writing" : "reading",
+        rfa::LogDetail("  while %s address %08lX", kind == 8 ? "executing" : kind == 1 ? "writing" : "reading",
                  static_cast<DWORD>(rec->ExceptionInformation[1]));
     }
-    rfa::Log("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
+    rfa::LogDetail("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
              ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
     LogFrames(ctx);
 
@@ -206,7 +207,7 @@ void LogCrash(const CrashJob& job) {
     for (const DWORD* p = top; p < end && p < top + 4096 && found < 30; ++p) {
         if (!LooksLikeReturnAddress(*p)) continue;
         DescribeAddress(*p, where, sizeof(where));
-        rfa::Log("  stack+%04X: %s", static_cast<unsigned>((p - top) * 4), where);
+        rfa::LogDetail("  stack+%04X: %s", static_cast<unsigned>((p - top) * 4), where);
         ++found;
     }
 }
@@ -287,11 +288,11 @@ LONG CALLBACK NoteAccessViolation(EXCEPTION_POINTERS* exception) {
                                static_cast<LPCSTR>(rec->ExceptionAddress), &module) &&
             module == GetModuleHandleW(nullptr)) {
             if (rec->NumberParameters >= 2)
-                rfa::Log("  while %s address %08lX", rec->ExceptionInformation[0] == 8 ? "executing"
+                rfa::LogDetail("  while %s address %08lX", rec->ExceptionInformation[0] == 8 ? "executing"
                                                      : rec->ExceptionInformation[0] == 1 ? "writing" : "reading",
                          static_cast<DWORD>(rec->ExceptionInformation[1]));
             const CONTEXT* ctx = exception->ContextRecord;
-            rfa::Log("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
+            rfa::LogDetail("  EAX=%08lX EBX=%08lX ECX=%08lX EDX=%08lX ESI=%08lX EDI=%08lX EBP=%08lX ESP=%08lX", ctx->Eax,
                      ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi, ctx->Ebp, ctx->Esp);
             LogFrames(ctx);
             if (InterlockedExchange(&dumped, 1) == 0) {
@@ -317,7 +318,7 @@ void InstallCrashReporter() {
     bool hooked = rfa::HookImport(GetModuleHandleW(nullptr), "KERNEL32.dll", "SetUnhandledExceptionFilter",
                                   &Hk_SetUnhandledExceptionFilter, &o_SetUnhandledExceptionFilter);
     AddVectoredExceptionHandler(0, NoteAccessViolation);
-    rfa::Log("Crash reports on (dumps go to logs\\crash-*.dmp)%s", hooked ? "" : "; could not hook the game's own handler");
+    rfa::LogDetail("Crash reports on (dumps go to logs\\crash-*.dmp)%s", hooked ? "" : "; could not hook the game's own handler");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -377,12 +378,12 @@ void InstallInstalledExePath() {
         HMODULE game = GetModuleHandleW(nullptr);
         const bool wide = rfa::HookImport(game, "KERNEL32.dll", "GetModuleFileNameW", &Hk_GetModuleFileNameW, &o_GetModuleFileNameW);
         const bool narrow = rfa::HookImport(game, "KERNEL32.dll", "GetModuleFileNameA", &Hk_GetModuleFileNameA, &o_GetModuleFileNameA);
-        rfa::Log("Started from the large-address-aware copy; the game is told its program is %ls%s", g_installedExe.c_str(),
+        rfa::LogDetail("Started from the large-address-aware copy; the game is told its program is %ls%s", g_installedExe.c_str(),
                  wide && narrow ? "" : " (COULD NOT hook its GetModuleFileName: it may look for its files next to the copy)");
     }
     MEMORYSTATUSEX memory{sizeof(memory)};
     if (GlobalMemoryStatusEx(&memory))
-        rfa::Log("The game's address space: %llu MB (%s)", memory.ullTotalVirtual >> 20,
+        rfa::LogDetail("The game's address space: %llu MB (%s)", memory.ullTotalVirtual >> 20,
                  memory.ullTotalVirtual > (2ull << 30) ? "large address aware" : "the 2 GB of a 32-bit program not marked large address aware");
 }
 
@@ -691,7 +692,7 @@ void AddEdit(const std::wstring& root, const std::wstring& relative) {
     added.relative = shown;
     added.archiveSize = original->size;
     ++g_overrideCount;
-    rfa::Log("Edit: %s", shown.c_str());
+    rfa::LogDetail("Edit: %s", shown.c_str());
 }
 
 // Walks edits\ (and its subfolders), as FindOverrides does overrides\.
@@ -799,9 +800,9 @@ static const std::string kLayer0 = "_l0.vpp_pc";
                 found = g_newFiles.find(levelName);
             }
             if (found != g_newFiles.end()) {
-                rfa::Log("Level load: mapped %s -> %s (single-archive level)", name, found->second.relative.c_str());
+                rfa::LogDetail("Level load: mapped %s -> %s (single-archive level)", name, found->second.relative.c_str());
             } else {
-                rfa::Log("Level load: asked for %s (_l0.vpp_pc) but no single-archive level found for %s", name, level.c_str());
+                rfa::LogDetail("Level load: asked for %s (_l0.vpp_pc) but no single-archive level found for %s", name, level.c_str());
             }
         }
         if (found == g_newFiles.end()) {
@@ -1022,7 +1023,7 @@ void __cdecl ReadRuinMaps(void* table, int dlc) {
                 map->fileName = KeepRuinString(shipped);
                 map->fileNameChecksum = RuinNameChecksum(map->fileName);
             } else if (_stricmp(map->fileName, shipped) != 0) {
-                rfa::Log("Ruin map %d is %s, as its table says (the game would have started %s)", place, map->fileName, shipped);
+                rfa::LogDetail("Ruin map %d is %s, as its table says (the game would have started %s)", place, map->fileName, shipped);
             }
             map->roundTimeMs = kShippedRoundTimeMs;
             map->timeBonusTimeMs = kShippedTimeBonusMs;
@@ -1030,7 +1031,7 @@ void __cdecl ReadRuinMaps(void* table, int dlc) {
             map->damageToScore = kShippedDamageToScore[place];
         } else {
             if (dlc == -1) map->lockedUntilEarned = false;
-            rfa::Log("Ruin map %d: %s%s", place, map->fileName ? map->fileName : "(no name)", dlc == -1 ? ", unlocked" : "");
+            rfa::LogDetail("Ruin map %d: %s%s", place, map->fileName ? map->fileName : "(no name)", dlc == -1 ? ", unlocked" : "");
         }
         g_ruinMaps[place] = map;
         ++g_ruinMapCount;
@@ -1069,7 +1070,7 @@ void __cdecl QuitToMainMenu() {
     if (g_multiplayer) LeaveMultiplayer(1);
     if (OtherModeSetUp()) MarkOtherModeQuit(true);
     if (RuinSetUp()) {
-        rfa::Log("Quitting to the main menu: leaving Ruin on the way, as its own menu does");
+        rfa::LogDetail("Quitting to the main menu: leaving Ruin on the way, as its own menu does");
         LeaveRuin(kMainMenuState);
     } else {
         SetGameState(kMainMenuState, 0);
@@ -1094,7 +1095,7 @@ void __cdecl BeginRuinMatchHook() {
         const char* name = g_ruinMaps[i] ? g_ruinMaps[i]->fileName : nullptr;
         names += (i ? ", " : "") + std::to_string(i) + " " + (name ? name : "(none)");
     }
-    rfa::Log("Ruin match beginning: map %d of %d; the game's list: %s", g_chosenRuinMap, g_ruinMapCount, names.c_str());
+    rfa::LogDetail("Ruin match beginning: map %d of %d; the game's list: %s", g_chosenRuinMap, g_ruinMapCount, names.c_str());
     g_beginRuinMatch();
 }
 
@@ -1188,13 +1189,13 @@ bool SetMenuMusic(int index) {
 
 void InstallMenuMusic() {
     const int index = rfa::IniInt(L"MainMenu", L"Music", 0);
-    if (index != 0 && SetMenuMusic(index)) rfa::Log("Main menu music: %s's", kMusicModes[g_menuMusic]);
+    if (index != 0 && SetMenuMusic(index)) rfa::LogDetail("Main menu music: %s's", kMusicModes[g_menuMusic]);
 }
 
 // Options > Main Menu changed the music: the menu plays it now (it is open behind the options screen).
 void MenuMusicChanged(int index) {
     if (index == g_menuMusic || !SetMenuMusic(index)) return;
-    rfa::Log("Main menu music: %s's", kMusicModes[g_menuMusic]);
+    rfa::LogDetail("Main menu music: %s's", kMusicModes[g_menuMusic]);
     SetMusicMode(kMusicModes[g_menuMusic], true, true, 0);
     if (g_menuMusic == 0) ActivateMusicTrigger("Main Menu");  // as the menu starts its own
 }
@@ -1223,7 +1224,7 @@ void FindUiPack() {
                     GetFileAttributesW((cache + L"rfa_ui_modern2.str2_pc").c_str()) != INVALID_FILE_ATTRIBUTES &&
                     FileHolds(cache + L"interface.vpp_pc\\vint_doc_containers.asm_pc", "rfa_ui_modern2") &&
                     FileHolds(cache + L"misc.vpp_pc\\rfg.vint_proj", "<doc_name>rfa_ui_modern</doc_name>");
-    rfa::Log(g_uiPackThere ? "UI pack: rfa_ui_modern is there (the main menu's Modern style uses its pictures)"
+    rfa::LogDetail(g_uiPackThere ? "UI pack: rfa_ui_modern is there (the main menu's Modern style uses its pictures)"
                            : "UI pack: not there yet (the editor makes it; the main menu's Modern style does without its pictures)");
 }
 
@@ -1425,7 +1426,7 @@ int __cdecl LuaSetSetting(lua_State* L) {
     Widen(key, keyW, 64);
     if (rfa::IniInt(sectionW, keyW, value + 1) == value) return 0;  // unchanged
     WritePrivateProfileStringW(sectionW, keyW, std::to_wstring(value).c_str(), rfa::IniPath().c_str());
-    rfa::Log("Menu changed [%s] %s=%d", section, key, value);
+    rfa::LogDetail("Menu changed [%s] %s=%d", section, key, value);
     if (_stricmp(section, "MainMenu") == 0 && _stricmp(key, "Music") == 0) MenuMusicChanged(value);
     using SettingChangedFn = void(__cdecl*)(const char*, const char*);
     for (HMODULE mod : g_mods)
@@ -1434,10 +1435,24 @@ int __cdecl LuaSetSetting(lua_State* L) {
     return 0;
 }
 
-// Lua: rfa_log(text) writes to logs\rfa_mods.log, handy when editing override scripts.
+// Whether the game's scripts' rfa_log lines are written: routine lines like the mods' own, so only while
+// [Loader] Log=1 or [GuerrillaHud] Log=1 (Guerrilla's HUD scripts write nearly all of them, most whatever their
+// setting says). Read as the loader starts.
+bool g_scriptLines = false;
+
+// A line a script asked for, "[loader:log] lua: text": for the file only, never the console.
+void LogScriptLine(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    rfa::LogAs("loader:log", fmt, ap);
+    va_end(ap);
+}
+
+// Lua: rfa_log(text) writes to logs\rfa_mods.log, handy when editing override scripts ([Loader] Log=1).
 int __cdecl LuaLog(lua_State* L) {
+    if (!g_scriptLines) return 0;
     const char* text = rfa::game::lua_tolstring(L, 1, nullptr);
-    rfa::Log("lua: %s", text ? text : "(nil)");
+    LogScriptLine("lua: %s", text ? text : "(nil)");
     return 0;
 }
 
@@ -1504,7 +1519,7 @@ int __cdecl LuaConsoleCommand(lua_State* L) {
 // Lua: rfa_open_guerrilla_builder() -> true if editor\GuerrillaBuilder.exe was started
 int __cdecl LuaOpenGuerrillaBuilder(lua_State* L) {
     const bool started = StartTool(L"GuerrillaBuilder.exe", L"", true, nullptr);
-    if (started) rfa::Log("Guerrilla builder started from the main menu");
+    if (started) rfa::LogDetail("Guerrilla builder started from the main menu");
     rfa::game::lua_pushboolean(L, started);
     return 1;
 }
@@ -1555,7 +1570,7 @@ bool SendToOpenEditor(const std::wstring& arguments, HANDLE* process) {
         *process = pid ? OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
         if (!*process) *process = GetCurrentProcess();  // (can't watch it: taken as open, which it is)
     }
-    rfa::Log("Main menu: the level editor was open already (pid %lu): it was asked instead of starting another", pid);
+    rfa::LogDetail("Main menu: the level editor was open already (pid %lu): it was asked instead of starting another", pid);
     return true;
 }
 
@@ -1592,8 +1607,8 @@ int __cdecl LuaOpenLevelEditor(lua_State* L) {
     if (g_editorStarted) CloseHandle(g_editorStarted);
     g_editorStarted = nullptr;
     const bool started = SendToOpenEditor(arguments, &g_editorStarted) || StartEditor(arguments, true, &g_editorStarted);
-    if (started && chosen) rfa::Log("Level editor started from the main menu to make %s, a new %s level", name.c_str(), mode.c_str());
-    else if (started) rfa::Log(known ? "Level editor started from the main menu, for a new %s level" : "Level editor started from the main menu%s",
+    if (started && chosen) rfa::LogDetail("Level editor started from the main menu to make %s, a new %s level", name.c_str(), mode.c_str());
+    else if (started) rfa::LogDetail(known ? "Level editor started from the main menu, for a new %s level" : "Level editor started from the main menu%s",
                                known ? mode.c_str() : "");
     lua_pushboolean(L, started);
     return 1;
@@ -1766,14 +1781,14 @@ std::string g_deletingName;
 int __cdecl LuaDeleteCustomLevel(lua_State* L) {
     const char* name = rfa::game::lua_tolstring(L, 1, nullptr);
     bool started = false;
-    if (g_deleting) rfa::Log("Delete custom level: already deleting %s", g_deletingName.c_str());
+    if (g_deleting) rfa::LogDetail("Delete custom level: already deleting %s", g_deletingName.c_str());
     else if (name) {
         const std::vector<std::string> levels = CustomRuinLevels();
         if (std::find(levels.begin(), levels.end(), std::string(name)) == levels.end())
             rfa::Log("Delete custom level: %s isn't a level made with the editor", name);
         else if ((started = StartEditor(L"--delete-level " + std::wstring(name, name + strlen(name)), false, &g_deleting))) {
             g_deletingName = name;
-            rfa::Log("Delete custom level: the editor is deleting %s (what it does goes to logs\\editor.log)", name);
+            rfa::LogDetail("Delete custom level: the editor is deleting %s (what it does goes to logs\\editor.log)", name);
         }
     }
     rfa::game::lua_pushboolean(L, started);
@@ -1791,8 +1806,10 @@ int __cdecl LuaDeleteCustomLevelDone(lua_State* L) {
         GetExitCodeProcess(g_deleting, &code);
         CloseHandle(g_deleting);
         g_deleting = nullptr;
-        rfa::Log(code == 0 ? "Delete custom level: %s deleted; the game reads its map list at start-up, so restart it"
-                           : "Delete custom level: %s wasn't deleted (editor exit code %lu)", g_deletingName.c_str(), code);
+        if (code == 0)
+            rfa::LogDetail("Delete custom level: %s deleted; the game reads its map list at start-up, so restart it", g_deletingName.c_str(), code);
+        else
+            rfa::Log("Delete custom level: %s wasn't deleted (editor exit code %lu)", g_deletingName.c_str(), code);
     }
     rfa::game::lua_pushnumber(L, static_cast<double>(code));
     return 1;
@@ -1826,16 +1843,16 @@ void __cdecl RegisterLuaFunctions(lua_State* L) {
     lua_register(L, "rfa_text_begin", LuaTextBegin);
     lua_register(L, "rfa_text_state", LuaTextState);
     lua_register(L, "rfa_text_end", LuaTextEnd);
-    rfa::Log("Added rfa_get_setting, rfa_set_setting, rfa_log and the level editor's functions to the game's menu Lua");
+    rfa::LogDetail("Added rfa_get_setting, rfa_set_setting, rfa_log and the level editor's functions to the game's menu Lua");
     WatchLuaErrors();
-    rfa::Log("Lua script errors go to this log (\"Lua error: ...\")");
+    rfa::LogDetail("Lua script errors go to this log (\"Lua error: ...\")");
     using RegisterLuaFn = void(__cdecl*)(lua_State*);
     for (HMODULE mod : g_mods)
         if (auto registerLua = reinterpret_cast<RegisterLuaFn>(GetProcAddress(mod, "RFAMod_RegisterLua"))) {
             registerLua(L);
             wchar_t file[MAX_PATH];
             GetModuleFileNameW(mod, file, MAX_PATH);
-            rfa::Log("%ls added its functions to the game's menu Lua", wcsrchr(file, L'\\') ? wcsrchr(file, L'\\') + 1 : file);
+            rfa::LogDetail("%ls added its functions to the game's menu Lua", wcsrchr(file, L'\\') ? wcsrchr(file, L'\\') + 1 : file);
         }
 }
 
@@ -1852,7 +1869,7 @@ extern "C" __declspec(dllexport) int __cdecl RFALoader_RescanOverrides() {
     FindEdits(rfa::RootDir() + L"\\edits", L"");
     const int added = static_cast<int>(g_seenFiles.size() - before);
     ReleaseSRWLockExclusive(&g_filesLock);
-    if (added) rfa::Log("Overrides looked through again: %d new file(s)", added);
+    if (added) rfa::LogDetail("Overrides looked through again: %d new file(s)", added);
     return added;
 }
 
@@ -1860,7 +1877,7 @@ void InstallOverrides() {
     using namespace rfa::game;
     // "ScriptOverrides" is the setting's old name, from when only Lua scripts could be overridden.
     if (!rfa::IniInt(L"Loader", L"Overrides", rfa::IniInt(L"Loader", L"ScriptOverrides", 1))) {
-        rfa::Log("Overrides: off ([Loader] Overrides=0)");
+        rfa::LogDetail("Overrides: off ([Loader] Overrides=0)");
         return;
     }
     g_overridesOn = true;
@@ -1868,7 +1885,7 @@ void InstallOverrides() {
     FindEdits(rfa::RootDir() + L"\\edits", L"");  // changes to the archives the mod adds (the Guerrilla world's)
     g_logLookups = rfa::ReadLogSwitch(L"Loader", L"LogLookups");
     if (g_logLookups) {
-        rfa::Log("Logging lookups of level files ([Loader] LogLookups=1)");
+        rfa::LogDetail("Logging lookups of level files ([Loader] LogLookups=1)");
         g_beginRuinMatch = reinterpret_cast<BeginRuinMatchFn>(
             rfa::HookFunction(kBeginRuinMatch, kBeginRuinMatchPrologue, reinterpret_cast<void*>(&BeginRuinMatchHook)));
         if (!g_beginRuinMatch) rfa::Log("Could not hook the Ruin match start; its map list won't be logged");
@@ -1878,12 +1895,12 @@ void InstallOverrides() {
     g_findFile = reinterpret_cast<FindFileFn>(
         rfa::HookFunction(kFindFile, kFindFilePrologue, reinterpret_cast<void*>(&FindFileHook)));
     if (rfa::ReplaceFunction(kReadRuinMaps, reinterpret_cast<const void*>(&ReadRuinMaps)))
-        rfa::Log("Ruin takes up to %d maps from wrecking_crew_maps.xtbl, each started by its file_name", kRuinMostMaps);
+        rfa::LogDetail("Ruin takes up to %d maps from wrecking_crew_maps.xtbl, each started by its file_name", kRuinMostMaps);
     else
         rfa::Log("Could not replace the Ruin map reader; Ruin keeps its five maps, started by their place in its table");
     const auto newFiles = std::count_if(g_newFiles.begin(), g_newFiles.end(),
                                         [](const auto& file) { return file.first.find('\\') != std::string::npos; });
-    rfa::Log("Overrides: %u in overrides\\, and %u new files; Lua scripts %s, other files %s",
+    rfa::LogDetail("Overrides: %u in overrides\\, and %u new files; Lua scripts %s, other files %s",
              static_cast<unsigned>(g_overrideCount), static_cast<unsigned>(newFiles),
              g_loadBuffer ? "on" : "FAILED", g_findFile ? "on" : "FAILED");
 }
@@ -1935,10 +1952,11 @@ const wchar_t* MergedInto(const std::wstring& file, const std::vector<std::wstri
 extern "C" DWORD WINAPI RFALoader_Init(LPVOID) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    rfa::Log("Loader running in %ls (pid %lu)", exe, GetCurrentProcessId());
-    rfa::Log("Game build: %s", rfa::game::BuildDescription());
+    rfa::LogInfo("Loader running in %ls (pid %lu)", exe, GetCurrentProcessId());
+    rfa::LogInfo("Game build: %s", rfa::game::BuildDescription());
     if (rfa::ReadLogSwitch(L"Loader"))
-        rfa::Log("[Loader] Log=1: the loader also logs each file it adds, replaces or is asked for (\"[loader:log]\" lines)");
+        rfa::LogDetail("[Loader] Log=1: the loader also logs each file it adds, replaces or is asked for (\"[loader:log]\" lines)");
+    g_scriptLines = rfa::DetailLog() || rfa::IniInt(L"GuerrillaHud", L"Log", 0) != 0;
     InstallInstalledExePath();
     InstallCrashReporter();
     InstallLogAtExit();
@@ -1974,7 +1992,7 @@ extern "C" DWORD WINAPI RFALoader_Init(LPVOID) {
             continue;
         }
         if (!rfa::IniInt(L"Mods", name.c_str(), 1)) {
-            rfa::Log("Skipping %ls (disabled in [Mods])", file.c_str());
+            rfa::LogDetail("Skipping %ls (disabled in [Mods])", file.c_str());
             continue;
         }
         HMODULE mod = LoadLibraryW((dir + file).c_str());
@@ -1987,10 +2005,11 @@ extern "C" DWORD WINAPI RFALoader_Init(LPVOID) {
             rfa::Log("%ls crashed in RFAMod_Init", file.c_str());
             continue;
         }
-        rfa::Log("Loaded %ls", file.c_str());
+        rfa::LogInfo("Loaded %ls", file.c_str());
         g_mods.push_back(mod);
         ++loaded;
     }
+    StartProfiler(g_mods);  // only with [Loader] Profile=1
     return loaded;
 }
 

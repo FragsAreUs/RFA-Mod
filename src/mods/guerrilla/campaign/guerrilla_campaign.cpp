@@ -96,7 +96,7 @@ void __cdecl ScriptFrame() {
     const bool ours = InOurWorld();
     if (static_cast<int>(ours) != g_inOurWorld) {
         g_inOurWorld = ours;
-        rfa::Log(ours ? "Guerrilla's campaign systems run in %s" : "%s isn't one of Worlds=; Guerrilla's campaign systems rest",
+        rfa::LogDetail(ours ? "Guerrilla's campaign systems run in %s" : "%s isn't one of Worlds=; Guerrilla's campaign systems rest",
                  WorldName());
     }
     // A level starts when the player is there (again): each start is a start for the systems, as
@@ -209,7 +209,7 @@ void guerrilla_campaign::Init() {
         return;
     }
     if (rfa::IniInt(L"GuerrillaCampaign", L"Enabled", 1) == 0) {
-        rfa::Log("Off (Enabled=0 in [GuerrillaCampaign])");
+        rfa::LogDetail("Off (Enabled=0 in [GuerrillaCampaign])");
         return;
     }
     g_worlds = SplitList(rfa::IniString(L"GuerrillaCampaign", L"Worlds", L"rfg"));
@@ -229,12 +229,12 @@ void guerrilla_campaign::Init() {
     if (rfa::IniInt(L"GuerrillaCampaign", L"Scripts", 0) != 0) {
         script::Install(words::All(), words::Count());
         handles::AddAll();
-        if (script::HookScriptReader()) rfa::Log("Guerrilla's script words go in before the first script");
+        if (script::HookScriptReader()) rfa::LogDetail("Guerrilla's script words go in before the first script");
         else rfa::Log("Could not hook the game's script reader; Guerrilla's scripts won't find the words they need");
     }
     g_scriptFrame = reinterpret_cast<ScriptFrameFn>(rfa::HookFunction(kScriptFrame, kScriptFramePrologue, reinterpret_cast<void*>(&ScriptFrame)));
     if (!g_scriptFrame) rfa::Log("Could not hook the game's script update; the campaign systems won't run");
-    else rfa::Log("The systems run in the worlds named by Worlds= in [GuerrillaCampaign] (script words %s, activities %s)",
+    else rfa::LogDetail("The systems run in the worlds named by Worlds= in [GuerrillaCampaign] (script words %s, activities %s)",
                   rfa::IniInt(L"GuerrillaCampaign", L"Scripts", 0) ? "on" : "off", g_activities ? "on" : "off");
 }
 

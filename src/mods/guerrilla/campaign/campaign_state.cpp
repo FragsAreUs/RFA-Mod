@@ -71,7 +71,7 @@ int GuerrillaCampaign_SaveState(unsigned char* buffer, int room) {
     const int size = static_cast<int>(bytes.size());
     if (!buffer || room < size) return size;
     memcpy(buffer, bytes.data(), bytes.size());
-    rfa::Log("Campaign state: %d bytes given to the game's save", size);
+    rfa::LogDetail("Campaign state: %d bytes given to the game's save", size);
     return size;
 }
 
@@ -84,5 +84,5 @@ void GuerrillaCampaign_LoadState(const unsigned char* data, int size) {
     liberation::ReloadState();
     activities::ReloadProgress();
     district_sources::ReloadState();
-    rfa::Log(data && size > 0 ? "Campaign state: %d bytes from the game's save" : "Campaign state: a fresh campaign (%d bytes)", size);
+    rfa::LogDetail(data && size > 0 ? "Campaign state: %d bytes from the game's save" : "Campaign state: a fresh campaign (%d bytes)", size);
 }

@@ -195,7 +195,7 @@ void Frame(BYTE* player, int clock) {
 
 void StartDropOff() {
     g_on = rfa::IniInt(L"GuerrillaVehicles", L"VehicleDropOff", 1) != 0;
-    rfa::Log(g_on ? "Drop-off: at 30 %% morale or more, sprinting 10 s on foot at green alert brings a guerrilla with a vehicle, as Guerrilla's"
+    rfa::LogDetail(g_on ? "Drop-off: at 30 %% morale or more, sprinting 10 s on foot at green alert brings a guerrilla with a vehicle, as Guerrilla's"
                   : "Drop-off: off ([GuerrillaVehicles] VehicleDropOff=0)");
 }
 

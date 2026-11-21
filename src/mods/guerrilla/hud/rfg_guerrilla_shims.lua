@@ -245,6 +245,13 @@ function rfg_start_activity_complete(tally)
 	end
 end
 
+-- Its mission-complete screen starting each tally's count (rfg_start_mission_complete(1 to 3): a mission's credits,
+-- morale and total, hud_ui_mission_complete_start_tally). Only its missions' path counts them, and that isn't ported
+-- (its activity path, an area defense's loss, has no tallies): nothing to count, but the script's tweens' start events
+-- still call it.
+function rfg_start_mission_complete(tally)
+end
+
 -- Its control and morale colours (its rfg_ui_globals), where Armageddon's own don't have them.
 if not pcall(function() return COLOR_CONTROL end) then
 	COLOR_CONTROL = { R = 0.58, G = 0.05, B = 0 }

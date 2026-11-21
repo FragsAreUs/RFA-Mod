@@ -61,7 +61,7 @@ void Enter() {
     static bool told = false;  // once, as the lookup was made once
     if (!g_combatTarget || told) return;
     told = true;
-    rfa::Log(guerrilla_gear::Running() ? "Stealth: the EDF and the Marauders have no target in the player while the Stealth backpack has him fully stealthed"
+    rfa::LogDetail(guerrilla_gear::Running() ? "Stealth: the EDF and the Marauders have no target in the player while the Stealth backpack has him fully stealthed"
                                        : "Stealth: guerrilla_gear is off; stealth doesn't hide the player from the EDF");
 }
 
@@ -72,9 +72,9 @@ void Frame() {
     g_wasStealthed = stealthed;
     if (stealthed) {
         g_skipped = 0;
-        rfa::Log("Stealth: the player is fully stealthed; the EDF and the Marauders lose him as their target");
+        rfa::LogDetail("Stealth: the player is fully stealthed; the EDF and the Marauders lose him as their target");
     } else {
-        rfa::Log("Stealth: the player is seen again (%u times the EDF or Marauders were given no target while he was stealthed)", g_skipped);
+        rfa::LogDetail("Stealth: the player is seen again (%u times the EDF or Marauders were given no target while he was stealthed)", g_skipped);
     }
 }
 

@@ -15,6 +15,8 @@
 local SCREEN_RUNNING = 2					-- the mod's (the campaign's) screen while an activity runs
 local MODE_DEMOLITIONS_MASTER = 11		-- the campaign's activity modes
 local MODE_DELIVERY = 4					-- Transporter (Guerrilla Express)
+local MODE_AREA_DEFENSE = 16				-- area defense ("HEAVY METAL")
+local LUA_ACTIVITY_AREA_DEFENSE_TYPE = 8	-- its LUA_ACTIVITY_AREA_DEFENSE
 local LUA_ACTIVITY_DEMOLITIONS_TYPE = 6	-- Guerrilla's LUA_ACTIVITY_DEMOLITIONS (its script's)
 local LUA_ACTIVITY_EXPRESS_TYPE = 4		-- its LUA_ACTIVITY_GUERILLA_EXPRESS
 local LUA_INVALID_TYPE = 0				-- its LUA_MISSION_ACTIVITY_INVALID
@@ -27,6 +29,8 @@ local DOCUMENT_TAGS = { diversion_millions = "HUD_MILLION", convoy_target_title_
 	convoy_strength_title_2 = "HM_CONVOY_STRENGTH", shotgun_title = "HM_SHOTGUN_DESTRUCTION", shotgun_millions = "HM_SHOTGUN_MILLION" }
 local Thread = -1
 local Shown = ""							-- what was sent last ("" none)
+local Timer_shown = ""						-- HudTimerInfo: the timer's text last sent ("" hidden)
+local Stamp_shown = false					-- MissionStatus: a stamp is up
 local Failed = {}
 
 local function log(text)
@@ -109,6 +113,29 @@ local function follow_diversions()
 	end
 end
 
+-- The COMPLETE stamp (hud_ui_missions_process_activity_status RM 0x895C40: on VICTORY, area defense's status 1 with
+-- MISS_COMPLETE_MALE upper-cased and the 6 s it shows): the mod's result says one is due (rfg_activity hands it as
+-- Guerrilla's text, and the elapsed time as "mm:ss", so neither is used here); the text is upper-cased by the mod
+-- (rfg_guerrilla_text's second argument: Armageddon's Lua has no string.upper).
+local STAMP_TAG = "MISS_COMPLETE_MALE"
+local STAMP_SECONDS = 6
+
+local function follow_stamp(screen, mode, success, result)
+	if screen == SCREEN_RUNNING and mode == MODE_AREA_DEFENSE and success and result ~= nil and result ~= "" then
+		if not Stamp_shown then
+			Stamp_shown = true		-- once, even if Guerrilla's callback fails
+			local shown = "COMPLETE"
+			if _GetAnyGlobalSilent("rfg_guerrilla_text") ~= nil then
+				shown = rfg_guerrilla_text(STAMP_TAG, true) or shown
+			end
+			call(handle_activity_status, "handle_activity_status", { 1, shown, STAMP_SECONDS, n = 3 })
+		end
+	elseif Stamp_shown then
+		call(handle_activity_status, "handle_activity_status", { -1, "", 0, n = 3 })
+		Stamp_shown = false
+	end
+end
+
 -- MissionInfo: type, title, objective, activity info, txt1-3 (demolitions master: the structure's indicator, the time,
 -- the structure's title and label; Transporter, hud_ui_missions_get_activity_delivery_info RM 0x896910: the time left
 -- and the distance to the end, its script's handle_express).
@@ -130,6 +157,20 @@ local function follow()
 		elseif screen == SCREEN_RUNNING and mode == MODE_DELIVERY then
 			values = { LUA_ACTIVITY_EXPRESS_TYPE, title, objective, 0, timer, distance or "", "", n = 7 }
 			key = "td|" .. tostring(objective) .. "|" .. tostring(timer) .. "|" .. tostring(distance)
+		elseif screen == SCREEN_RUNNING and mode == MODE_AREA_DEFENSE then
+			-- hud_ui_missions_get_activity_area_defense_info RM 0x896B50: the title, the subtitle while running, the
+			-- vehicles (0) or soldiers (1) icon, "kills / required" (its script's handle_area_defense)
+			values = { LUA_ACTIVITY_AREA_DEFENSE_TYPE, title, objective or "", status or 0, distance or "", "", "", n = 7 }
+			key = "ad|" .. tostring(objective) .. "|" .. tostring(status) .. "|" .. tostring(distance)
+		end
+		-- HudTimerInfo (hud_ui_missions_process_hud_timer RM 0x896DB0): area defense's 10 s out of its ring, "m:ss"
+		local shown_timer = ""
+		if screen == SCREEN_RUNNING and mode == MODE_AREA_DEFENSE and timer ~= nil then
+			shown_timer = timer
+		end
+		if shown_timer ~= Timer_shown then
+			call(timer_update, "timer_update", { shown_timer ~= "", shown_timer, n = 2 })
+			Timer_shown = shown_timer
 		end
 		if key ~= Shown then
 			if values == nil then
@@ -140,6 +181,15 @@ local function follow()
 			end
 			call(mission_info, "mission_info", values)
 			Shown = key
+		end
+		-- MissionStatus (hud_ui_missions_process_activity_status RM 0x895C40): a won area defense's COMPLETE stamp, orange,
+		-- for 6 s (the seconds left as the mod gives them), then gone with the panel (status -1, time left 0). After the
+		-- panel's update, and guarded: its error stopped this loop once (2026-11-20, string.upper isn't Armageddon's), and
+		-- the panel kept its last count.
+		local stamp_ok, stamp_problem = pcall(follow_stamp, screen, mode, success, result)
+		if not stamp_ok and not Failed["stamp"] then
+			Failed["stamp"] = true
+			log("the stamp: " .. tostring(stamp_problem))
 		end
 		thread_yield()
 	end

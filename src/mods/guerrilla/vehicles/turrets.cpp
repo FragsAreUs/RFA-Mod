@@ -201,7 +201,7 @@ bool AimUpgradeBought() {
     askedAt = now;
     const bool has = GuerrillaGear_UpgradeLevel(kAimUpgrade) > 0;
     if (has != bought)
-        rfa::Log(has ? "Turrets: TURRET LINK is bought (RFA-Mod's own upgrade): the gun of a vehicle the player drives follows his aim point from now on"
+        rfa::LogDetail(has ? "Turrets: TURRET LINK is bought (RFA-Mod's own upgrade): the gun of a vehicle the player drives follows his aim point from now on"
                      : "Turrets: TURRET LINK is no longer bought: a driver's gun aims by itself again, as Guerrilla's");
     bought = has;
     return bought;
@@ -360,7 +360,7 @@ void StartWalkerLog() {
         return;
     }
     g_walkerPresim = reinterpret_cast<WalkerPresimFn>(rfa::HookFunction(kWalkerPresim, sizeof(opening), reinterpret_cast<void*>(&WalkerPresim)));
-    if (g_walkerPresim) rfa::Log("Walkers: the player's Guerrilla walker's movement is logged (four lines a second, its first 30 s)");
+    if (g_walkerPresim) rfa::LogDetail("Walkers: the player's Guerrilla walker's movement is logged (four lines a second, its first 30 s)");
 }
 
 // ---- The log: how the player's car handles (the user, 2026-11-18: "very hard to turn/steer ... as if you are on a
@@ -530,7 +530,7 @@ void __fastcall MainSteering(BYTE* steering, void* unused, float dt, BYTE* insta
             rfa::Log("Driving: a read of the car's Havok state faulted; the wheels' state is left out from now on");
         } else {
             g_driveLines = kDriveLines;
-            rfa::Log("Driving: a read of the car's Havok state faulted again; this car's log stops");
+            rfa::LogDetail("Driving: a read of the car's Havok state faulted again; this car's log stops");
         }
     }
 }
@@ -576,7 +576,7 @@ void StartFrictionAsGuerrilla() {
         return;
     }
     g_buildFriction = reinterpret_cast<BuildFrictionFn>(rfa::HookFunction(kBuildFriction, sizeof(opening), reinterpret_cast<void*>(&BuildFriction)));
-    if (g_buildFriction) rfa::Log("Driving: Guerrilla's cars keep the tyre friction built when they're made through a reset, as Guerrilla's");
+    if (g_buildFriction) rfa::LogDetail("Driving: Guerrilla's cars keep the tyre friction built when they're made through a reset, as Guerrilla's");
 }
 
 void StartDriveLog() {
@@ -588,7 +588,7 @@ void StartDriveLog() {
         return;
     }
     g_mainSteering = reinterpret_cast<MainSteeringFn>(rfa::HookFunction(kMainSteeringAngle, sizeof(opening), reinterpret_cast<void*>(&MainSteering)));
-    if (g_mainSteering) rfa::Log("Driving: the player's Guerrilla car's handling is logged (as built once, then four lines a second for a minute)");
+    if (g_mainSteering) rfa::LogDetail("Driving: the player's Guerrilla car's handling is logged (as built once, then four lines a second for a minute)");
 }
 
 // ---- A wheel's ray, as Guerrilla casts it (2026-11-19, "steering still rough when turning at speed")
@@ -816,7 +816,7 @@ void NoteWheelGroundGuarded(const WheelCar& car, BYTE* instance, const BYTE* out
         NoteWheelGround(car, instance, out, wheels);
     } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         g_groundLog = false;
-        rfa::Log("Driving: a read of a wheel's ground faulted; the drop-out lines stop");
+        rfa::LogDetail("Driving: a read of a wheel's ground faulted; the drop-out lines stop");
     }
 }
 
@@ -856,7 +856,7 @@ void StartWheelRays() {
     }
     if (g_wheelRays) g_castWheel = reinterpret_cast<CastWheelFn>(rfa::HookFunction(kCastWheel, sizeof(opening), reinterpret_cast<void*>(&CastWheel)));
     if (!g_castWheel) g_wheelRays = false;
-    rfa::Log(g_wheelRays ? "Driving: Guerrilla's cars cast their wheels' rays by Guerrilla's rules (their own parts, non-solid things and surfaces "
+    rfa::LogDetail(g_wheelRays ? "Driving: Guerrilla's cars cast their wheels' rays by Guerrilla's rules (their own parts, non-solid things and surfaces "
                            "steeper than 60 degrees skipped) and grip less on slopes, as Guerrilla's"
                          : "Driving: Guerrilla's cars cast their wheels' rays as Armageddon's ([GuerrillaVehicles] WheelRaysAsGuerrilla=0)");
 }
@@ -973,20 +973,24 @@ bool Opens(DWORD address, const BYTE* opening, size_t size) { return memcmp(rein
 
 void StartHinges() {
     if (!rfa::IniInt(L"GuerrillaVehicles", L"TurretHingesAsGuerrilla", 1)) {
-        rfa::Log("Turrets: the guns' hinge motors on Guerrilla's vehicles stay Armageddon's ([GuerrillaVehicles] TurretHingesAsGuerrilla=0)");
+        rfa::LogDetail("Turrets: the guns' hinge motors on Guerrilla's vehicles stay Armageddon's ([GuerrillaVehicles] TurretHingesAsGuerrilla=0)");
         return;
     }
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00};
     const BYTE partOpening[] = {0x53, 0x8B, 0xDC, 0x83, 0xEC, 0x08, 0x83, 0xE4, 0xF0};
     if (Opens(kAssemble, opening, sizeof(opening)))
         g_assemble = reinterpret_cast<AssembleFn>(rfa::HookFunction(kAssemble, kAssemblePrologue, reinterpret_cast<void*>(&Assemble)));
-    rfa::Log(g_assemble ? "Turrets: the guns on Guerrilla's vehicles get Guerrilla's hinge motors (they hold the gun where it's sent)"
-                        : "Turrets: the game's turret assembly isn't as expected; the guns' hinge motors and parts' weights stay Armageddon's");
+    if (g_assemble)
+        rfa::LogDetail("Turrets: the guns on Guerrilla's vehicles get Guerrilla's hinge motors (they hold the gun where it's sent)");
+    else
+        rfa::Log("Turrets: the game's turret assembly isn't as expected; the guns' hinge motors and parts' weights stay Armageddon's");
     if (!g_assemble) return;
     if (Opens(kPartBody, partOpening, sizeof(partOpening)))
         g_partBody = reinterpret_cast<PartBodyFn>(rfa::HookFunction(kPartBody, kPartBodyPrologue, reinterpret_cast<void*>(&PartBody)));
-    rfa::Log(g_partBody ? "Turrets: the guns' parts on Guerrilla's vehicles weigh what Guerrilla gives them (the turret's entry's mass, at least 5 kg)"
-                        : "Turrets: the game's turret part bodies aren't as expected; the parts weigh what their items do, as Armageddon's");
+    if (g_partBody)
+        rfa::LogDetail("Turrets: the guns' parts on Guerrilla's vehicles weigh what Guerrilla gives them (the turret's entry's mass, at least 5 kg)");
+    else
+        rfa::Log("Turrets: the game's turret part bodies aren't as expected; the parts weigh what their items do, as Armageddon's");
 }
 
 // ---- The gunner's camera: Guerrilla's follows the gun
@@ -1074,14 +1078,16 @@ void __cdecl TurretCameraPost() {
 
 void StartGunnerCamera() {
     if (!rfa::IniInt(L"GuerrillaVehicles", L"GunnerCameraAsGuerrilla", 1)) {
-        rfa::Log("Turrets: the gunner's camera looks where the mouse turns it, as Armageddon's ([GuerrillaVehicles] GunnerCameraAsGuerrilla=0)");
+        rfa::LogDetail("Turrets: the gunner's camera looks where the mouse turns it, as Armageddon's ([GuerrillaVehicles] GunnerCameraAsGuerrilla=0)");
         return;
     }
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xAC, 0x01, 0x00, 0x00};
     if (Opens(kTurretCameraPost, opening, sizeof(opening)))
         g_turretCameraPost = reinterpret_cast<CameraPostFn>(rfa::HookFunction(kTurretCameraPost, kTurretCameraPostPrologue, reinterpret_cast<void*>(&TurretCameraPost)));
-    rfa::Log(g_turretCameraPost ? "Turrets: on Guerrilla's vehicles the gunner's camera stays on the gun, as Guerrilla's (it leads it by at most 2 degrees)"
-                                : "Turrets: the game's turret camera isn't as expected; the gunner's camera stays Armageddon's");
+    if (g_turretCameraPost)
+        rfa::LogDetail("Turrets: on Guerrilla's vehicles the gunner's camera stays on the gun, as Guerrilla's (it leads it by at most 2 degrees)");
+    else
+        rfa::Log("Turrets: the game's turret camera isn't as expected; the gunner's camera stays Armageddon's");
 }
 
 }  // namespace
@@ -1095,7 +1101,7 @@ void StartTurrets() {
     StartWheelRays();
     g_watchLog = rfa::ReadLogSwitch(L"GuerrillaVehicles", L"TurretWatchLog");
     if (!rfa::IniInt(L"GuerrillaVehicles", L"DriverGunAsGuerrilla", 1)) {
-        rfa::Log("Turrets: a driver's gun follows the player's aim point on every vehicle, as Armageddon's ([GuerrillaVehicles] DriverGunAsGuerrilla=0)");
+        rfa::LogDetail("Turrets: a driver's gun follows the player's aim point on every vehicle, as Armageddon's ([GuerrillaVehicles] DriverGunAsGuerrilla=0)");
         return;
     }
     const BYTE autoaimOpening[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x30, 0x01, 0x00, 0x00};
@@ -1110,13 +1116,13 @@ void StartTurrets() {
         rfa::Log("Turrets: could not hook the turret aiming; a driver's gun keeps Armageddon's rule");
         return;
     }
-    rfa::Log("Turrets: on Guerrilla's vehicles a driver's gun aims by itself as Guerrilla's (enemies ahead, else straight ahead; a walker's follows the aim point), "
+    rfa::LogDetail("Turrets: on Guerrilla's vehicles a driver's gun aims by itself as Guerrilla's (enemies ahead, else straight ahead; a walker's follows the aim point), "
              "until the player buys TURRET LINK (RFA-Mod's own upgrade): then it follows his aim point");
     if (Opens(kAttachGunner, attachOpening, sizeof(attachOpening)) && Opens(kDetachGunner, detachOpening, sizeof(detachOpening))) {
         g_attachGunner = reinterpret_cast<GunnerFn>(rfa::HookFunction(kAttachGunner, kGunnerPrologue, reinterpret_cast<void*>(&AttachGunner)));
         if (g_attachGunner) g_detachGunner = reinterpret_cast<GunnerFn>(rfa::HookFunction(kDetachGunner, kGunnerPrologue, reinterpret_cast<void*>(&DetachGunner)));
     }
-    if (!g_attachGunner || !g_detachGunner) rfa::Log("Turrets: gunners coming and going aren't logged");
+    if (!g_attachGunner || !g_detachGunner) rfa::LogDetail("Turrets: gunners coming and going aren't logged");
 }
 
 // Around the game's AI/driver handling reset (guerrilla_vehicles.cpp's hook on 0x5F2CF0): a Guerrilla car whose tyre

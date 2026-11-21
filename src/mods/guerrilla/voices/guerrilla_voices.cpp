@@ -274,7 +274,7 @@ void guerrilla_voices::Init() {
         return;
     }
     if (rfa::IniInt(L"GuerrillaVoices", L"Enabled", 1) == 0) {
-        rfa::Log("Off (Enabled=0 in [GuerrillaVoices])");
+        rfa::LogDetail("Off (Enabled=0 in [GuerrillaVoices])");
         return;
     }
     g_log = rfa::ReadLogSwitch(L"GuerrillaVoices");
@@ -285,7 +285,7 @@ void guerrilla_voices::Init() {
     }
     size_t lines = 0;
     for (const Persona& p : g_personas) lines += p.lines.size();
-    rfa::Log("%u personas (%u lines between them), %u characters, %u rules from voices.txt; their bank loads with the game's at boot",
+    rfa::LogDetail("%u personas (%u lines between them), %u characters, %u rules from voices.txt; their bank loads with the game's at boot",
              static_cast<unsigned>(g_personas.size()), static_cast<unsigned>(lines), static_cast<unsigned>(g_characters.size()),
              static_cast<unsigned>(g_rules.size()));
 }

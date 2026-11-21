@@ -142,7 +142,7 @@ void ReadNodes() {
     }
     int special = 0;
     for (const Node& n : g_nodes) special += n.special;
-    rfa::Log("Story people: %d of Guerrilla's story people's nodes at the safehouses read (%d special NPCs', %d VIPs'), held for the one special NPC and the "
+    rfa::LogDetail("Story people: %d of Guerrilla's story people's nodes at the safehouses read (%d special NPCs', %d VIPs'), held for the one special NPC and the "
              "one VIP Guerrilla streams in", static_cast<int>(g_nodes.size()), special, static_cast<int>(g_nodes.size()) - special);
 }
 
@@ -300,7 +300,7 @@ void StoryDisableVip(const char* character, bool disable) {
     if (disable) g_disabledVips.insert(Lower(character));
     else g_disabledVips.erase(Lower(character));
     LeaveCriticalSection(&g_disabledLock);
-    rfa::Log("Story people: the VIP %s %s (disable_safehouse_vip)", character, disable ? "disabled" : "enabled again");
+    rfa::LogDetail("Story people: the VIP %s %s (disable_safehouse_vip)", character, disable ? "disabled" : "enabled again");
 }
 
 void StoryFrame(bool ours) {

@@ -267,7 +267,7 @@ void InstallWords() {
             ++added;
         }
     }
-    rfa::Log("Guerrilla's script words: %d added, %d put back to Guerrilla's (%d with Guerrilla's arguments)", added,
+    rfa::LogDetail("Guerrilla's script words: %d added, %d put back to Guerrilla's (%d with Guerrilla's arguments)", added,
              restored, argsFixed);
 }
 
@@ -282,7 +282,7 @@ Node* __cdecl ParseNode(XmlElement* element, void* script) {
             if (_stricmp(element->name, kind.tag.c_str()) != 0) continue;
             const char* name = element->text ? element->text : "";
             const unsigned value = kind.lookup(name);
-            if (value == kNoHandle) rfa::Log("Script: no %s named \"%s\"", kind.tag.c_str(), name);
+            if (value == kNoHandle) rfa::LogDetail("Script: no %s named \"%s\"", kind.tag.c_str(), name);
             void* memory = AllocNode(g_nodePool, nullptr, 0);
             return memory ? MakeHandleNode(memory, nullptr, value) : nullptr;
         }

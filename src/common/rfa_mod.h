@@ -96,14 +96,24 @@ inline void LogAs(const char* module, const char* fmt, va_list ap) {
     OutputDebugStringA(line);
 }
 
-// Appends one line to logs\rfa_mods.log, starting with RFA_MOD_NAME. It is in an unnamed namespace
-// so that every source file has its own copy with its own name: a DLL made of several parts, each
-// in its own file (rfa_qol.dll), logs each part under that part's name.
+// Appends one line to logs\rfa_mods.log, starting with RFA_MOD_NAME: a problem (see "What is logged" below).
+// It is in an unnamed namespace so that every source file has its own copy with its own name: a DLL made
+// of several parts, each in its own file (rfa_qol.dll), logs each part under that part's name.
 namespace {
 inline void Log(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     LogAs(RFA_MOD_NAME, fmt, ap);
+    va_end(ap);
+}
+
+// The one line a part writes as it starts, if any: what it is or found that a reader of the log needs every time
+// (the game's build, the DLLs loaded, the parts running). Always written, marked "[RFA_MOD_NAME:info]", and left
+// out of the console, which shows problems only.
+inline void LogInfo(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    LogAs(RFA_MOD_NAME ":info", fmt, ap);
     va_end(ap);
 }
 }  // namespace
@@ -120,15 +130,19 @@ inline void Log(const char* fmt, ...) {
 
 // ---- What is logged, and what only on request
 //
-// rfa::Log is for what a player or we need to see every time: what a mod found, read and hooked as it
-// started (a line or a few), real problems (errors, failed hooks, crashes, stuck frames) and rare
-// changes a player cares about (a district liberated, a level loaded). The console shows these too.
+// rfa::Log is for problems only: errors and warnings (a hook that failed, the game's code not as expected, a
+// file missing, a table full), crashes, stuck frames, and the game's own reports passed on (its on-screen errors,
+// Lua errors). Always written, and the in-game console shows them.
 //
-// rfa::LogDetail is for everything routine: reports every few seconds, a line for each spawn, sound,
-// prop, path or file. Those lines are written only while the mod's own switch is on (Log= in its
+// rfa::LogInfo is for a part's one start-up line, if it has one (above). Always written, not in the console.
+//
+// rfa::LogDetail is for everything else: what a mod found and set up as it started beyond that one line, status
+// (an activity won, a district liberated, the alert level), reports every few seconds, a line for each spawn,
+// sound, prop, path or file. Those lines are written only while the mod's own switch is on (Log= in its
 // section of rfa_mods.ini, read as the mod starts with rfa::ReadLogSwitch), and are marked
 // "[module:log]" so the console leaves them out: they go to logs\rfa_mods.log only. A mod's narrower
-// switches (DriveLog=, PropLog=, ...) add their own detail lines and need Log=1 too.
+// switches (DriveLog=, PropLog=, ...) add their own detail lines and need Log=1 too. With the switch off a
+// detail line costs one test: its text isn't formatted and its arguments aren't worked out.
 
 // A DLL holding one mod has one switch, which its RFAMod_Init reads. A DLL holding several mods, each with its
 // own Log= (rfa_guerrilla.dll's nine parts), has one switch per part. A part's source files all log under the
@@ -190,16 +204,20 @@ inline bool ReadLogSwitch(const wchar_t* section, const wchar_t* key) {
 }  // namespace
 
 namespace {
-// A routine line for logs\rfa_mods.log, starting with "[RFA_MOD_NAME:log]": written only while this
-// DLL's switch is on, never shown in the console.
-inline void LogDetail(const char* fmt, ...) {
-    if (!DetailLog()) return;
+// A routine line for logs\rfa_mods.log, starting with "[RFA_MOD_NAME:log]", written now; never shown in the
+// console. Called through rfa::LogDetail, which checks the switch first.
+inline void LogDetailLine(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     LogAs(RFA_MOD_NAME ":log", fmt, ap);
     va_end(ap);
 }
 }  // namespace
+
+// rfa::LogDetail(format, ...): a routine line, written only while this source file's switch is on. It is a macro so
+// that with the switch off its arguments aren't worked out at all: no text formatted, no lookup made or string
+// built just for the line. "rfa::LogDetail(...)" reads as "rfa::DetailLog() ? rfa::LogDetailLine(...) : (void)0".
+#define LogDetail(...) DetailLog() ? ::rfa::LogDetailLine(__VA_ARGS__) : (void)0
 
 // rfa::LogDetail only the first `limit` times this line is reached while the switch is on.
 #define RFA_LOG_DETAIL_FIRST(limit, ...)         \
@@ -271,7 +289,7 @@ bool MoveTable(const char* name, DWORD game, DWORD entrySize, DWORD holds, const
             return false;
         }
     }
-    rfa::Log("%s: the game holds %lu (its own %lu): the table moved to 0x%08lX, %u places in its code changed", name,
+    rfa::LogDetail("%s: the game holds %lu (its own %lu): the table moved to 0x%08lX, %u places in its code changed", name,
              newHolds, holds, moved, static_cast<unsigned>(References + Limits));
     return true;
 }

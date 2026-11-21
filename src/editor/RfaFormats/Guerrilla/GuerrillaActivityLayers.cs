@@ -20,7 +20,8 @@ namespace RfaFormats.Guerrilla;
 /// and named by rf4_layer_definition.xtbl (a managed_layer_info row: Name, the container's and the set's, and its
 /// managed_layer_list of managed_layer_name).
 ///
-/// Written here, for Guerrilla's demolitions masters (je_dm_NN, 13 with a layer):
+/// Written here, for Guerrilla's demolitions masters (je_dm_NN, 13 with a layer) and area defenses (je_ad_01/02, ls_ad_01-07:
+/// each a given walker, tank or turret's spawn node and its spawn regions, which the campaign mod reads from its markers):
 ///   - each layer converted by the world's own converters (<see cref="GuerrillaPickups"/> for the propane tanks and
 ///     ammo boxes, <see cref="GuerrillaMovers"/> for the barrels, <see cref="GuerrillaVehiclePlaces"/> for the walkers'
 ///     spawn nodes) and two of its own (object_dummy: its dummy_type, the same list in both games; and
@@ -43,8 +44,12 @@ public static class GuerrillaActivityLayers
     /// <summary>Armageddon's managed layers' asset list in <see cref="MissionArchive"/> (0x4FFD10 names it).</summary>
     public const string AssetList = "Layer_Container.asm_pc";
 
-    /// <summary>The activities whose layers are ported so far: Guerrilla's demolitions masters.</summary>
-    const string ActivityPrefix = "je_dm_";
+    /// <summary>The activities whose layers are ported so far: Guerrilla's demolitions masters (je_dm_) and area defenses (je_ad_, ls_ad_).</summary>
+    static readonly string[] ActivityPrefixes = ["je_dm_", "je_ad_", "ls_ad_"];
+    static readonly string[] AreaDefensePrefixes = ["je_ad_", "ls_ad_"];
+
+    /// <summary>Whether an activity (activity.xtbl row, its layer set's name) is one of Guerrilla's area defenses ("Heavy Metal").</summary>
+    public static bool IsAreaDefense(string activity) => AreaDefensePrefixes.Any(p => activity.StartsWith(p, StringComparison.OrdinalIgnoreCase));
     const string ActivityTable = "activity.xtbl", ActivityArchive = "activities.vpp_pc";
     /// <summary>The most layer files an activity row lists (Guerrilla's layer_file_0 .. layer_file_15; Armageddon's list holds 16).</summary>
     const int MostLayers = 16;
@@ -63,6 +68,7 @@ public static class GuerrillaActivityLayers
     static readonly uint Dummy = NameHashes.ClassHash("object_dummy"), TurretNode = NameHashes.ClassHash("object_turret_spawn_node"),
                          VehicleNode = NameHashes.ClassHash("object_vehicle_spawn_node"), Item = NameHashes.ClassHash("item"),
                          Weapon = NameHashes.ClassHash("weapon"), RfgMover = NameHashes.ClassHash("rfg_mover"),
+                         SpawnRegion = NameHashes.ClassHash("object_spawn_region"),
                          GeneralMover = NameHashes.ClassHash("general_mover");
 
     /// <summary>The order Volition's tools wrote each class's properties in (Armageddon's own levels: all 1,686 dummies, all 29 turret nodes).</summary>
@@ -85,7 +91,7 @@ public static class GuerrillaActivityLayers
     /// <summary>A set's container's place in overrides\.</summary>
     public static string ContainerFile(string overrides, string set) => Path.Combine(overrides, "build", "pc", "cache", set + ".str2_pc");
 
-    /// <summary>Guerrilla's demolitions masters' layer sets, from its activity.xtbl (misc.vpp_pc) and activities.vpp_pc.</summary>
+    /// <summary>Guerrilla's demolitions masters' and area defenses' layer sets, from its activity.xtbl (misc.vpp_pc) and activities.vpp_pc.</summary>
     public static List<LayerSet> Sets(string guerrillaCache)
     {
         var misc = Packfile.Open(Path.Combine(guerrillaCache, "misc.vpp_pc"));
@@ -95,7 +101,7 @@ public static class GuerrillaActivityLayers
         foreach (var row in table.Entries)
         {
             string name = XtblFile.EntryName(row);
-            if (!name.StartsWith(ActivityPrefix, StringComparison.OrdinalIgnoreCase) || row.Element("managed_layer_info") is not { } info) continue;
+            if (!ActivityPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase)) || row.Element("managed_layer_info") is not { } info) continue;
             // In the order of their tags (layer_file_0 first), as Guerrilla's managed_layer_set::load reads them.
             var files = Enumerable.Range(0, MostLayers).Select(n => info.ValueOf($"layer_file_{n}")?.Trim()).OfType<string>().Where(f => f.Length > 0).ToList();
             if (files.Count == 0) continue;
@@ -196,7 +202,7 @@ public static class GuerrillaActivityLayers
         File.WriteAllBytes(assetFile, assets.ToBytes());
         Directory.CreateDirectory(worldModFolder);
         File.WriteAllBytes(Path.Combine(worldModFolder, LayerTable), table.ToBytes());
-        yield return $"{sets.Count} of Guerrilla's demolitions masters' layer sets as Armageddon's managed layers ({sets.Sum(s => s.Layers.Count)} layers, " +
+        yield return $"{sets.Count} of Guerrilla's demolitions masters' and area defenses' layer sets as Armageddon's managed layers ({sets.Sum(s => s.Layers.Count)} layers, " +
                      $"{classCounts.Values.Sum()} objects: {string.Join(", ", classCounts.Select(c => $"{c.Value} {c.Key}"))}): their containers in {output}, " +
                      $"{MissionArchive}\\{AssetList} overridden ({assets.Containers.Count - sets.Count} of Armageddon's entries + {sets.Count}), " +
                      $"mods\\guerrilla_world\\{LayerTable} with a row a set" +
@@ -248,6 +254,10 @@ public static class GuerrillaActivityLayers
                 else LeftOut($"object_dummy {o.Text("dummy_type")} (not a dummy_type of Armageddon's)");
             }
             else if (o.ClassHash == TurretNode) made.Add(ConvertTurretNode(o, schema, taken, armageddonTurrets));
+            // An area defense's spawn regions (where its continuous attacks' squads appear) aren't made as the game's objects:
+            // the guerrilla_campaign mod reads them from its campaign markers (spawn regions with their layer) and uses
+            // those of the sets that are loaded.
+            else if (o.ClassHash == SpawnRegion) continue;
             else if (o.ClassHash != RfgMover && o.ClassHash != GeneralMover && o.ClassHash != Item && o.ClassHash != Weapon && o.ClassHash != VehicleNode)
                 LeftOut($"{ClassName(schema, o.ClassHash)} (no converter)");
         }

@@ -439,7 +439,7 @@ void __cdecl BuildKeyMap(int controlSet) {
             auto* key = reinterpret_cast<DWORD*>(binding + kKeyField);
             auto* mouse = reinterpret_cast<int*>(binding + kMouseField);
             if (!*key && given.mouse >= 0 && *mouse != given.mouse && *mouse == OldMouseOf(given)) {
-                rfa::Log("Vehicles: %ls moved from the game's button %d (an earlier RFA-Mod build's, kept in the saved controls) to Mouse%d "
+                rfa::LogDetail("Vehicles: %ls moved from the game's button %d (an earlier RFA-Mod build's, kept in the saved controls) to Mouse%d "
                          "(the game's button %d; control set %d)", given.setting, *mouse, MouseNumber(given.mouse), given.mouse, controlSet);
                 *mouse = given.mouse;
                 g_loggedMouse[controlSet][i] = *mouse;
@@ -449,8 +449,8 @@ void __cdecl BuildKeyMap(int controlSet) {
                 const int now = *key ? 1000 + static_cast<int>(*key) : *mouse;
                 if (g_loggedMouse[controlSet][i] != now && !(given.mouse >= 0 && *mouse == given.mouse && !*key)) {
                     const char* name = *key ? reinterpret_cast<const char* const*>(kKeyNames)[*key] : nullptr;
-                    if (*key) rfa::Log("Vehicles: %ls stays on %s, as the saved controls have it (control set %d)", given.setting, name ? name : "?", controlSet);
-                    else rfa::Log("Vehicles: %ls stays on Mouse%d (the game's button %d), as the saved controls have it (control set %d)", given.setting,
+                    if (*key) rfa::LogDetail("Vehicles: %ls stays on %s, as the saved controls have it (control set %d)", given.setting, name ? name : "?", controlSet);
+                    else rfa::LogDetail("Vehicles: %ls stays on Mouse%d (the game's button %d), as the saved controls have it (control set %d)", given.setting,
                                   MouseNumber(*mouse), *mouse, controlSet);
                 }
                 g_loggedMouse[controlSet][i] = now;
@@ -459,11 +459,11 @@ void __cdecl BuildKeyMap(int controlSet) {
             if (given.key) {
                 *key = given.key;
                 const char* name = reinterpret_cast<const char* const*>(kKeyNames)[given.key];
-                rfa::Log("Vehicles: %ls on %s (control set %d; it had no key)", given.setting, name ? name : "?", controlSet);
+                rfa::LogDetail("Vehicles: %ls on %s (control set %d; it had no key)", given.setting, name ? name : "?", controlSet);
             } else {
                 *mouse = given.mouse;
-                rfa::Log("Vehicles: %ls on Mouse%d (the game's button %d; control set %d; it had no key)", given.setting, MouseNumber(given.mouse),
-                         given.mouse, controlSet);
+                rfa::LogDetail("Vehicles: %ls on Mouse%d (the game's button %d; control set %d; it had no key)", given.setting,
+                               MouseNumber(given.mouse), given.mouse, controlSet);
             }
         }
     }
@@ -478,7 +478,7 @@ BYTE* __fastcall BuildVehicleList(BYTE* list, void*) {
     if (reinterpret_cast<DWORD>(list) != kVehicleList) return g_buildVehicleList(list, nullptr);
     for (int i = 0; i < kMaxVehicles; ++i) BuildVehicle(g_vehicles + i * kVehicleSize, nullptr);
     SetUpList(list, nullptr, g_vehicles, kMaxVehicles, 0);
-    rfa::Log("Vehicles: the game's list holds %d (its own %d), at 0x%08lX", kMaxVehicles, kGameMaxVehicles,
+    rfa::LogDetail("Vehicles: the game's list holds %d (its own %d), at 0x%08lX", kMaxVehicles, kGameMaxVehicles,
              reinterpret_cast<DWORD>(g_vehicles));
     return list;
 }
@@ -651,7 +651,7 @@ void HookDoors() {
     g_updateDoor = reinterpret_cast<UpdateDoorFn>(rfa::HookFunction(kUpdateDoor, kUpdateDoorPrologue, reinterpret_cast<void*>(&UpdateDoor)));
     g_latchDoor = reinterpret_cast<LatchDoorFn>(rfa::HookFunction(kLatchDoor, kLatchDoorPrologue, reinterpret_cast<void*>(&LatchDoor)));
     g_unlatchDoor = reinterpret_cast<LatchDoorFn>(rfa::HookFunction(kUnlatchDoor, kUnlatchDoorPrologue, reinterpret_cast<void*>(&UnlatchDoor)));
-    rfa::Log("Doors: logging door openings, closings and door parts' states (DoorLog=1; the first %d lines)", kDoorLogLines);
+    rfa::LogDetail("Doors: logging door openings, closings and door parts' states (DoorLog=1; the first %d lines)", kDoorLogLines);
 }
 
 // ---- The door's opening, measured as Guerrilla measures it (see the top)
@@ -724,7 +724,7 @@ void MeasureDoorsAsGuerrilla() {
         return;
     }
     if (rfa::ReplaceFunction(kMeasureDoor, reinterpret_cast<const void*>(&MeasureDoor)))
-        rfa::Log("Doors: measured as Guerrilla measures them (a shut door's next-to-no turn is none, not a half turn)");
+        rfa::LogDetail("Doors: measured as Guerrilla measures them (a shut door's next-to-no turn is none, not a half turn)");
 }
 
 // ---- Room for Guerrilla's vehicles in the world (see the top)
@@ -799,7 +799,7 @@ void MakeRoomForSquadsVehicles() {
     const bool asExpected = code[0] == 0x55 && code[1] == 0x8B && code[2] == 0xEC && code[0x18] == 0x83 && code[0x1A] == 0x10 &&
                             code[0x3B] == 0x08 && code[0x5C] == 0x04;
     if (asExpected && rfa::ReplaceFunction(kSquadVehicleRoomFull, reinterpret_cast<void*>(&SquadVehicleRoomFull)))
-        rfa::Log("Cars: a squad's car is refused only once the world holds %d (the game's check said %d)", kAutomobiles, kGameAutomobiles);
+        rfa::LogDetail("Cars: a squad's car is refused only once the world holds %d (the game's check said %d)", kAutomobiles, kGameAutomobiles);
     else rfa::Log("Cars: the squads' vehicle check (0x%08lX) isn't as expected; a squad's car is refused once the world holds %d", kSquadVehicleRoomFull,
                   kGameAutomobiles);
 }
@@ -831,7 +831,7 @@ void MakeRoomForVehiclesInTheWorld() {
     // Each constructor pushes its buffer's size (the game's count × (the object + 5) + alignment) and its count.
     if (rfa::CodeValue(kSpawnNodeBufferSize) == 0x881 && CodeByte(kSpawnNodeCount) == kGameSpawnNodes &&
         rfa::ReplaceFunction(kSpawnNodePoolMake, reinterpret_cast<void*>(&MakeSpawnNodePool)))
-        rfa::Log("Vehicle spawn nodes: the game holds %d (its own %d)", kSpawnNodes, kGameSpawnNodes);
+        rfa::LogDetail("Vehicle spawn nodes: the game holds %d (its own %d)", kSpawnNodes, kGameSpawnNodes);
     else rfa::Log("Vehicle spawn nodes: the pool's constructor isn't as expected; the game keeps its %d", kGameSpawnNodes);
 
     // The cars' pool: its constructor (0x5F97F0) pushes the buffer's size 0x5DED9 (16 x (0x5DE8 + 5) + 64) at
@@ -839,7 +839,7 @@ void MakeRoomForVehiclesInTheWorld() {
     const DWORD carBuffer = rfa::CodeValue(kAutomobileBufferSize);
     const int carCount = CodeByte(kAutomobileCount);
     if (carBuffer == 0x5DED9 && carCount == kGameAutomobiles && rfa::ReplaceFunction(kAutomobilePoolMake, reinterpret_cast<void*>(&MakeAutomobilePool))) {
-        rfa::Log("Cars: the game holds %d at once (its own %d, Guerrilla's %d): its pool's constructor (0x%08lX, which pushed %d and a "
+        rfa::LogDetail("Cars: the game holds %d at once (its own %d, Guerrilla's %d): its pool's constructor (0x%08lX, which pushed %d and a "
                  "buffer of %lu bytes) replaced by one on a buffer of the mod's, %lu KB",
                  kAutomobiles, kGameAutomobiles, gv::kGuerrillaCars, kAutomobilePoolMake, carCount, carBuffer,
                  static_cast<unsigned long>(sizeof(g_automobileBuffer) / 1024));
@@ -855,7 +855,7 @@ void MakeRoomForVehiclesInTheWorld() {
                                    rfa::CodeValue(kRecordsPoolMake + 11) == kGameRecords && CodeByte(kRecordsPoolMake + 16) == kGameVehicleRecords;
     if (recordsAsExpected && rfa::ReplaceFunction(kRecordsMake, reinterpret_cast<void*>(&MakeVehicleRecords)) &&
         rfa::ReplaceFunction(kRecordsPoolMake, reinterpret_cast<void*>(&MakeVehicleResourcePool)))
-        rfa::Log("Vehicle records: the game holds %d vehicle models (its own %d); %d streamed at once, as the game", kVehicleRecords,
+        rfa::LogDetail("Vehicle records: the game holds %d vehicle models (its own %d); %d streamed at once, as the game", kVehicleRecords,
                  kGameVehicleRecords, kStreamedVehicles);
     else rfa::Log("Vehicle records: the start-up code isn't as expected; the game keeps its %d (vehicles past them can't spawn)", kGameVehicleRecords);
 }
@@ -891,7 +891,7 @@ void RegisterBiggerTypes() {
     if (carsRegistered == kGameAutomobiles) {
         const BYTE cars = static_cast<BYTE>(kAutomobiles);
         if (rfa::PatchCode(reinterpret_cast<void*>(kCarCountValue), &cars, 1))
-            rfa::Log("Cars: the world's list of them holds %d (its own %d): the byte at 0x%08lX changed from %d to %d", kAutomobiles, kGameAutomobiles,
+            rfa::LogDetail("Cars: the world's list of them holds %d (its own %d): the byte at 0x%08lX changed from %d to %d", kAutomobiles, kGameAutomobiles,
                      kCarCountValue, carsRegistered, kAutomobiles);
         else rfa::Log("Cars: could not change the game's code; the world's list of them holds %d", kGameAutomobiles);
     } else rfa::Log("Cars: the type's registration (0x%08lX) isn't as expected (%d, not %d); the world's list of them holds what it says", kCarCountValue,
@@ -901,7 +901,7 @@ void RegisterBiggerTypes() {
         return;
     }
     if (rfa::ReplaceFunction(kSpawnNodeRegistration, reinterpret_cast<void*>(&RegisterSpawnNodeType)))
-        rfa::Log("Vehicle spawn nodes: the world's list of them holds %d (its own %d)", kSpawnNodes, kGameSpawnNodes);
+        rfa::LogDetail("Vehicle spawn nodes: the world's list of them holds %d (its own %d)", kSpawnNodes, kGameSpawnNodes);
     else rfa::Log("Vehicle spawn nodes: could not change the game's code; the world's list of them holds %d", kGameSpawnNodes);
 }
 
@@ -1034,7 +1034,7 @@ void ReadModelSizes() {
         for (const ModelSize& container : containers)
             if (container.name == mesh) g_modelSizes.push_back({Lower(vehicle), container.bytes});
     }
-    rfa::Log("Spawning: %zu vehicles' model sizes read (the largest %lu KB); a model is reserved only while it fits in the mission memory",
+    rfa::LogDetail("Spawning: %zu vehicles' model sizes read (the largest %lu KB); a model is reserved only while it fits in the mission memory",
              g_modelSizes.size(), static_cast<unsigned long>(g_largestModel / 1024));
 }
 
@@ -1095,7 +1095,7 @@ int __cdecl SpawnVehicle(void** parameters) {
     const char* name = *reinterpret_cast<const char* const*>(entry);
     if (!FitsInMissionMemory(name)) return 1;  // not yet: room may come once an unused model has gone
     if (!ReserveInResource(kMissionCategory, kReservationOwner, entry)) {
-        RFA_LOG_FIRST(40, "Spawning: no room to stream %s in (16 models at once); it isn't made", name ? name : "?");
+        RFA_LOG_DETAIL_FIRST(40, "Spawning: no room to stream %s in (16 models at once); it isn't made", name ? name : "?");
         return result;
     }
     RFA_LOG_DETAIL_FIRST(200, "Spawning: %s reserved; it is made once it has streamed in", name ? name : "?");
@@ -1142,8 +1142,10 @@ void PickUnstreamedFromGuerrillasGroups() {
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08};
     if (memcmp(reinterpret_cast<const void*>(kPickFromGroup), opening, sizeof(opening)) == 0)
         g_pickFromGroup = reinterpret_cast<PickFromGroupFn>(rfa::HookFunction(kPickFromGroup, kPickFromGroupPrologue, reinterpret_cast<void*>(&PickFromGroup)));
-    rfa::Log(g_pickFromGroup ? "Spawning: a parked vehicle of Guerrilla's groups with none streamed in picks one to stream, as Guerrilla's streams them in"
-                             : "Spawning: the game's pick from a group isn't as expected; a parked vehicle needs one of its group already streamed in");
+    if (g_pickFromGroup)
+        rfa::LogDetail("Spawning: a parked vehicle of Guerrilla's groups with none streamed in picks one to stream, as Guerrilla's streams them in");
+    else
+        rfa::Log("Spawning: the game's pick from a group isn't as expected; a parked vehicle needs one of its group already streamed in");
 }
 
 void ReserveWantedVehicles() {
@@ -1153,8 +1155,10 @@ void ReserveWantedVehicles() {
         return;
     }
     g_spawnVehicle = reinterpret_cast<SpawnVehicleFn>(rfa::HookFunction(kSpawnVehicle, kSpawnVehiclePrologue, reinterpret_cast<void*>(&SpawnVehicle)));
-    rfa::Log(g_spawnVehicle ? "Spawning: a vehicle refused for want of its model reserves it and waits (parked vehicles, traffic)"
-                            : "Spawning: could not hook the game's vehicle spawn");
+    if (g_spawnVehicle)
+        rfa::LogDetail("Spawning: a vehicle refused for want of its model reserves it and waits (parked vehicles, traffic)");
+    else
+        rfa::Log("Spawning: could not hook the game's vehicle spawn");
     if (g_spawnVehicle) PickUnstreamedFromGuerrillasGroups();
 }
 
@@ -1352,7 +1356,7 @@ void StartRouteLoopGuard() {
     g_roadStage = reinterpret_cast<RoadStageFn>(rfa::HookFunction(kRoadStage, sizeof(stageOpening), reinterpret_cast<void*>(&RoadStage)));
     if (!g_roadStage) return;
     g_routeMapFind = reinterpret_cast<RouteMapFindFn>(rfa::HookFunction(kRouteMapFind, sizeof(findOpening), reinterpret_cast<void*>(&RouteMapFind)));
-    if (g_routeMapFind) rfa::Log("Roads: a road route that comes back to a point it has passed is given up, as one that can't be found");
+    if (g_routeMapFind) rfa::LogDetail("Roads: a road route that comes back to a point it has passed is given up, as one that can't be found");
 }
 
 // ---- A car taken apart with someone still at its wheel
@@ -1418,7 +1422,7 @@ void MoveBlendTrees() {
     }
     const BYTE count = kBlendTreeCount;
     for (DWORD at : kBlendTreeSizes) rfa::PatchCode(reinterpret_cast<void*>(at), &count, 1);
-    rfa::Log("Blend trees: the game holds %d (its own %d, all taken by its own trees)", kBlendTreeCount, kGameBlendTrees);
+    rfa::LogDetail("Blend trees: the game holds %d (its own %d, all taken by its own trees)", kBlendTreeCount, kGameBlendTrees);
 }
 
 // ---- Guerrilla's lights: when each is on (see the top)
@@ -1587,8 +1591,10 @@ void HookLights() {
         return;
     }
     g_lightFrame = reinterpret_cast<LightFrameFn>(rfa::HookFunction(kLightFrame, kLightFramePrologue, reinterpret_cast<void*>(&LightFrame)));
-    rfa::Log(g_lightFrame ? "Lights: Guerrilla's vehicles' lights on by Guerrilla's rules (headlights at night, tail lights brake, emergency lights blink)"
-                          : "Lights: could not hook the game's light frame");
+    if (g_lightFrame)
+        rfa::LogDetail("Lights: Guerrilla's vehicles' lights on by Guerrilla's rules (headlights at night, tail lights brake, emergency lights blink)");
+    else
+        rfa::Log("Lights: could not hook the game's light frame");
 }
 
 // ---- Guerrilla's engine sounds: the player's own vehicle, the load eased (see the top)
@@ -1730,7 +1736,7 @@ void HookEngineSounds() {
         return;
     }
     g_engineSets = rfa::IniInt(L"GuerrillaVehicles", L"EngineSets", 1) != 0;
-    rfa::Log(g_engineSets ? "Engine sounds: the load eased as Guerrilla's, and each engine told which of its two sets to play "
+    rfa::LogDetail(g_engineSets ? "Engine sounds: the load eased as Guerrilla's, and each engine told which of its two sets to play "
                             "(RFG_ENGINE_LISTENER: the player's own vehicle's, or another's)"
                           : "Engine sounds: the load eased as Guerrilla's; no engine is told which set to play (EngineSets=0): each plays the others' 3D set");
 }
@@ -1804,8 +1810,8 @@ int g_morphPoolEmpty = 0;
 void __fastcall MorphInit(void* instance, void*, int count, void* container) {
     if (!instance) {
         ++g_morphPoolEmpty;
-        RFA_LOG_FIRST(8, "Dents: all 32 of the vehicles' dent instances (Guerrilla's number) are taken; this vehicle is made without one and shows no "
-                         "dents, as Guerrilla's when its pool is empty (%d so far)", g_morphPoolEmpty);
+        RFA_LOG_DETAIL_FIRST(8, "Dents: all 32 of the vehicles' dent instances (Guerrilla's number) are taken; this vehicle is made without one and "
+                                "shows no dents, as Guerrilla's when its pool is empty (%d so far)", g_morphPoolEmpty);
         return;
     }
     g_morphInit(instance, nullptr, count, container);
@@ -1819,7 +1825,7 @@ void TurnOnDents() {
         }
     }
     *reinterpret_cast<bool*>(kDeformationEnabled) = true;
-    rfa::Log("Dents: vehicle_deformation_enabled on (Guerrilla's vehicles dent where they're hit)");
+    rfa::LogDetail("Dents: vehicle_deformation_enabled on (Guerrilla's vehicles dent where they're hit)");
     g_morphInit = reinterpret_cast<MorphInitFn>(rfa::HookFunction(kMorphInit, kMorphInitPrologue, reinterpret_cast<void*>(&MorphInit)));
     if (!g_morphInit) rfa::Log("Dents: could not hook the dent instance's set-up; more than 32 dentable vehicles at once still end the game");
 }
@@ -1861,7 +1867,7 @@ void __cdecl InteractionSetup() {
     g_interactionSetup();
     const int count = *reinterpret_cast<const int*>(kInteractionCount);
     BYTE* records = *reinterpret_cast<BYTE**>(kInteractionRecords);
-    rfa::Log("Vehicle interactions: %d read; their records, waypoints and transitions %lu of %lu bytes, their names %lu of %lu bytes", count,
+    rfa::LogDetail("Vehicle interactions: %d read; their records, waypoints and transitions %lu of %lu bytes, their names %lu of %lu bytes", count,
              *reinterpret_cast<const DWORD*>(kInteractionBlockUsed), g_interactionBlock,
              *reinterpret_cast<const DWORD*>(kInteractionNamesPool + 0x4C), *reinterpret_cast<const DWORD*>(kInteractionNamesPool + 0x44));
     // A record left without a name (the reader stopped before it, or the pool refused it) ends the game when a
@@ -1895,7 +1901,7 @@ bool RaiseAll(const char* what, const DWORD (&places)[N], DWORD game, DWORD valu
             rfa::Log("%s: could not change the game's code; it keeps its %lu bytes", what, game);
             return false;
         }
-    rfa::Log("%s: %lu bytes (the game's %lu)", what, value, game);
+    rfa::LogDetail("%s: %lu bytes (the game's %lu)", what, value, game);
     return true;
 }
 
@@ -1963,7 +1969,7 @@ void __cdecl GroupReader(int which) {
     int used = 0;
     for (int i = 0; flags && i < holds; ++i)
         if (flags[i] != 0xFF) ++used;
-    rfa::Log("Vehicle spawn groups: %d of %u places in use", used, holds);
+    rfa::LogDetail("Vehicle spawn groups: %d of %u places in use", used, holds);
 }
 
 void MoreSpawnGroups() {
@@ -1983,7 +1989,7 @@ void MoreSpawnGroups() {
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x10, 0x01, 0x00, 0x00};
     if (memcmp(reinterpret_cast<const void*>(kGroupReader), opening, sizeof(opening)) == 0)
         g_groupReader = reinterpret_cast<GroupReaderFn>(rfa::HookFunction(kGroupReader, kGroupReaderPrologue, reinterpret_cast<void*>(&GroupReader)));
-    rfa::Log("Vehicle spawn groups: the game holds %lu (its own %lu)", kGroups, kGameGroups);
+    rfa::LogDetail("Vehicle spawn groups: the game holds %lu (its own %lu)", kGroups, kGameGroups);
 }
 
 // ---- Guerrilla's vehicles' own skeletons (see the top)
@@ -2046,7 +2052,7 @@ namespace gv { void StartEntering(); }  // entering.cpp
 namespace gv { void StartRiders(); }  // riders.cpp
 
 void guerrilla_vehicles::Init() {
-    if (rfa::ReadLogSwitch(L"GuerrillaVehicles")) rfa::Log("Log=1: routine lines and the diagnoses (\"[guerrilla_vehicles:log]\") are on");
+    if (rfa::ReadLogSwitch(L"GuerrillaVehicles")) rfa::LogDetail("Log=1: routine lines and the diagnoses (\"[guerrilla_vehicles:log]\") are on");
     if (!rfa::game::IsSupportedBuild()) {
         rfa::Log("Not the publicbeta build; nothing to do");
         return;
@@ -2076,12 +2082,12 @@ void guerrilla_vehicles::Init() {
     StartTraffic();
     gv::StartFlyers();
     if (rfa::IniInt(L"GuerrillaVehicles", L"Dents", 1) != 0) TurnOnDents();
-    else rfa::Log("Dents: off ([GuerrillaVehicles] Dents=0)");
+    else rfa::LogDetail("Dents: off ([GuerrillaVehicles] Dents=0)");
     HookDoors();
     ReadSkeletonList();
     if (!g_skeletons.empty()) {
         g_loadSkeletons = reinterpret_cast<LoadSkeletonsFn>(rfa::HookFunction(kLoadSkeletons, kLoadSkeletonsPrologue, reinterpret_cast<void*>(&LoadSkeletons)));
-        if (g_loadSkeletons) rfa::Log("Skeletons: %u of Guerrilla's vehicles' own to load after the game's", static_cast<unsigned>(g_skeletons.size()));
+        if (g_loadSkeletons) rfa::LogDetail("Skeletons: %u of Guerrilla's vehicles' own to load after the game's", static_cast<unsigned>(g_skeletons.size()));
         else rfa::Log("Skeletons: could not hook the game's loading of them; vehicles with skeletons of their own will stop the game");
     }
     bool any = false;
@@ -2102,5 +2108,5 @@ void guerrilla_vehicles::Init() {
         rfa::Log("Could not hook the key map's building; cars keep no driving keys and can't be left");
         return;
     }
-    rfa::Log("Vehicle keys for actions without their own: accelerate, brake, handbrake, get out, change seat (Guerrilla's W, S, Space, E, Mouse3 unless set)");
+    rfa::LogDetail("Vehicle keys for actions without their own: accelerate, brake, handbrake, get out, change seat (Guerrilla's W, S, Space, E, Mouse3 unless set)");
 }

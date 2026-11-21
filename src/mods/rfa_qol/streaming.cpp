@@ -97,7 +97,7 @@ void Init() {
         rfa::Log("Could not change the zone stream-out's jobs");
         return;
     }
-    rfa::Log("Zone stream-out: the saving job waits for its writing job to start");
+    rfa::LogDetail("Zone stream-out: the saving job waits for its writing job to start");
 }
 
 }  // namespace streaming

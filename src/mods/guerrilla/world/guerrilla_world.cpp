@@ -165,6 +165,111 @@ auto& g_cameraFov = *reinterpret_cast<float*>(0x11B9D00);
 // Where it is (+0x2C).
 auto& g_cameraPosition = *reinterpret_cast<float(*)[3]>(0x11B9C6C);
 
+// The camera the frame is drawn with, for the mod's draws on the render thread. The game draws on a thread
+// of its own while the main thread runs the next frame, and each frame the main thread first runs the
+// world's frame (0x6C8940), which moves the camera manager's camera on to the next frame (its place,
+// 0x4C0360; its turn, 0x4C03A0; the camera mode's update and finalise FOV, 0x4D32D0, which the FOV mod
+// replaces and scales after, from 0x4BEA50 → 0x4BF010), and only then waits for the render thread to finish
+// the frame before (0x527BE0, called from the game update 0x540C20). The world is drawn from the game's own
+// copy of the camera; read live from the camera manager, the camera was sometimes the frame's and sometimes
+// the next one's, one frame's movement apart, so the sky, clouds and haze jumped against the ground while
+// driving or turning (and in a vehicle could catch the field of view before the FOV mod scaled it). The mod
+// copies the camera on the main thread right after that wait, while the render thread is idle and the next
+// frame not yet handed to it, and its draws read the copy. Main-thread work (the sun's lamp, effects, sounds,
+// dust) keeps the live camera.
+struct FrameCamera {
+    float position[3];
+    float rotation[9];
+    float fov;
+};
+FrameCamera g_frameCamera = {};
+bool g_frameCameraTaken = false;   // copied at least once by the wait
+bool g_frameCameraHooked = false;  // the wait is hooked (else the draws copy the live camera themselves)
+LONG g_frameCameraCopies = 0;      // how many times it has been copied (to see one land during a draw)
+auto& g_drawCameraPosition = g_frameCamera.position;
+auto& g_drawCameraRotation = g_frameCamera.rotation;
+auto& g_drawCameraFov = g_frameCamera.fov;
+
+void CopyLiveCamera() {
+    memcpy(g_frameCamera.position, g_cameraPosition, sizeof(g_frameCamera.position));
+    memcpy(g_frameCamera.rotation, g_cameraRotation, sizeof(g_frameCamera.rotation));
+    g_frameCamera.fov = g_cameraFov;
+}
+
+// The main thread's wait for the render thread to finish the frame before (cdecl; its argument goes
+// unused): it waits once a frame, setting the frame number it waited at (0x12FCAA4) to the frame
+// counter (0x290DE90); called again in the same frame it returns at once.
+constexpr DWORD kWaitForRender = 0x527BE0;
+constexpr size_t kWaitForRenderPrologue = 6;  // push ebp / mov ebp,esp / sub esp,6Ch
+using WaitForRenderFn = void(__cdecl*)(int unused);
+WaitForRenderFn g_waitForRender;
+auto& g_renderWaitedAt = *reinterpret_cast<volatile DWORD*>(0x12FCAA4);
+
+// The game's wait, then, when it did wait, the camera copied for the frame about to be handed over.
+void __cdecl WaitForRender(int unused) {
+    const DWORD before = g_renderWaitedAt;
+    g_waitForRender(unused);
+    if (g_renderWaitedAt != before || !g_frameCameraTaken) {
+        CopyLiveCamera();
+        g_frameCameraTaken = true;
+        InterlockedIncrement(&g_frameCameraCopies);
+    }
+}
+
+// On the render thread, before the mod's first draw of a frame: without the wait's copy (not hooked, or
+// not yet copied), the live camera, as before.
+void FrameCameraForDraws() {
+    if (!g_frameCameraHooked || !g_frameCameraTaken) CopyLiveCamera();
+}
+
+// With Log=1: every 30 s, of the frames drawn in our worlds, how many had the live camera already moved
+// on by the sky step (what the mod's draws read before the copy), and how many saw the copy itself change
+// between the light pass and the tone mapping (which would mean it was taken while the frame was drawn:
+// should be 0).
+struct CameraWatch {
+    ULONGLONG since = 0;
+    int frames = 0, movedOn = 0, place = 0, turn = 0, view = 0, copiedDuring = 0;
+    LONG copiesAtStart = -1;  // the copies made when this frame's draws began (-1: not watching)
+    bool copiedThisFrame = false;
+};
+CameraWatch g_cameraWatch;
+
+void CameraWatchCheckCopy() {
+    if (g_cameraWatch.copiesAtStart >= 0 && g_frameCameraCopies != g_cameraWatch.copiesAtStart) g_cameraWatch.copiedThisFrame = true;
+}
+
+// At the light pass, as the frame's draws begin (the frame before's verdict counted first).
+void CameraWatchStart(bool ours) {
+    if (g_cameraWatch.copiesAtStart >= 0 && g_cameraWatch.copiedThisFrame) ++g_cameraWatch.copiedDuring;
+    g_cameraWatch.copiedThisFrame = false;
+    g_cameraWatch.copiesAtStart = ours && g_frameCameraHooked && rfa::DetailLog() ? g_frameCameraCopies : -1;
+}
+
+// At the sky step: the live camera against the frame's copy.
+void CameraWatchSky(bool ours) {
+    if (!ours || !g_frameCameraHooked || !rfa::DetailLog()) return;
+    CameraWatchCheckCopy();
+    const bool place = memcmp(g_cameraPosition, g_frameCamera.position, sizeof(g_frameCamera.position)) != 0;
+    const bool turn = memcmp(g_cameraRotation, g_frameCamera.rotation, sizeof(g_frameCamera.rotation)) != 0;
+    const bool view = g_cameraFov != g_frameCamera.fov;
+    ++g_cameraWatch.frames;
+    if (place || turn || view) ++g_cameraWatch.movedOn;
+    if (place) ++g_cameraWatch.place;
+    if (turn) ++g_cameraWatch.turn;
+    if (view) ++g_cameraWatch.view;
+    const ULONGLONG now = GetTickCount64();
+    if (!g_cameraWatch.since) g_cameraWatch.since = now;
+    if (now - g_cameraWatch.since < 30000) return;
+    rfa::LogDetail("Camera: %d frames in %.0f s; by the sky step the main thread had already moved the live camera on to the next "
+                   "frame in %d of them (its place in %d, its turn in %d, its field of view in %d): what the mod's draws read "
+                   "before; the frame's own copy, which they read now, changed during a frame's draws in %d (should be 0)",
+                   g_cameraWatch.frames, (now - g_cameraWatch.since) / 1000.0, g_cameraWatch.movedOn, g_cameraWatch.place,
+                   g_cameraWatch.turn, g_cameraWatch.view, g_cameraWatch.copiedDuring);
+    g_cameraWatch.since = now;
+    g_cameraWatch.frames = g_cameraWatch.movedOn = g_cameraWatch.place = g_cameraWatch.turn = g_cameraWatch.view = 0;
+    g_cameraWatch.copiedDuring = 0;
+}
+
 // The time of day's light direction this frame: the time of day's update (0x52D6E0) hands the
 // renderer a block of particle lighting each frame (0x1973924, by 0x7686E0): an ambient colour, a
 // light colour, then this direction.
@@ -767,6 +872,13 @@ bool g_sunShadows = true;
 
 void ReadSunShadows() { g_sunShadows = rfa::IniInt(L"GuerrillaWorld", L"SunShadows", 1) != 0; }
 
+// The clouds' shadows on the ground (CloudShadows=; read again whenever rfa_mods.ini is saved), as
+// Re-Mars-tered draws them (see CloudCover in kLightShader). They darken the sun's light where it is
+// drawn through its lamp's shadow map, so they need SunShadows=1 and the clouds (Clouds=1). 0: none.
+bool g_cloudShadows = true;
+
+void ReadCloudShadows() { g_cloudShadows = rfa::IniInt(L"GuerrillaWorld", L"CloudShadows", 1) != 0; }
+
 // How bright the sky, clouds and backdrop are drawn: their time-of-day colours times Brightness=; with
 // Guerrilla's tone mapping the picture holds Guerrilla's own values, so there the default 5 is
 // Guerrilla's own level (× 1).
@@ -810,83 +922,86 @@ void CheckSettings() {
     const float before = g_brightness;
     ReadBrightness();
     if (g_brightness != before) {
-        rfa::Log("Sky: brightness %.3g (was %.3g)", g_brightness, before);
+        rfa::LogDetail("Sky: brightness %.3g (was %.3g)", g_brightness, before);
         g_tellColours = true;
     }
     const float ambientBefore = g_ambient;
     ReadAmbient();
     if (g_ambient != ambientBefore) {
-        rfa::Log("Ground: ambient light times %.3g (was %.3g)", g_ambient, ambientBefore);
+        rfa::LogDetail("Ground: ambient light times %.3g (was %.3g)", g_ambient, ambientBefore);
         g_tellAmbient = true;
     }
     const float sunBefore = g_sun;
     ReadSun();
     if (g_sun != sunBefore) {
-        rfa::Log("Ground: sunlight times %.3g (was %.3g)", g_sun, sunBefore);
+        rfa::LogDetail("Ground: sunlight times %.3g (was %.3g)", g_sun, sunBefore);
         g_tellAmbient = true;
     }
     const bool correctionBefore = g_colourCorrection;
     ReadColourCorrection();
     if (g_colourCorrection != correctionBefore) {
-        rfa::Log("Colour correction (Guerrilla's tint) %s", g_colourCorrection ? "on" : "off");
+        rfa::LogDetail("Colour correction (Guerrilla's tint) %s", g_colourCorrection ? "on" : "off");
         g_tellAmbient = g_tellColours = g_tellFog = true;
     }
     const float fogBefore = g_fog;
     ReadFog();
     if (g_fog != fogBefore) {
-        rfa::Log("Fog: thickness times %.3g (was %.3g)", g_fog, fogBefore);
+        rfa::LogDetail("Fog: thickness times %.3g (was %.3g)", g_fog, fogBefore);
         g_tellFog = true;
     }
     const float exposureBefore = g_exposure;
     const bool toneMappingBefore = g_toneMapping;
     ReadToneMapping();
     if (g_toneMapping != toneMappingBefore) {
-        rfa::Log("Tone mapping: %s", g_toneMapping ? "Guerrilla's" : "Armageddon's own");
+        rfa::LogDetail("Tone mapping: %s", g_toneMapping ? "Guerrilla's" : "Armageddon's own");
         g_tellColours = true;
     }
-    if (g_exposure != exposureBefore) rfa::Log("Tone mapping: exposure times %.3g (was %.3g)", g_exposure, exposureBefore);
+    if (g_exposure != exposureBefore) rfa::LogDetail("Tone mapping: exposure times %.3g (was %.3g)", g_exposure, exposureBefore);
     const float shaftsBefore = g_sunShafts;
     ReadSunShafts();
     ReadSharpen();
-    if (g_sunShafts != shaftsBefore) rfa::Log("Sun shafts: times %.3g (was %.3g)", g_sunShafts, shaftsBefore);
+    if (g_sunShafts != shaftsBefore) rfa::LogDetail("Sun shafts: times %.3g (was %.3g)", g_sunShafts, shaftsBefore);
     const bool shadowsBefore = g_sunShadows;
     ReadSunShadows();
-    if (g_sunShadows != shadowsBefore) rfa::Log("Sun's shadows: %s", g_sunShadows ? "on" : "off");
+    if (g_sunShadows != shadowsBefore) rfa::LogDetail("Sun's shadows: %s", g_sunShadows ? "on" : "off");
+    const bool cloudShadowsBefore = g_cloudShadows;
+    ReadCloudShadows();
+    if (g_cloudShadows != cloudShadowsBefore) rfa::LogDetail("Clouds' shadows: %s", g_cloudShadows ? "on" : "off");
     const bool particlesBefore = g_particles;
     ReadParticles();
-    if (g_particles != particlesBefore) rfa::Log("Particles: %s", g_particles ? "in a layer of their own, as Guerrilla's" : "drawn into the scene, as Armageddon's");
+    if (g_particles != particlesBefore) rfa::LogDetail("Particles: %s", g_particles ? "in a layer of their own, as Guerrilla's" : "drawn into the scene, as Armageddon's");
     const bool particleFogBefore = g_particleFog;
     ReadParticleFog();
-    if (g_particleFog != particleFogBefore) rfa::Log("Particles: %s", g_particleFog ? "fogged as Guerrilla's" : "not fogged");
+    if (g_particleFog != particleFogBefore) rfa::LogDetail("Particles: %s", g_particleFog ? "fogged as Guerrilla's" : "not fogged");
     const bool dustBefore = g_dust;
     ReadDust();
-    if (g_dust != dustBefore) rfa::Log("Dust: %s", g_dust ? "on" : "off");
+    if (g_dust != dustBefore) rfa::LogDetail("Dust: %s", g_dust ? "on" : "off");
     const float clockBefore = g_clockSpeed;
     ReadClockSpeed();
     if (g_clockSpeed != clockBefore && g_clockOurs) {
         g_gameClockSpeed = g_clockSpeed > 0 ? g_clockSpeed : g_clockSpeedBefore;
         g_clockOurs = g_clockSpeed > 0;
-        rfa::Log("Clock: speed %.3g (was %.3g)", g_gameClockSpeed, clockBefore);
+        rfa::LogDetail("Clock: speed %.3g (was %.3g)", g_gameClockSpeed, clockBefore);
     }
     const float radiusBefore = g_streamRadius;
     ReadStreamRadius();
-    if (g_streamRadius != radiusBefore) rfa::Log("Streaming: radius %.0f m (was %.0f; 0 = the game's own)", g_streamRadius, radiusBefore);
+    if (g_streamRadius != radiusBefore) rfa::LogDetail("Streaming: radius %.0f m (was %.0f; 0 = the game's own)", g_streamRadius, radiusBefore);
     const float steadyBefore = g_streamSteady;
     ReadStreamSteady();
-    if (g_streamSteady != steadyBefore) rfa::Log("Streaming: follows the camera once it has gone %.0f m (was %.0f; 0 = every frame)", g_streamSteady, steadyBefore);
+    if (g_streamSteady != steadyBefore) rfa::LogDetail("Streaming: follows the camera once it has gone %.0f m (was %.0f; 0 = every frame)", g_streamSteady, steadyBefore);
     const float farClipBefore = g_farClip;
     ReadFarClip();
-    if (g_farClip != farClipBefore) rfa::Log("View distance: %.0f m (was %.0f; 0 = the zones' own)", g_farClip, farClipBefore);
+    if (g_farClip != farClipBefore) rfa::LogDetail("View distance: %.0f m (was %.0f; 0 = the zones' own)", g_farClip, farClipBefore);
     ReadGroundDetail();
     const float shineBefore = g_shine;
     ReadShine();
-    if (g_shine != shineBefore) rfa::Log("Light: the sun's shine times %.3g (was %.3g)", g_shine, shineBefore);
+    if (g_shine != shineBefore) rfa::LogDetail("Light: the sun's shine times %.3g (was %.3g)", g_shine, shineBefore);
     const float bloomBefore = g_bloom;
     ReadBloom();
-    if (g_bloom != bloomBefore) rfa::Log("Tone mapping: bloom times %.3g (was %.3g)", g_bloom, bloomBefore);
+    if (g_bloom != bloomBefore) rfa::LogDetail("Tone mapping: bloom times %.3g (was %.3g)", g_bloom, bloomBefore);
     const float coronaBefore = g_sunCorona;
     ReadSunCorona();
-    if (g_sunCorona != coronaBefore) rfa::Log("Corona: times %.3g (was %.3g)", g_sunCorona, coronaBefore);
+    if (g_sunCorona != coronaBefore) rfa::LogDetail("Corona: times %.3g (was %.3g)", g_sunCorona, coronaBefore);
     BuildingsSettingsChanged();
 }
 
@@ -1031,7 +1146,7 @@ void __cdecl FollowLights(void* player) {
             g_followLightTemplate = FindLightTemplate("FollowPlayerLight");
             g_followLightOurs = g_followLightTemplate >= 0;
             if (g_followLightOurs)
-                RFA_LOG_FIRST(1, "Sun's shadows: the follow player light switched on in world \"%s\" (lights.xtbl's light %d)", WorldName(), g_followLightTemplate);
+                RFA_LOG_DETAIL_FIRST(1, "Sun's shadows: the follow player light switched on in world \"%s\" (lights.xtbl's light %d)", WorldName(), g_followLightTemplate);
             else
                 RFA_LOG_FIRST(1, "Sun's shadows: lights.xtbl has no FollowPlayerLight; the sun lights without shadows");
         }
@@ -1083,7 +1198,7 @@ void __cdecl PlaceFollowLight(Place place, Turn turn, int lightTemplate) {
     float* colour = reinterpret_cast<float*>(lamp + kLampColour);
     if (lamp != g_followLightSeen) {
         g_followLightSeen = lamp;
-        rfa::Log("Sun's shadows: the follow player light %08X (object %p, light %p) along the sun", g_followLightHandle, lamp, light);
+        rfa::LogDetail("Sun's shadows: the follow player light %08X (object %p, light %p) along the sun", g_followLightHandle, lamp, light);
     }
     // Next to no light of its own: the object's colour, and its light's (that times the intensity,
     // set when the light is made).
@@ -1117,7 +1232,7 @@ void TellAmbient() {
     float toward[3], sun[3], tint[3];
     DirectLight(toward, sun);
     ColourCorrection(tint);
-    rfa::Log("Ground at %.2f h: sky light from above %.3f %.3f %.3f, from below %.3f %.3f %.3f (Ambient=%.3g); "
+    rfa::LogDetail("Ground at %.2f h: sky light from above %.3f %.3f %.3f, from below %.3f %.3f %.3f (Ambient=%.3g); "
              "%s toward %.2f %.2f %.2f, light %.3f %.3f %.3f (Sun=%.3g); colour correction %.3f %.3f %.3f",
              g_timeOfDay, g_worldAmbient[0], g_worldAmbient[1], g_worldAmbient[2], g_worldBackAmbient[0], g_worldBackAmbient[1],
              g_worldBackAmbient[2], g_ambient, SunUp() ? "sun" : "moon", toward[0], toward[1], toward[2], sun[0], sun[1], sun[2], g_sun,
@@ -1130,12 +1245,12 @@ void RunClock(bool ours) {
         g_clockSpeedBefore = g_gameClockSpeed;
         g_gameClockSpeed = g_clockSpeed;
         g_clockOurs = true;
-        rfa::Log("Clock: running at %.3g game seconds a second in world \"%s\", a day in %.3g minutes (was %.3g)",
+        rfa::LogDetail("Clock: running at %.3g game seconds a second in world \"%s\", a day in %.3g minutes (was %.3g)",
                  g_clockSpeed, WorldName(), 24 * 60 / g_clockSpeed, g_clockSpeedBefore);
     } else if (!ours && g_clockOurs) {
         g_gameClockSpeed = g_clockSpeedBefore;
         g_clockOurs = false;
-        rfa::Log("Clock: back to the game's speed %.3g in world \"%s\"", g_clockSpeedBefore, WorldName());
+        rfa::LogDetail("Clock: back to the game's speed %.3g in world \"%s\"", g_clockSpeedBefore, WorldName());
     }
 }
 
@@ -1186,10 +1301,10 @@ void RunStatsBlock(bool ours) {
     if (!g_statAdd && !g_awardAchievement) return;
     if (ours && !g_statsOffSaid) {
         g_statsOffSaid = true;
-        rfa::Log("Achievements and stats: Armageddon's off in world \"%s\"", WorldName());
+        rfa::LogDetail("Achievements and stats: Armageddon's off in world \"%s\"", WorldName());
     } else if (!ours && g_statsOffSaid) {
         g_statsOffSaid = false;
-        rfa::Log("Achievements and stats: Armageddon's on again in world \"%s\"", WorldName());
+        rfa::LogDetail("Achievements and stats: Armageddon's on again in world \"%s\"", WorldName());
     }
 }
 
@@ -1212,7 +1327,7 @@ void InstallStatsBlock() {
 // The radius setter, wrapped: in our worlds, held to what each layer can track.
 void __fastcall SetStreamRadiusHeld(void* manager, void* unused, int layer, float radius) {
     if ((layer == kSubzoneLayer || layer == kZoneLayer) && InOurWorld() && radius > MostRadius(layer)) {
-        RFA_LOG_FIRST(2, "Streaming: layer %d's radius %.0f m held to %.0f m (more could meet more cells than the game tracks)",
+        RFA_LOG_DETAIL_FIRST(2, "Streaming: layer %d's radius %.0f m held to %.0f m (more could meet more cells than the game tracks)",
                       layer, radius, MostRadius(layer));
         radius = MostRadius(layer);
     }
@@ -1268,7 +1383,7 @@ void __cdecl ResumeStreamIo() {
             g_streamPausedLongestBy = g_streamPausedBy;
         }
         if (ms >= 1000)
-            RFA_LOG_FIRST(100, "Streaming: the stream I/O was paused %.1f s (by the code at %p; resumed by %p)", ms / 1000.0,
+            RFA_LOG_DETAIL_FIRST(100, "Streaming: the stream I/O was paused %.1f s (by the code at %p; resumed by %p)", ms / 1000.0,
                           g_streamPausedBy, _ReturnAddress());
         g_streamPausedAt = 0;
     }
@@ -1312,7 +1427,7 @@ void __fastcall StreamUpdateSteady(void* manager, void* unused, const float* pos
     const float dx = position[0] - g_streamHeld[0], dz = position[2] - g_streamHeld[2];
     if (!g_streamHeldSet || dx * dx + dz * dz > g_streamSteady * g_streamSteady) {
         if (!g_streamHeldSet)
-            RFA_LOG_FIRST(4, "Streaming: what is loaded follows the camera once it has gone %.0f m in world \"%s\" (StreamSteady=)",
+            RFA_LOG_DETAIL_FIRST(4, "Streaming: what is loaded follows the camera once it has gone %.0f m in world \"%s\" (StreamSteady=)",
                           g_streamSteady, WorldName());
         g_streamHeld[0] = position[0];
         g_streamHeld[2] = position[2];
@@ -1429,7 +1544,7 @@ void RunStreaming(bool ours) {
     void* layers = *static_cast<void**>(manager);
     if (ours && StreamRadiusOf(manager, nullptr, kSubzoneLayer) > MostRadius(kSubzoneLayer)) {
         SetStreamRadius(manager, nullptr, kSubzoneLayer, MostRadius(kSubzoneLayer));
-        rfa::Log("Streaming: sub-zones of world \"%s\" kept loaded %.0f m around the player (layer %d)", WorldName(),
+        rfa::LogDetail("Streaming: sub-zones of world \"%s\" kept loaded %.0f m around the player (layer %d)", WorldName(),
                  StreamRadiusOf(manager, nullptr, kSubzoneLayer), kSubzoneLayer);
     }
     const float now = StreamRadiusOf(manager, nullptr, kZoneLayer);
@@ -1440,13 +1555,13 @@ void RunStreaming(bool ours) {
         g_streamOurs = true;
         g_streamLayers = layers;
         SetStreamRadius(manager, nullptr, kZoneLayer, wanted);
-        rfa::Log("Streaming: zones of world \"%s\" (%.0f m) kept loaded %.0f m around the player (layer %d; the game's radius %.0f m)",
+        rfa::LogDetail("Streaming: zones of world \"%s\" (%.0f m) kept loaded %.0f m around the player (layer %d; the game's radius %.0f m)",
                  WorldName(), OurZoneWidth(), wanted, kZoneLayer, g_streamRadiusBefore);
     } else if (g_streamOurs) {
         g_streamOurs = false;
         if (layers == g_streamLayers) {
             SetStreamRadius(manager, nullptr, kZoneLayer, g_streamRadiusBefore);
-            rfa::Log("Streaming: back to the game's radius %.0f m in world \"%s\"", g_streamRadiusBefore, WorldName());
+            rfa::LogDetail("Streaming: back to the game's radius %.0f m in world \"%s\"", g_streamRadiusBefore, WorldName());
         }
     }
 }
@@ -1473,14 +1588,14 @@ void RunGroundDetail(bool ours) {
         g_terrainFadeStart = kGuerrillaFadeStart;
         g_terrainFadeEnd = kGuerrillaFadeEnd;
         g_groundDetailOurs = true;
-        rfa::Log("Ground: detailed to %.0f m, far ground from %.0f m, as Guerrilla's (the game's %.0f and %.0f m; GroundDetail=)",
+        rfa::LogDetail("Ground: detailed to %.0f m, far ground from %.0f m, as Guerrilla's (the game's %.0f and %.0f m; GroundDetail=)",
                  kGuerrillaFadeStart, kGuerrillaFadeEnd, g_fadeStartBefore, g_fadeEndBefore);
     } else if ((!ours || !g_groundDetail) && g_groundDetailOurs) {
         g_groundDetailOurs = false;
         if (g_terrainFadeStart == kGuerrillaFadeStart && g_terrainFadeEnd == kGuerrillaFadeEnd) {
             g_terrainFadeStart = g_fadeStartBefore;
             g_terrainFadeEnd = g_fadeEndBefore;
-            rfa::Log("Ground: back to the game's detail distances, %.0f and %.0f m", g_fadeStartBefore, g_fadeEndBefore);
+            rfa::LogDetail("Ground: back to the game's detail distances, %.0f and %.0f m", g_fadeStartBefore, g_fadeEndBefore);
         }
     }
 }
@@ -1516,7 +1631,7 @@ void WidenWorld() {
         return;
     }
     if (SetGameConstant(kWorldReach, reach) && SetGameConstant(kWorldReachBack, -reach))
-        rfa::Log("The physics world reaches %.0f m from the middle (the game's %.0f m; nine %.0f m zones)", reach, kGameWorldReach, g_zoneWidth);
+        rfa::LogDetail("The physics world reaches %.0f m from the middle (the game's %.0f m; nine %.0f m zones)", reach, kGameWorldReach, g_zoneWidth);
     else
         rfa::Log("Could not widen the physics world; zones beyond %.0f m from the middle won't work", kGameWorldReach);
 }
@@ -1525,7 +1640,7 @@ void WidenWorld() {
 void __cdecl ZoneSize(const char* name, float* size) {
     g_zoneSize(name, size);
     if (g_zoneWidth > 0 && name && size && NamedOurs(name) && *size != g_zoneWidth) {
-        RFA_LOG_FIRST(1, "Zones: \"%s\" gets %.0f m zones (the game's %.0f m; ZoneSize=)", name, g_zoneWidth, *size);
+        RFA_LOG_DETAIL_FIRST(1, "Zones: \"%s\" gets %.0f m zones (the game's %.0f m; ZoneSize=)", name, g_zoneWidth, *size);
         *size = g_zoneWidth;
     }
 }
@@ -1551,7 +1666,7 @@ void __cdecl ReportError(int level, int flag, const char* format, va_list argume
         va_end(peek);
         if (zone && OurZone(zone)) {
             if (g_missionHashReports++ == 0)
-                rfa::Log("Leaving out the game's \"invalid mission info hash\" reports for our worlds' zones (first: %s)", zone);
+                rfa::LogDetail("Leaving out the game's \"invalid mission info hash\" reports for our worlds' zones (first: %s)", zone);
             return;
         }
     }
@@ -1607,7 +1722,7 @@ void NoteRenderWarnings() {
     if (asked > g_unbatchedMost) g_unbatchedMost = asked;
     if (g_unbatchedMost >= 256 && g_unbatchedMost >= g_unbatchedMostLogged + g_unbatchedMostLogged / 4) {
         g_unbatchedMostLogged = g_unbatchedMost;
-        rfa::Log("Unbatched renderables: %lu asked for in one frame, the most so far (the list holds %lu)", g_unbatchedMost,
+        rfa::LogDetail("Unbatched renderables: %lu asked for in one frame, the most so far (the list holds %lu)", g_unbatchedMost,
                  rfa::CodeValue(kUnbatchedAddValue));
     }
     const BYTE* renderer = *reinterpret_cast<BYTE* const*>(kRenderer);
@@ -1689,7 +1804,7 @@ void* __cdecl FindNavCell(BYTE* query) {
             cell = g_findNavCell(ask);
             if (!cell) continue;
             if (g_navpointsJoined++ < 50)
-                rfa::Log("Pathfinding: transition navpoint %08X at (%.1f, %.1f, %.1f) stands on no open nav cell; joined to the nearest "
+                rfa::LogDetail("Pathfinding: transition navpoint %08X at (%.1f, %.1f, %.1f) stands on no open nav cell; joined to the nearest "
                          "open one, %.1f m away, as Guerrilla links such a point to the nearest open place",
                          handle, position[0], position[1], position[2], distance);
             return cell;
@@ -1730,7 +1845,7 @@ const char* __cdecl PrecacheArea(int column, int row, int gridSize) {
         rfa::Log("Precache: world \"%s\" has no %s_precache.vpp_pc (built before it had one); the game's \"%s\" is used", WorldName(), WorldName(), area);
         return area;
     }
-    rfa::Log("Precache: world \"%s\" mounts %s_precache.vpp_pc (the game's area there is \"%s\")", WorldName(), WorldName(), area);
+    rfa::LogDetail("Precache: world \"%s\" mounts %s_precache.vpp_pc (the game's area there is \"%s\")", WorldName(), WorldName(), area);
     return WorldName();
 }
 
@@ -1757,7 +1872,7 @@ bool __fastcall TableCacheFind(void* cache, void* unused, const char* name, Cach
             }
             out->data = table.bytes.data();
             out->size = static_cast<DWORD>(table.bytes.size() - 1);
-            rfa::Log("%s: the game reads mods\\guerrilla_world\\%s (%lu bytes)", table.what, table.name, out->size);
+            rfa::LogDetail("%s: the game reads mods\\guerrilla_world\\%s (%lu bytes)", table.what, table.name, out->size);
             return true;
         }
     }
@@ -1804,7 +1919,7 @@ bool __cdecl EffectFileLoad(const char* name, void* unused1, void* data, void* u
         g_ourEffectFiles.push_back(name);
     if (name && (!loaded || (_strnicmp(name, "rfg_", 4) == 0 && strstr(name, ".cefct_pc") && !LoadedEffect(name)))) {
         ++g_ourEffectFilesLogged;
-        rfa::Log("Effects: %s: %s, %s in its map of loaded effects", name, loaded ? "loaded" : "NOT LOADED", LoadedEffect(name) ? "now" : "NOT");
+        rfa::LogDetail("Effects: %s: %s, %s in its map of loaded effects", name, loaded ? "loaded" : "NOT LOADED", LoadedEffect(name) ? "now" : "NOT");
     }
     return loaded;
 }
@@ -1844,11 +1959,11 @@ int __cdecl PlayEffect(BYTE* effect, const float* where, DWORD a3, DWORD a4, DWO
     // the event's size), which the effect object plays beside the effect. In the Guerrilla world the effect is
     // Guerrilla's and has Guerrilla's sound in it, so Armageddon's is left out there.
     if (g_materialEventsOn && a10 && InOurWorld()) {
-        RFA_LOG_FIRST(1, "Material events: Armageddon's destruction sound is left out in the Guerrilla world (Guerrilla's effects have their own)");
+        RFA_LOG_DETAIL_FIRST(1, "Material events: Armageddon's destruction sound is left out in the Guerrilla world (Guerrilla's effects have their own)");
         a10 = 0;
     }
     // That pool is filled while the game starts; by the first effect played its use is final.
-    RFA_LOG_FIRST(1, "Material effects: %lu of %lu bytes in use", *reinterpret_cast<const DWORD*>(kMaterialEffectPool + kMemoryPoolTaken),
+    RFA_LOG_DETAIL_FIRST(1, "Material effects: %lu of %lu bytes in use", *reinterpret_cast<const DWORD*>(kMaterialEffectPool + kMemoryPoolTaken),
                   *reinterpret_cast<const DWORD*>(kMaterialEffectPool + kMemoryPoolSize));
     MusicTestFrame();
     const int handle = g_playEffect(effect, where, a3, a4, a5, a6, a7, a8, a9, a10);
@@ -1961,10 +2076,20 @@ void __cdecl WwiseOutput(int code, const wchar_t* message, int level, DWORD play
             if (known.count && strcmp(known.text, text) != 0) continue;
             if (!known.count) strncpy_s(known.text, text, _TRUNCATE);
             ++known.count;
-            if (known.count <= kWwiseEachLogged)
-                rfa::Log("Wwise: %s (code %d, level %d, playing %lu, game object %lu)", text, code, level, playing, gameObject);
-            else if (known.count == 100 || known.count == 1000)
-                rfa::Log("Wwise: %s: %d times so far", text, known.count);
+            // Level 2 is one of Wwise's errors (an event not found, a source or voice starving): a problem, always
+            // written. Level 1 is a message (a voice ended as too quiet, all sounds stopped): a routine line.
+            const bool error = level >= 2;
+            if (known.count <= kWwiseEachLogged) {
+                if (error)
+                    rfa::Log("Wwise: %s (code %d, level %d, playing %lu, game object %lu)", text, code, level, playing, gameObject);
+                else
+                    rfa::LogDetail("Wwise: %s (code %d, level %d, playing %lu, game object %lu)", text, code, level, playing, gameObject);
+            } else if (known.count == 100 || known.count == 1000) {
+                if (error)
+                    rfa::Log("Wwise: %s: %d times so far", text, known.count);
+                else
+                    rfa::LogDetail("Wwise: %s: %d times so far", text, known.count);
+            }
             break;
         }
     g_wwiseOutput(code, message, level, playing, gameObject);
@@ -2072,7 +2197,7 @@ void LogStreamMemoryAtStarvation() {
                        stats[1] / 1024, stats[0] / 1024, stats[5] / 1024, stats[3], stats[4]);
     }
     const DWORD* audioCache = reinterpret_cast<const DWORD*>(0x2745E98);
-    rfa::Log("Wwise: a source starved with %s; the game's stream cache %lu hits, %lu misses", line, audioCache[3], audioCache[4]);
+    rfa::LogDetail("Wwise: a source starved with %s; the game's stream cache %lu hits, %lu misses", line, audioCache[3], audioCache[4]);
 }
 
 void __fastcall EffectSound(BYTE* effect, void* unused, DWORD start) {
@@ -2138,7 +2263,7 @@ void* __fastcall MakeObject(void* world, void* unused, void* type, void* zone, D
 void __fastcall NamePoolInit(void* pool, void* unused, void* buffer, DWORD size, const char* name) {
     if (!g_gameplayTable.bytes.empty() && name && strcmp(name, kGameplayNames) == 0) {
         g_gameplayNames.assign(kGameplayNameRoom, 0);
-        rfa::Log("Gameplay properties: their names get %lu bytes (the game's %lu)", kGameplayNameRoom, size);
+        rfa::LogDetail("Gameplay properties: their names get %lu bytes (the game's %lu)", kGameplayNameRoom, size);
         g_namePoolInit(pool, unused, g_gameplayNames.data(), kGameplayNameRoom, name);
         return;
     }
@@ -2350,6 +2475,9 @@ cbuffer Light : register(b0)
     float4 UpToward;    // straight up, in the camera's space
     float4 TargetSize;  // the light buffer's width and height, and the tangents of half the field of view across and up
     float4 Parts;       // x 1: the sky's light; y 1: the sun's; z 1: the sun's through the lamp's shadow map; w the shine's strength (Shine=)
+    float4 CloudU;      // a point in the camera's space (xyz, 1) to across the clouds' texture (see CloudCover)
+    float4 CloudV;      // and down it
+    float4 CloudShade;  // x 1: the clouds' shadows drawn; y the cover's scale (4.5), z its bias (-0.5)
 };
 
 cbuffer Game : register(b1)
@@ -2370,20 +2498,43 @@ cbuffer Lamp : register(b2)  // the sun's lamp's, as the light pass drew it (ir_
 Texture2D Normals : register(t0);
 Texture2D ShadowMap : register(t1);
 Texture2D Depth : register(t2);
+Texture2D Clouds : register(t3);  // the overhead clouds' layers 0-1 (clouds_overhead_layer0_layer1)
 SamplerState Nearest : register(s0);
+SamplerState Wrapped : register(s1);
 
-// facing: how squarely the surface faces the sun (its normal · toward the sun); away: which way
-// to move the point looked up off the surface (its normal, or toward the sun where the normal faces
-// away). The normals are in the camera's space as the positions worked out here are (the game's lamps
-// light with both).
-float SunShadow(float2 at, float3 away, float facing)
+// The pixel's surface in the camera's space, from its depth, as the game's lamps work it out: the ray
+// through the lamp's inverse projection, times the distance ahead from IR_Similarity_Data.
+float3 SurfaceAt(float2 at)
 {
     float depth = Depth.SampleLevel(Nearest, at, 0).x;
     float ahead = 1 / (SimilarityData.z * depth + SimilarityData.w);
     float2 corner = at * float2(2, -2) + float2(-1, 1);
     float4 near = InverseProjection[0] * corner.x + InverseProjection[1] * corner.y + InverseProjection[3];
     float3 ray = near.xyz / near.w;
-    float4 surface = float4(ray / ray.z * ahead, 1);
+    return ray / ray.z * ahead;
+}
+
+// How much of the sun the clouds overhead take from a surface, as Re-Mars-tered's cloud shadows (its
+// clbprojector shader, with the numbers buildShadowParamsProjectionTexture gives it): the overhead
+// clouds' first texture laid flat over the world, seen from straight above, two metres a texel (the
+// 512-texel texture 1,024 m across, tiled), sliding toward the world's -z with layers 0-1's drift
+// (half a texture an offset of 1); its alpha (layer 1's cover) less a half, times 4.5. Everywhere on screen at full
+// strength: Re-Mars-tered fades it only between its shadow map's ranges.
+float CloudCover(float3 surface)
+{
+    float4 place = float4(surface, 1);
+    float2 uv = float2(dot(CloudU, place), dot(CloudV, place));
+    float cover = Clouds.Sample(Wrapped, uv).a;
+    return saturate(saturate(cover + CloudShade.z) * CloudShade.y);
+}
+
+// facing: how squarely the surface faces the sun (its normal · toward the sun); away: which way
+// to move the point looked up off the surface (its normal, or toward the sun where the normal faces
+// away). The normals are in the camera's space as the positions worked out here are (the game's lamps
+// light with both).
+float SunShadow(float3 at, float3 away, float facing)
+{
+    float4 surface = float4(at, 1);
     // So that a surface doesn't shadow itself through the map's wide texels (a texel's width in metres
     // from the map's width, its depth per metre from the map's depth), the point looked up is moved
     // out along the surface's normal, more the more it slants from the sun, and its depth held back
@@ -2463,7 +2614,15 @@ LightOut LightPixel(float4 position : SV_Position)
     // the point looked up is moved toward the sun, not along the normal: a normal facing away (the
     // ground's, under a cliff fading over it on a steep wall) would move it into the rock, and the
     // surface shadowed itself (straight-edged dark triangles).
-    float shadow = Parts.z > 0 ? SunShadow(at, facing > 0 ? n : SunToward.xyz, max(facing, 0.05)) : 1;
+    float shadow = 1;
+    if (Parts.z > 0)
+    {
+        float3 surface = SurfaceAt(at);
+        shadow = SunShadow(surface, facing > 0 ? n : SunToward.xyz, max(facing, 0.05));
+        // The clouds' shadow adds to the map's, as Re-Mars-tered's projector adds them (its shadow
+        // amount, the light taken away, is the map's plus the clouds' cover, at most all of it).
+        if (CloudShade.x > 0) shadow = saturate(shadow - CloudCover(surface));
+    }
     LightOut o;
     o.light = float4(sky * Parts.x + sun * Parts.y * shadow, shine * Parts.y * shadow * Parts.w);
     o.ours = float4(o.light.rgb, Parts.y * shadow);
@@ -2804,6 +2963,9 @@ struct LightConstants {
     float upToward[4];
     float targetSize[4];
     float parts[4];
+    float cloudU[4];
+    float cloudV[4];
+    float cloudShade[4];
 };
 
 struct FogConstants {
@@ -3294,7 +3456,7 @@ void ReadOrbitals() {
     const std::wstring name(world, world + strlen(world));
     std::vector<BYTE> bytes;
     if (!ReadWholeFile(rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\" + name + L".gtodx", bytes)) {
-        rfa::Log("Sun and moons: no overrides\\build\\pc\\cache\\%s.gtodx (the world builder writes it); none drawn", world);
+        rfa::LogDetail("Sun and moons: no overrides\\build\\pc\\cache\\%s.gtodx (the world builder writes it); none drawn", world);
         return;
     }
     const std::string text(bytes.begin(), bytes.end());
@@ -3312,7 +3474,7 @@ void ReadOrbitals() {
         orbital.scale = ReadKeys(text, "scale", start, end);
         orbital.tint = ReadKeys(text, "tint", start, end);
         orbital.opacity = ReadKeys(text, "opacity", start, end);
-        rfa::Log("Sun and moons: %s from %s.gtodx: texture %s, turned %.2f° and %.2f°, %.2f h on%s; %zu scale, %zu tint and %zu opacity keys",
+        rfa::LogDetail("Sun and moons: %s from %s.gtodx: texture %s, turned %.2f° and %.2f°, %.2f h on%s; %zu scale, %zu tint and %zu opacity keys",
                  orbital.name.c_str(), world, orbital.map.c_str(), orbital.turnX, orbital.turnY, orbital.hoursOn, orbital.blends ? ", blended" : "",
                  orbital.scale.size(), orbital.tint.size(), orbital.opacity.size());
         g_orbitals.push_back(std::move(orbital));
@@ -3508,7 +3670,7 @@ bool ShaftTargets(UINT width, UINT height) {
              SUCCEEDED(g_device->CreateShaderResourceView(g_shaft[i], nullptr, &g_shaftView[i]));
     g_shaftWidth = ok ? width : 0;
     g_shaftHeight = ok ? height : 0;
-    if (ok) rfa::Log("Sun shafts: drawn at half the picture's size, %u x %u", width, height);
+    if (ok) rfa::LogDetail("Sun shafts: drawn at half the picture's size, %u x %u", width, height);
     return ok;
 }
 
@@ -3526,14 +3688,14 @@ void MakeCloudObjects() {
     const UINT vertexCount = ReadAt<UINT>(file, at);
     at += 4;
     const size_t vertexBytes = size_t(vertexCount) * 32;
-    if (at + vertexBytes + 4 > file.size()) { rfa::Log("Clouds: clouds.bin is cut short"); return; }
+    if (at + vertexBytes + 4 > file.size()) { rfa::LogDetail("Clouds: clouds.bin is cut short"); return; }
     const BYTE* vertices = file.data() + at;
     at += vertexBytes;
     const UINT partCount = ReadAt<UINT>(file, at);
     at += 4;
     std::vector<CloudPart> parts;
     for (UINT i = 0; i < partCount; ++i) {
-        if (at + 4 * 9 + 128 > file.size()) { rfa::Log("Clouds: clouds.bin is cut short"); return; }
+        if (at + 4 * 9 + 128 > file.size()) { rfa::LogDetail("Clouds: clouds.bin is cut short"); return; }
         CloudPart part;
         part.first = ReadAt<UINT>(file, at);
         part.count = ReadAt<UINT>(file, at + 4);
@@ -3554,7 +3716,7 @@ void MakeCloudObjects() {
         }
         if (part.layers[0] && (part.layers[1] || part.kind == 2)) parts.push_back(part);
     }
-    if (at + 4 > file.size()) { rfa::Log("Clouds: clouds.bin is cut short"); return; }
+    if (at + 4 > file.size()) { rfa::LogDetail("Clouds: clouds.bin is cut short"); return; }
     const UINT indexCount = ReadAt<UINT>(file, at);
     at += 4;
     if (at + size_t(indexCount) * 4 > file.size() || parts.empty()) { rfa::Log("Clouds: clouds.bin has no usable parts"); return; }
@@ -3636,7 +3798,7 @@ void MakeCloudObjects() {
         return;
     }
     g_cloudParts = parts;
-    rfa::Log("Clouds: %u parts, %u triangles, from mods\\guerrilla_world", static_cast<unsigned>(parts.size()), indexCount / 3);
+    rfa::LogDetail("Clouds: %u parts, %u triangles, from mods\\guerrilla_world", static_cast<unsigned>(parts.size()), indexCount / 3);
 }
 
 void SkyColours(float (&hemisphere)[10][4]) {
@@ -3721,7 +3883,7 @@ void DrawClouds(const SkyConstants& sky) {
         constants.fogScale[1] = fogScale / part.half[1];
         constants.fogScale[2] = kSkyFogFar / part.half[2];
         constants.fogScale[3] = part.half[1];
-        constants.fogRaise[0] = fogOffset - g_cameraPosition[1];
+        constants.fogRaise[0] = fogOffset - g_drawCameraPosition[1];
         if (part.kind == 2) {
             TodColour(kMountainFront, colour);
             for (int i = 0; i < 3; ++i) constants.front[i] = colour[i] * SkyBrightness() * tint[i];
@@ -3731,7 +3893,7 @@ void DrawClouds(const SkyConstants& sky) {
             for (int i = 0; i < 3; ++i) constants.strengths[i] = colour[i];
             constants.strengths[3] = TodNumber(kMountainFogDensity);
             if (g_tellColours)
-                rfa::Log("Backdrop: lit side %.3f %.3f %.3f, far side %.3f %.3f %.3f, haze %.3f %.3f %.3f at %.2f", constants.front[0],
+                rfa::LogDetail("Backdrop: lit side %.3f %.3f %.3f, far side %.3f %.3f %.3f, haze %.3f %.3f %.3f at %.2f", constants.front[0],
                          constants.front[1], constants.front[2], constants.rear[0], constants.rear[1], constants.rear[2],
                          constants.strengths[0], constants.strengths[1], constants.strengths[2], constants.strengths[3]);
         } else {
@@ -3743,7 +3905,7 @@ void DrawClouds(const SkyConstants& sky) {
             constants.shape[0] = part.fade;
             constants.shape[1] = part.full > part.fade ? part.full : part.fade + 0.01f;
             if (g_tellColours)
-                rfa::Log("Clouds (%s): front %.3f %.3f %.3f, rear %.3f %.3f %.3f, layers %.2f %.2f %.2f %.2f, rim %.2f ^%.2f, light from %.2f %.2f %.2f",
+                rfa::LogDetail("Clouds (%s): front %.3f %.3f %.3f, rear %.3f %.3f %.3f, layers %.2f %.2f %.2f %.2f, rim %.2f ^%.2f, light from %.2f %.2f %.2f",
                          part.kind == 0 ? "overhead" : "horizon", constants.front[0], constants.front[1], constants.front[2], constants.rear[0],
                          constants.rear[1], constants.rear[2], constants.strengths[0], constants.strengths[1], constants.strengths[2],
                          constants.strengths[3], constants.shape[2], constants.shape[3], constants.light[0], constants.light[1], constants.light[2]);
@@ -3792,7 +3954,7 @@ void DrawOrbitals(const SkyConstants& sky) {
         constants.colour[3] = opacity;
         constants.centre[3] = scale / 100;
         if (g_tellColours)
-            rfa::Log("%s at %.2f h: toward %.2f %.2f %.2f, %.4f across, colour %.3f %.3f %.3f, opacity %.3f", orbital.name.c_str(), g_timeOfDay,
+            rfa::LogDetail("%s at %.2f h: toward %.2f %.2f %.2f, %.4f across, colour %.3f %.3f %.3f, opacity %.3f", orbital.name.c_str(), g_timeOfDay,
                      toward[0], toward[1], toward[2], 2 * constants.centre[3], constants.colour[0], constants.colour[1], constants.colour[2], opacity);
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (FAILED(g_context->Map(g_sunConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) break;
@@ -3999,7 +4161,7 @@ int MakeStars(float (&stars)[kStarCount][4]) {
     int count = 0;
     memcpy(&count, bytes.data() + 8, 4);
     if (count < 0 || bytes.size() < 12 + static_cast<size_t>(count) * 12) {
-        rfa::Log("Stars: mods\\guerrilla_world\\stars.bin is cut short; no stars");
+        rfa::LogDetail("Stars: mods\\guerrilla_world\\stars.bin is cut short; no stars");
         return 0;
     }
     const float tilt = 0.2617993950843811f;            // π/12, as Guerrilla's float
@@ -4020,7 +4182,7 @@ int MakeStars(float (&stars)[kStarCount][4]) {
         stars[made][3] = InFourThousandNinetySixths(phase);
         ++made;
     }
-    rfa::Log("Stars: %d of Guerrilla's star catalogue's %d stars, as its star field makes them", made, count);
+    rfa::LogDetail("Stars: %d of Guerrilla's star catalogue's %d stars, as its star field makes them", made, count);
     return made;
 }
 
@@ -4064,7 +4226,7 @@ bool MakeNightSkyObjects() {
         g_starCatalogue = MakeConstantBuffer(sizeof(stars), stars);
         g_starPicture = LoadTexture(DataFolder() + L"vfx_sun_01.dds");
         if (!g_starCatalogue || !g_starPicture) {
-            rfa::Log("Stars: %s; no stars", g_starPicture ? "could not make their buffer" : "no mods\\guerrilla_world\\vfx_sun_01.dds (the world builder writes it)");
+            rfa::LogDetail("Stars: %s; no stars", g_starPicture ? "could not make their buffer" : "no mods\\guerrilla_world\\vfx_sun_01.dds (the world builder writes it)");
             g_starsDrawn = 0;
         }
     }
@@ -4197,7 +4359,7 @@ void DrawNightSky(const SkyConstants& sky) {
     static bool told = false;
     if (!told) {
         told = true;
-        rfa::Log("Night sky: drawn from %.2f h, strength %.2f: %d stars and up to %d meteors", g_timeOfDay, strength, g_starsDrawn, kMostMeteors);
+        rfa::LogDetail("Night sky: drawn from %.2f h, strength %.2f: %d stars and up to %d meteors", g_timeOfDay, strength, g_starsDrawn, kMostMeteors);
     }
     DrawStars(sky, strength);
     DrawMeteors(sky, strength);
@@ -4298,7 +4460,7 @@ void DrawSky() {
         told = true;
         D3D11_RENDER_TARGET_VIEW_DESC targetDesc = {};
         if (target) target->GetDesc(&targetDesc);
-        rfa::Log("Sky: drawing into a %s target, %.0f x %.0f, %s; the game's depth test %d (%s)",
+        rfa::LogDetail("Sky: drawing into a %s target, %.0f x %.0f, %s; the game's depth test %d (%s)",
                  target ? FormatName(targetDesc.Format) : "missing", viewport.Width, viewport.Height,
                  depthView ? "with a depth buffer" : "WITHOUT a depth buffer", static_cast<int>(gameDepthDesc.DepthFunc),
                  reversed ? "far is 0" : "far is 1");
@@ -4309,15 +4471,15 @@ void DrawSky() {
         SkyConstants constants = {};
         SkyColours(constants.hemisphere);
         if (g_tellColours)
-            rfa::Log("Sky at %.2f h, brightness %.3g: west horizon %.3f %.3f %.3f, east horizon %.3f %.3f %.3f, zenith %.3f %.3f %.3f",
+            rfa::LogDetail("Sky at %.2f h, brightness %.3g: west horizon %.3f %.3f %.3f, east horizon %.3f %.3f %.3f, zenith %.3f %.3f %.3f",
                      g_timeOfDay, g_brightness, constants.hemisphere[0][0], constants.hemisphere[0][1], constants.hemisphere[0][2],
                      constants.hemisphere[5][0], constants.hemisphere[5][1], constants.hemisphere[5][2], constants.hemisphere[4][0],
                      constants.hemisphere[4][1], constants.hemisphere[4][2]);
-        const float tanHalfVertical = tanf(g_cameraFov * 3.14159265f / 360.0f);
+        const float tanHalfVertical = tanf(g_drawCameraFov * 3.14159265f / 360.0f);
         for (int i = 0; i < 3; ++i) {
-            constants.right[i] = g_cameraRotation[i];
-            constants.up[i] = g_cameraRotation[3 + i];
-            constants.forward[i] = g_cameraRotation[6 + i];
+            constants.right[i] = g_drawCameraRotation[i];
+            constants.up[i] = g_drawCameraRotation[3 + i];
+            constants.forward[i] = g_drawCameraRotation[6 + i];
         }
         constants.right[3] = tanHalfVertical * viewport.Width / viewport.Height;
         constants.up[3] = tanHalfVertical;
@@ -4330,12 +4492,12 @@ void DrawSky() {
         FogNumbers(constants.fogNumbers);
         constants.domeFog[0] = kSkyFogFar;
         constants.domeFog[1] = TodNumber(kSkyFogScale);
-        constants.domeFog[2] = TodNumber(kSkyFogOffset) - g_cameraPosition[1];
+        constants.domeFog[2] = TodNumber(kSkyFogOffset) - g_drawCameraPosition[1];
         if (g_tellColours)
-            rfa::Log("Sky's fog at %.2f h: dome scale %.0f offset %.0f, clouds %.0f %.0f, backdrop %.0f %.0f (camera at %.0f m); fog colour "
+            rfa::LogDetail("Sky's fog at %.2f h: dome scale %.0f offset %.0f, clouds %.0f %.0f, backdrop %.0f %.0f (camera at %.0f m); fog colour "
                      "%.3f %.3f %.3f, fall-off %.4f, density %.5f, offset %.3f",
                      g_timeOfDay, constants.domeFog[1], TodNumber(kSkyFogOffset), TodNumber(kCloudsFogScale), TodNumber(kCloudsFogOffset),
-                     TodNumber(kMatteFogScale), TodNumber(kMatteFogOffset), g_cameraPosition[1], constants.fogColour[0], constants.fogColour[1],
+                     TodNumber(kMatteFogScale), TodNumber(kMatteFogOffset), g_drawCameraPosition[1], constants.fogColour[0], constants.fogColour[1],
                      constants.fogColour[2], constants.fogNumbers[0], constants.fogNumbers[1], constants.fogNumbers[3]);
         D3D11_MAPPED_SUBRESOURCE mapped;
         if (SUCCEEDED(g_context->Map(g_skyConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -4464,7 +4626,7 @@ bool MakeSurfaceTargets(const D3D11_TEXTURE2D_DESC& light) {
         g_surfaceInputsFailed = true;
         return false;
     }
-    rfa::Log("Guerrilla's material shaders: lit by the mod's own light (%u x %u)", light.Width, light.Height);
+    rfa::LogDetail("Guerrilla's material shaders: lit by the mod's own light (%u x %u)", light.Width, light.Height);
     return true;
 }
 
@@ -4520,19 +4682,40 @@ bool FillSurfaceConstants() {
     constants.time[3] = NightLevel(g_timeOfDay);
     GuerrillaGear_PackGauge(constants.packFuel);  // guerrilla_gear's worn backpack's gauge (0s without it)
     // The camera's space as DrawLight's: x along its right, y its up, z its forward.
-    const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};
+    const float* axes[3] = {&g_drawCameraRotation[0], &g_drawCameraRotation[3], &g_drawCameraRotation[6]};
     for (int i = 0; i < 3; ++i) constants.sunTowardView[i] = toward[0] * axes[i][0] + toward[1] * axes[i][1] + toward[2] * axes[i][2];
     D3D11_TEXTURE2D_DESC size = {};
     if (g_ourLightTexture) g_ourLightTexture->GetDesc(&size);
     constants.view[0] = static_cast<float>(size.Width);
     constants.view[1] = static_cast<float>(size.Height);
-    constants.view[3] = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    constants.view[3] = tanf(g_drawCameraFov * 3.14159265f / 360.0f);
     constants.view[2] = size.Height ? constants.view[3] * size.Width / size.Height : constants.view[3];
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (FAILED(g_context->Map(g_surfaceConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
     memcpy(mapped.pData, &constants, sizeof(constants));
     g_context->Unmap(g_surfaceConstants, 0);
     return true;
+}
+
+// The overhead clouds' first texture (layers 0-1, the one Re-Mars-tered's cloud shadows take from the
+// overhead clouds' material) and its size; null without the clouds.
+ID3D11ShaderResourceView* OverheadClouds(UINT& width, UINT& height) {
+    for (const CloudPart& part : g_cloudParts) {
+        if (part.kind != 0 || !part.layers[0]) continue;
+        ID3D11Resource* resource = nullptr;
+        part.layers[0]->GetResource(&resource);
+        ID3D11Texture2D* texture = nullptr;
+        D3D11_TEXTURE2D_DESC desc = {};
+        if (resource && SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+            texture->GetDesc(&desc);
+            texture->Release();
+        }
+        if (resource) resource->Release();
+        width = desc.Width;
+        height = desc.Height;
+        return width && height ? part.layers[0] : nullptr;
+    }
+    return nullptr;
 }
 
 // Adds the sky's light and the sun into the light buffer the light pass fills (its lamps' light), over
@@ -4560,7 +4743,7 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
         told = true;
         D3D11_SHADER_RESOURCE_VIEW_DESC normalsDesc = {};
         normals->GetDesc(&normalsDesc);
-        rfa::Log("Light: adding the sky's light and the sun to the game's light buffer (%s, format %d, %u x %u); normals format %d",
+        rfa::LogDetail("Light: adding the sky's light and the sun to the game's light buffer (%s, format %d, %u x %u); normals format %d",
                  FormatName(desc.Format), static_cast<int>(desc.Format), desc.Width, desc.Height, static_cast<int>(normalsDesc.Format));
     }
 
@@ -4574,19 +4757,46 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
         constants.sunColour[i] = sun[i] * tint[i];
     }
     // The camera's space: x along its right, y its up, z its forward (its rows in the world).
-    const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};
+    const float* axes[3] = {&g_drawCameraRotation[0], &g_drawCameraRotation[3], &g_drawCameraRotation[6]};
     for (int i = 0; i < 3; ++i) {
         constants.sunToward[i] = toward[0] * axes[i][0] + toward[1] * axes[i][1] + toward[2] * axes[i][2];
         constants.upToward[i] = axes[i][1];
     }
     constants.targetSize[0] = static_cast<float>(desc.Width);
     constants.targetSize[1] = static_cast<float>(desc.Height);
-    constants.targetSize[3] = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    constants.targetSize[3] = tanf(g_drawCameraFov * 3.14159265f / 360.0f);
     constants.targetSize[2] = constants.targetSize[3] * desc.Width / desc.Height;
     constants.parts[0] = withSky ? 1.0f : 0.0f;
     constants.parts[1] = withSun ? 1.0f : 0.0f;
     constants.parts[2] = shadow ? 1.0f : 0.0f;
     constants.parts[3] = g_shine;
+    // The clouds' shadows, with the sun through its shadow map (its depth gives each surface's place):
+    // where the overhead clouds' texture lies on the world, as Re-Mars-tered's
+    // buildShadowParamsProjectionTexture lays it (a view from straight above, the texture's width ÷
+    // 0.5 metres across and its height ÷ 0.5 deep, centred on the camera's x and z taken down to whole
+    // widths and depths, then moved the height in metres times layers 0-1's drift toward -z). The
+    // texture tiles, so u = world x ÷ width + ½ and v = −(world z + height × drift) ÷ depth + ½, wrapped;
+    // the camera's own part worked out here in doubles and wrapped, the rest per pixel from its place
+    // in the camera's space.
+    UINT cloudWidth = 0, cloudHeight = 0;
+    ID3D11ShaderResourceView* clouds = shadow && withSun && g_cloudShadows && g_cloudsOn ? OverheadClouds(cloudWidth, cloudHeight) : nullptr;
+    if (clouds) {
+        constexpr double kCloudTexelsPerMetre = 0.5;  // g_cloudShadowScale
+        const double across = cloudWidth / kCloudTexelsPerMetre, deep = cloudHeight / kCloudTexelsPerMetre;
+        for (int i = 0; i < 3; ++i) {
+            constants.cloudU[i] = static_cast<float>(axes[i][0] / across);
+            constants.cloudV[i] = static_cast<float>(-axes[i][2] / deep);
+        }
+        const double u = g_drawCameraPosition[0] / across + 0.5;
+        const double v = -(g_drawCameraPosition[2] + cloudHeight * static_cast<double>(g_drift[0])) / deep + 0.5;
+        constants.cloudU[3] = static_cast<float>(u - floor(u));
+        constants.cloudV[3] = static_cast<float>(v - floor(v));
+        constants.cloudShade[0] = 1;
+        constants.cloudShade[1] = 4.5f;   // g_cloudShadowIntensityScale
+        constants.cloudShade[2] = -0.5f;  // g_cloudShadowIntensityBias
+        RFA_LOG_DETAIL_FIRST(1, "Clouds' shadows: the overhead clouds' texture (%u x %u) laid over world \"%s\" %.0f m across, as Re-Mars-tered's",
+                             cloudWidth, cloudHeight, WorldName(), across);
+    }
     D3D11_MAPPED_SUBRESOURCE mapped;
     if (FAILED(g_context->Map(g_lightConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
     memcpy(mapped.pData, &constants, sizeof(constants));
@@ -4622,11 +4832,26 @@ void DrawLight(ID3D11RenderTargetView* buffer, ID3D11ShaderResourceView* normals
         g_context->PSSetShaderResources(1, 2, resources);
     }
     g_context->PSSetSamplers(0, 1, &g_lightSampler);
+    // The clouds' texture and its tiling sampler, past what SavedState keeps: put back by hand.
+    ID3D11ShaderResourceView* gameCloudSlot = nullptr;
+    ID3D11SamplerState* gameCloudSampler = nullptr;
+    if (clouds) {
+        g_context->PSGetShaderResources(3, 1, &gameCloudSlot);
+        g_context->PSGetSamplers(1, 1, &gameCloudSampler);
+        g_context->PSSetShaderResources(3, 1, &clouds);
+        g_context->PSSetSamplers(1, 1, &g_cloudSampler);
+    }
     const float noFactor[4] = {1, 1, 1, 1};
     g_context->OMSetBlendState(g_lightBlend, noFactor, 0xFFFFFFFF);
     g_context->OMSetDepthStencilState(g_lightDepth, 0);
     g_context->RSSetState(g_lightRaster);
     g_context->Draw(3, 0);
+    if (clouds) {
+        g_context->PSSetShaderResources(3, 1, &gameCloudSlot);
+        g_context->PSSetSamplers(1, 1, &gameCloudSampler);
+        if (gameCloudSlot) gameCloudSlot->Release();
+        if (gameCloudSampler) gameCloudSampler->Release();
+    }
 
     g_context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, gameTargets, gameDepthView);
     g_context->RSSetViewports(viewportCount, gameViewports);
@@ -4712,7 +4937,7 @@ void DrawFog() {
     D3D11_TEXTURE2D_DESC scene = {};
     if (into && TextureOf(into, scene) && scene.SampleDesc.Count == 1) {
         viewport = {0, 0, static_cast<float>(scene.Width), static_cast<float>(scene.Height), 0, 1};
-        RFA_LOG_FIRST(1, "Fog: drawn into the lit scene (%u x %u, format %d) as the particles begin", scene.Width, scene.Height, static_cast<int>(scene.Format));
+        RFA_LOG_DETAIL_FIRST(1, "Fog: drawn into the lit scene (%u x %u, format %d) as the particles begin", scene.Width, scene.Height, static_cast<int>(scene.Format));
     } else {
         RFA_LOG_FIRST(1, "Fog: the picture as the particles begin is format %d with %u samples, not the lit scene expected",
                       static_cast<int>(scene.Format), scene.SampleDesc.Count);
@@ -4727,16 +4952,16 @@ void DrawFog() {
     for (int i = 0; i < 3; ++i) constants.fogColour[i] = colour[i] * tint[i];
     FogNumbers(constants.fogNumbers);
     // The camera's space: x along its right, y its up, z its forward (its rows in the world).
-    const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};
+    const float* axes[3] = {&g_drawCameraRotation[0], &g_drawCameraRotation[3], &g_drawCameraRotation[6]};
     for (int i = 0; i < 3; ++i) constants.upToward[i] = axes[i][1];
     constants.upToward[3] = reversed ? 0.0f : 1.0f;
     constants.targetSize[0] = viewport.Width;
     constants.targetSize[1] = viewport.Height;
-    constants.targetSize[3] = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    constants.targetSize[3] = tanf(g_drawCameraFov * 3.14159265f / 360.0f);
     constants.targetSize[2] = viewport.Height > 0 ? constants.targetSize[3] * viewport.Width / viewport.Height : 0;
     if (g_tellFog) {
         g_tellFog = false;
-        rfa::Log("Fog at %.2f h: colour %.4f %.4f %.4f, fall-off %.4f, density at the camera %.5f, offset %.3f (Fog=%.3g)",
+        rfa::LogDetail("Fog at %.2f h: colour %.4f %.4f %.4f, fall-off %.4f, density at the camera %.5f, offset %.3f (Fog=%.3g)",
                  g_timeOfDay, constants.fogColour[0], constants.fogColour[1], constants.fogColour[2], constants.fogNumbers[0],
                  constants.fogNumbers[1], constants.fogNumbers[3], g_fog);
     }
@@ -4790,11 +5015,11 @@ bool SunOnPicture(UINT width, UINT height, float (&at)[2]) {
     float toward[3];
     SunToward(toward);
     if (height == 0) return false;
-    const float* axes[3] = {&g_cameraRotation[0], &g_cameraRotation[3], &g_cameraRotation[6]};  // right, up, forward
+    const float* axes[3] = {&g_drawCameraRotation[0], &g_drawCameraRotation[3], &g_drawCameraRotation[6]};  // right, up, forward
     float along[3];
     for (int a = 0; a < 3; ++a) along[a] = toward[0] * axes[a][0] + toward[1] * axes[a][1] + toward[2] * axes[a][2];
     if (along[2] <= 0) return false;
-    const float tanUp = tanf(g_cameraFov * 3.14159265f / 360.0f), tanAcross = tanUp * width / height;
+    const float tanUp = tanf(g_drawCameraFov * 3.14159265f / 360.0f), tanAcross = tanUp * width / height;
     at[0] = 0.5f + 0.5f * along[0] / (along[2] * tanAcross);
     at[1] = 0.5f - 0.5f * along[1] / (along[2] * tanUp);
     return true;
@@ -4842,7 +5067,7 @@ ID3D11ShaderResourceView* DrawShafts(ID3D11ShaderResourceView* scene, UINT width
     if (FAILED(g_context->Map(g_shaftConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return nullptr;
     memcpy(mapped.pData, &constants, sizeof(constants));
     g_context->Unmap(g_shaftConstants, 0);
-    RFA_LOG_FIRST(1, "Sun shafts: Guerrilla's, toward the sun in world \"%s\" (SunShafts=%.3g)", WorldName(), g_sunShafts);
+    RFA_LOG_DETAIL_FIRST(1, "Sun shafts: Guerrilla's, toward the sun in world \"%s\" (SunShafts=%.3g)", WorldName(), g_sunShafts);
 
     const float noFactor[4] = {1, 1, 1, 1};
     const D3D11_VIEWPORT half = {0, 0, static_cast<float>(halfWidth), static_cast<float>(halfHeight), 0, 1};
@@ -5060,7 +5285,7 @@ bool MakeBloomStages(UINT width, UINT height) {
     }
     g_bloomForWidth = width;
     g_bloomForHeight = height;
-    rfa::Log("Bloom: Guerrilla's, in stages of %u x %u, %u x %u and %u x %u", g_bloomStages[0].width, g_bloomStages[0].height,
+    rfa::LogDetail("Bloom: Guerrilla's, in stages of %u x %u, %u x %u and %u x %u", g_bloomStages[0].width, g_bloomStages[0].height,
              g_bloomStages[1].width, g_bloomStages[1].height, g_bloomStages[2].width, g_bloomStages[2].height);
     return true;
 }
@@ -5180,6 +5405,7 @@ ID3D11ShaderResourceView* DrawGuerrillaBloom(ID3D11ShaderResourceView* scene, ID
 }
 
 void DrawToneMapping(ID3D11RenderTargetView* target, ID3D11ShaderResourceView* scene, ID3D11ShaderResourceView* bloom, UINT width, UINT height) {
+    CameraWatchCheckCopy();  // (the frame's draws end here)
     // The frame's time, for the eye (a new start after a gap of more than a second).
     LARGE_INTEGER now, frequency;
     QueryPerformanceCounter(&now);
@@ -5373,7 +5599,7 @@ void KeepShaftDepth() {
                      desc.Width, desc.Height, static_cast<int>(desc.Format));
             return;
         }
-        rfa::Log("Sun shafts: the depth kept from the sky step for them (%u x %u, format %d)", desc.Width, desc.Height,
+        rfa::LogDetail("Sun shafts: the depth kept from the sky step for them (%u x %u, format %d)", desc.Width, desc.Height,
                  static_cast<int>(desc.Format));
     }
     g_context->CopyResource(g_shaftDepthCopy, depth);
@@ -5397,7 +5623,7 @@ void ToneMapAfterComposite() {
         if (!g_toneVertex && !MakeToneMappingObjects()) {
             g_toneMappingFailed = true;
         } else {
-            RFA_LOG_FIRST(1, "Tone mapping: Guerrilla's, over the final picture in world \"%s\" (%u x %u)", WorldName(), targetDesc.Width,
+            RFA_LOG_DETAIL_FIRST(1, "Tone mapping: Guerrilla's, over the final picture in world \"%s\" (%u x %u)", WorldName(), targetDesc.Width,
                           targetDesc.Height);
             DrawToneMapping(target, scene, bloom, targetDesc.Width, targetDesc.Height);
         }
@@ -5437,7 +5663,7 @@ bool __cdecl LightCheck() {
         CopyGameConstants(g_gameConstants);
     }
     if (g_inLightPass && !g_skyLightDrawn && returnTo == kCheckBeforeOcclusion && g_lightBuffer && g_lightNormals) {
-        RFA_LOG_FIRST(1, "Light: the sky's light drawn before the ambient occlusion in world \"%s\"", WorldName());
+        RFA_LOG_DETAIL_FIRST(1, "Light: the sky's light drawn before the ambient occlusion in world \"%s\"", WorldName());
         DrawLight(g_lightBuffer, g_lightNormals, true, !g_sunDrawn, nullptr);
         g_skyLightDrawn = true;
         g_sunDrawn = true;
@@ -5471,7 +5697,7 @@ void TellSunLamp(ID3D11ShaderResourceView* map, ID3D11Buffer* lamp) {
     if (resource) resource->Release();
     D3D11_SHADER_RESOURCE_VIEW_DESC view = {};
     map->GetDesc(&view);
-    rfa::Log("Sun's shadows: the sun's lamp's shadow map %u x %u, format %d (viewed as %d)", desc.Width, desc.Height,
+    rfa::LogDetail("Sun's shadows: the sun's lamp's shadow map %u x %u, format %d (viewed as %d)", desc.Width, desc.Height,
              static_cast<int>(desc.Format), static_cast<int>(view.Format));
     D3D11_BUFFER_DESC bufferDesc = {};
     lamp->GetDesc(&bufferDesc);
@@ -5516,7 +5742,7 @@ bool DrawSunThroughLamp() {
     // first check may come while other textures and values are still bound).
     if (g_noteFog && depth && game) {
         if (g_fogDepth != depth) {
-            RFA_LOG_FIRST(1, "Fog: the light pass's first check had another texture at t14 than the sun's lamp; the fog takes the lamp's");
+            RFA_LOG_DETAIL_FIRST(1, "Fog: the light pass's first check had another texture at t14 than the sun's lamp; the fog takes the lamp's");
             if (g_fogDepth) g_fogDepth->Release();
             g_fogDepth = depth;
             g_fogDepth->AddRef();
@@ -5528,7 +5754,7 @@ bool DrawSunThroughLamp() {
         if (!told) {
             told = true;
             TellSunLamp(map, lamp);
-            rfa::Log("Sun's shadows: the sun's light drawn through the follow player light's shadow map in world \"%s\"", WorldName());
+            rfa::LogDetail("Sun's shadows: the sun's light drawn through the follow player light's shadow map in world \"%s\"", WorldName());
         }
         const SunShadowInputs shadow = {map, depth, game, lamp};
         DrawLight(buffer, normals, false, true, &shadow);
@@ -5576,6 +5802,8 @@ void __fastcall DrawLamp(void* renderer, void* unused, BYTE* entry, BYTE* shadow
 void __fastcall LightPass(void* renderer, void* unused) {
     NoteRenderWarnings();
     const bool ours = g_context && InOurWorld();
+    if (ours) FrameCameraForDraws();  // (the mod's first draws of the frame)
+    CameraWatchStart(ours);
     g_inLightPass = ours && g_lightOn && !g_lightFailed;
     if (g_inLightPass && !g_lightVertex && !MakeLightObjects()) {
         g_lightFailed = true;
@@ -5598,11 +5826,11 @@ void __fastcall LightPass(void* renderer, void* unused) {
         if (g_skyLightDrawn) {
             // drawn before the occlusion (LightCheck)
         } else if (g_lightBuffer && g_lightNormals) {
-            RFA_LOG_FIRST(1, "Light: lighting world \"%s\" with the sky's light and the sun after the pass (no ambient occlusion on it)", WorldName());
+            RFA_LOG_DETAIL_FIRST(1, "Light: lighting world \"%s\" with the sky's light and the sun after the pass (no ambient occlusion on it)", WorldName());
             DrawLight(g_lightBuffer, g_lightNormals, true, !g_sunDrawn, nullptr);
             CopyLightBefore(g_lightBuffer);  // (no occlusion: the same)
         } else {
-            RFA_LOG_FIRST(1, "Light: a light pass showed no light buffer or normals (this is logged once); no light added to it");
+            RFA_LOG_DETAIL_FIRST(1, "Light: a light pass showed no light buffer or normals (this is logged once); no light added to it");
         }
         g_surfaceInputsMade = g_ourLightCleared && g_beforeCopied && FillSurfaceConstants();
         if (g_surfaceNormals) g_surfaceNormals->Release();
@@ -5630,7 +5858,7 @@ MaterialPassFn g_materialPass;
 void __fastcall MaterialPass(void* renderer, void* unused) {
     const bool give = g_surfaceInputsMade && g_context && g_ourLightView && g_beforeView && g_surfaceConstants;
     if (give) {
-        RFA_LOG_FIRST(1, "Guerrilla's material shaders: given the mod's light in world \"%s\"", WorldName());
+        RFA_LOG_DETAIL_FIRST(1, "Guerrilla's material shaders: given the mod's light in world \"%s\"", WorldName());
         ID3D11ShaderResourceView* views[3] = {g_ourLightView, g_beforeView, g_surfaceNormals};
         g_context->PSSetShaderResources(16, 3, views);
         g_context->PSSetConstantBuffers(8, 1, &g_surfaceConstants);
@@ -5652,9 +5880,11 @@ void __fastcall MaterialPass(void* renderer, void* unused) {
 // fog made ready (drawn over what the world has drawn as the particles begin) and Guerrilla's sky behind it.
 void __fastcall RenderSkybox(void* renderer, void* unused) {
     g_renderSkybox(renderer, unused);
-    RFA_LOG_FIRST(1, "Sky: the game's sky step runs (world \"%s\")", WorldName());
+    RFA_LOG_DETAIL_FIRST(1, "Sky: the game's sky step runs (world \"%s\")", WorldName());
     const bool ours = InOurWorld();
     if (ours) {
+        FrameCameraForDraws();
+        CameraWatchSky(ours);
         CheckSettings();
         TellAmbient();
     }
@@ -5665,14 +5895,14 @@ void __fastcall RenderSkybox(void* renderer, void* unused) {
     RunGroundDetail(ours);
     if (ours && g_fog > 0 && !g_fogFailed && g_context) {
         if (!g_fogDepth || !g_gameConstants) {
-            RFA_LOG_FIRST(1, "Fog: the light pass showed no depth or constants (this is logged once); no fog");
+            RFA_LOG_DETAIL_FIRST(1, "Fog: the light pass showed no depth or constants (this is logged once); no fog");
         } else if (!g_fogVertex && !MakeFogObjects()) {
             g_fogFailed = true;
         } else {
             if (g_fogAtParticles) {
                 g_fogPending = true;  // drawn as the particles begin (see ParticlePhase)
             } else {
-                RFA_LOG_FIRST(1, "Fog: drawing Guerrilla's fog in world \"%s\" at the sky step (the particle phase isn't hooked)", WorldName());
+                RFA_LOG_DETAIL_FIRST(1, "Fog: drawing Guerrilla's fog in world \"%s\" at the sky step (the particle phase isn't hooked)", WorldName());
                 DrawFog();
             }
         }
@@ -5693,7 +5923,7 @@ void __fastcall RenderSkybox(void* renderer, void* unused) {
         }
         if (g_cloudsOn) MakeCloudObjects();
     }
-    RFA_LOG_FIRST(1, "Sky: drawing Guerrilla's sky in world \"%s\"", WorldName());
+    RFA_LOG_DETAIL_FIRST(1, "Sky: drawing Guerrilla's sky in world \"%s\"", WorldName());
     DrawSky();
 }
 
@@ -5704,7 +5934,7 @@ void __fastcall ToneMappingConstants(void* renderer, void* unused) {
     float* exposure = reinterpret_cast<float*>(static_cast<BYTE*>(renderer) + 0xAD8);  // desired brightness, -, min, max
     const bool ours = InOurWorld();
     if (ours)
-        RFA_LOG_FIRST(1, "Exposure: the game's own in world \"%s\": desired brightness %.3g, held between %.3g and %.3g", WorldName(),
+        RFA_LOG_DETAIL_FIRST(1, "Exposure: the game's own in world \"%s\": desired brightness %.3g, held between %.3g and %.3g", WorldName(),
                       exposure[0], exposure[2], exposure[3]);
     if (!ours || !GuerrillaToneMapping()) {
         g_toneMappingConstants(renderer, unused);
@@ -5842,7 +6072,7 @@ bool CopyForSharpening(ID3D11Texture2D* picture, const D3D11_TEXTURE2D_DESC& des
             FAILED(g_device->CreateShaderResourceView(g_sharpenCopy, nullptr, &g_sharpenView)))
             return false;
         g_sharpenCopyDesc = copy;
-        rfa::Log("Sharpening: the final picture %u x %u (format %d), Sharpen=%d", desc.Width, desc.Height, static_cast<int>(desc.Format),
+        rfa::LogDetail("Sharpening: the final picture %u x %u (format %d), Sharpen=%d", desc.Width, desc.Height, static_cast<int>(desc.Format),
                  static_cast<int>(g_sharpen * 100 + 0.5f));
     }
     g_context->CopyResource(g_sharpenCopy, picture);
@@ -6145,7 +6375,7 @@ void ReadCoronas() {
     memcpy(&count, bytes.data() + 8, 4);
     constexpr size_t kEach = 32 + 32 + 64 + 4 + 4 + 4 + 16 + 16 + 18 * 4;
     if (count < 0 || bytes.size() < 12 + static_cast<size_t>(count) * kEach) {
-        rfa::Log("Corona: mods\\guerrilla_world\\corona.bin is cut short; the sun has none");
+        rfa::LogDetail("Corona: mods\\guerrilla_world\\corona.bin is cut short; the sun has none");
         g_coronaFailed = true;
         return;
     }
@@ -6175,12 +6405,12 @@ void ReadCoronas() {
         const std::wstring texture(corona.texture.begin(), corona.texture.end());
         corona.picture = corona.texture.empty() ? nullptr : LoadTexture(DataFolder() + texture + L".dds");
         if (!corona.picture) rfa::Log("Corona: no mods\\guerrilla_world\\%s.dds; that corona isn't drawn", corona.texture.c_str());
-        if (corona.type != 0) rfa::Log("Corona: %s's %s (%s) is a corona in the world, which the mod doesn't draw", corona.orbital.c_str(), corona.effect.c_str(), corona.texture.c_str());
+        if (corona.type != 0) rfa::LogDetail("Corona: %s's %s (%s) is a corona in the world, which the mod doesn't draw", corona.orbital.c_str(), corona.effect.c_str(), corona.texture.c_str());
         if (corona.viewFade[0] || corona.viewFade[1] || corona.viewFade[2])
-            rfa::Log("Corona: %s's %s (%s) has a view fade, which the mod leaves out", corona.orbital.c_str(), corona.effect.c_str(), corona.texture.c_str());
+            rfa::LogDetail("Corona: %s's %s (%s) has a view fade, which the mod leaves out", corona.orbital.c_str(), corona.effect.c_str(), corona.texture.c_str());
         g_coronas.push_back(std::move(corona));
     }
-    rfa::Log("Corona: %zu coronas from corona.bin (%s's %s)", g_coronas.size(), g_coronas.empty() ? "-" : g_coronas[0].orbital.c_str(),
+    rfa::LogDetail("Corona: %zu coronas from corona.bin (%s's %s)", g_coronas.size(), g_coronas.empty() ? "-" : g_coronas[0].orbital.c_str(),
              g_coronas.empty() ? "-" : g_coronas[0].effect.c_str());
 }
 
@@ -6270,15 +6500,15 @@ void DrawSunCorona() {
         target->Release();
         return;
     }
-    RFA_LOG_FIRST(1, "Corona: drawing %s's %zu coronas in world \"%s\"", sun->name.c_str(), g_coronas.size(), WorldName());
+    RFA_LOG_DETAIL_FIRST(1, "Corona: drawing %s's %zu coronas in world \"%s\"", sun->name.c_str(), g_coronas.size(), WorldName());
 
     CoronaConstants constants = {};
     const float width = static_cast<float>(targetDesc.Width), height = static_cast<float>(targetDesc.Height);
-    const float tanUp = tanf(g_cameraFov * 3.14159265f / 360.0f);
+    const float tanUp = tanf(g_drawCameraFov * 3.14159265f / 360.0f);
     for (int i = 0; i < 3; ++i) {
-        constants.right[i] = g_cameraRotation[i];
-        constants.up[i] = g_cameraRotation[3 + i];
-        constants.forward[i] = g_cameraRotation[6 + i];
+        constants.right[i] = g_drawCameraRotation[i];
+        constants.up[i] = g_drawCameraRotation[3 + i];
+        constants.forward[i] = g_drawCameraRotation[6 + i];
         constants.sun[i] = toward[i] * kCoronaDistance;
         constants.tint[i] = kParticleTint * g_sunCorona;
     }
@@ -6447,7 +6677,7 @@ bool MakeParticleTextures(const D3D11_TEXTURE2D_DESC& scene) {
         rfa::Log("Particles: could not make the particle layer's textures; the game draws its particles its own way");
         return false;
     }
-    rfa::Log("Particles: drawn into a layer of their own and laid over the picture as Guerrilla does (%u x %u, format %d, %u samples)",
+    rfa::LogDetail("Particles: drawn into a layer of their own and laid over the picture as Guerrilla does (%u x %u, format %d, %u samples)",
              scene.Width, scene.Height, static_cast<int>(scene.Format), scene.SampleDesc.Count);
     return true;
 }
@@ -6501,7 +6731,7 @@ void NoteParticleFog();  // (see "Guerrilla's fog on particles")
 void __fastcall ParticlePhase(void* renderer, void* unused, int value) {
     if (g_fogPending) {
         g_fogPending = false;
-        RFA_LOG_FIRST(1, "Fog: drawing Guerrilla's fog in world \"%s\"", WorldName());
+        RFA_LOG_DETAIL_FIRST(1, "Fog: drawing Guerrilla's fog in world \"%s\"", WorldName());
         DrawFog();
         DropFogInputs();
     }
@@ -6533,7 +6763,7 @@ void __fastcall ParticleLast(void* renderer, void* unused) {
 //
 // Fog at one point seen from the camera, as Guerrilla's particles' vertex shaders work it out.
 float FogAt(const float (&numbers)[4], const float* at) {
-    const float d[3] = {at[0] - g_cameraPosition[0], at[1] - g_cameraPosition[1], at[2] - g_cameraPosition[2]};
+    const float d[3] = {at[0] - g_drawCameraPosition[0], at[1] - g_drawCameraPosition[1], at[2] - g_drawCameraPosition[2]};
     const float distance = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     const float kh = d[1] * numbers[0];
     const float term = fabsf(d[1]) > 0.01f ? (1 - exp2f(kh * -1.442695f)) / kh : 1;
@@ -6659,7 +6889,7 @@ float EffectFog(BYTE* instance, float& distance) {
         float at[3];
         for (int i = 0; i < 3; ++i) at[i] = local ? emitter[i] + p[0] * turn[i] + p[1] * turn[3 + i] + p[2] * turn[6 + i] : p[i];
         if (s == 0) {
-            const float d[3] = {at[0] - g_cameraPosition[0], at[1] - g_cameraPosition[1], at[2] - g_cameraPosition[2]};
+            const float d[3] = {at[0] - g_drawCameraPosition[0], at[1] - g_drawCameraPosition[1], at[2] - g_drawCameraPosition[2]};
             distance = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         }
         total += FogAt(g_particleFogNumbers, at);
@@ -6707,8 +6937,8 @@ void __fastcall CoronaDraw(void* renderer, void* unused, BYTE* corona, int pass)
     }
     const float* at = reinterpret_cast<const float*>(corona + kCoronaAt);
     RFA_LOG_DETAIL_FIRST(2, "Particles: a corona %.0f m off fogged %.2f as Guerrilla's",
-                  sqrtf((at[0] - g_cameraPosition[0]) * (at[0] - g_cameraPosition[0]) + (at[1] - g_cameraPosition[1]) * (at[1] - g_cameraPosition[1]) +
-                        (at[2] - g_cameraPosition[2]) * (at[2] - g_cameraPosition[2])), fog);
+                  sqrtf((at[0] - g_drawCameraPosition[0]) * (at[0] - g_drawCameraPosition[0]) + (at[1] - g_drawCameraPosition[1]) * (at[1] - g_drawCameraPosition[1]) +
+                        (at[2] - g_drawCameraPosition[2]) * (at[2] - g_drawCameraPosition[2])), fog);
     DrawFogged(fog, nullptr, [&] { g_coronaDraw(renderer, unused, corona, pass); });
 }
 
@@ -6732,7 +6962,7 @@ void __cdecl StartMission() {
         g_startMission();
         return;
     }
-    rfa::Log("Missions: F9 or mission_start would start one of Armageddon's missions, which world \"%s\" hasn't (left alone)", WorldName());
+    rfa::LogDetail("Missions: F9 or mission_start would start one of Armageddon's missions, which world \"%s\" hasn't (left alone)", WorldName());
     ConsolePrint("Guerrilla's world has none of Armageddon's missions to start (F9, mission_start).\n", 0);
 }
 
@@ -6827,7 +7057,7 @@ void __cdecl ApplyEnvSettings(BYTE* settings, void* scene, const float* where) {
             static float told = -1;
             if (told != g_farClip) {
                 told = g_farClip;
-                rfa::Log("View distance: the camera draws to %.0f m in world \"%s\" (FarClip=; Guerrilla's 475; the zones' boxes say %.0f m)",
+                rfa::LogDetail("View distance: the camera draws to %.0f m in world \"%s\" (FarClip=; Guerrilla's 475; the zones' boxes say %.0f m)",
                          g_farClip, WorldName(), farClip);
             }
             farClip = g_farClip;
@@ -6855,7 +7085,7 @@ void GuerrillaWindUpdate(float seconds) {
         g_wind.started = true;
         g_wind.speed = g_wind.toSpeed = g_wind.rampFrom = g_wind.rampTo = (low + top) / 2;
         g_wind.direction = g_wind.toDirection = kWindStartDirection;
-        rfa::Log("Wind: Guerrilla's in world \"%s\": %.0f mph from %.0f degrees, wandering within %.0f-%.0f mph",
+        rfa::LogDetail("Wind: Guerrilla's in world \"%s\": %.0f mph from %.0f degrees, wandering within %.0f-%.0f mph",
                  WorldName(), g_wind.speed, g_wind.direction, low, top);
     }
     if (g_wind.changeLeft < 0) {
@@ -7082,7 +7312,7 @@ void DustUpdate() {
         ClearObjectFlagB(effect, nullptr, false);
         if (!g_dustLogged) {
             g_dustLogged = true;
-            rfa::Log("Dust: %s plays round the camera; the wind %.0f mph (top %.0f) from %.0f degrees, %.0f %% of the sky open, wind_los %.1f",
+            rfa::LogDetail("Dust: %s plays round the camera; the wind %.0f mph (top %.0f) from %.0f degrees, %.0f %% of the sky open, wind_los %.1f",
                      kDustEffect, speed, g_windTopSpeed, direction, open * 100, windLos);
         }
     }
@@ -7230,7 +7460,7 @@ void GuerrillaParticleLight() {
     }
     if (lit && !g_particleLightLogged) {
         g_particleLightLogged = true;
-        rfa::Log("Particles: Guerrilla's particle light: %d emitters lit by the time of day's particle ambient (%.3f %.3f %.3f) times their own",
+        rfa::LogDetail("Particles: Guerrilla's particle light: %d emitters lit by the time of day's particle ambient (%.3f %.3f %.3f) times their own",
                  lit, light[0], light[1], light[2]);
     }
 }
@@ -7320,7 +7550,7 @@ void LoadGusts() {
             ++count;
         }
     }
-    rfa::Log("Gusts: %zu of Guerrilla's on %zu materials (gusts.txt); played ahead of the player in our worlds", count, g_gustMaterials.size());
+    rfa::LogDetail("Gusts: %zu of Guerrilla's on %zu materials (gusts.txt); played ahead of the player in our worlds", count, g_gustMaterials.size());
 }
 
 // The ground at a place as Guerrilla's gusts take it: false on a slope or where no ground is loaded; else the place
@@ -7768,7 +7998,7 @@ void StartRoadLog(ID3D11Device* device, ID3D11DeviceContext* context) {
     void** deviceTable = *reinterpret_cast<void***>(device);
     if (WrapSlot(deviceTable, kCreateVertexShaderSlot, &CreateVertexShaderNoted, &g_createVertexShader) &&
         WrapSlot(deviceTable, kCreateDeferredContextSlot, &CreateDeferredContextNoted, &g_createDeferredContext) && WrapContext(context))
-        rfa::Log("Road log: on (RoadLog=1); the terrain's constants are logged in our worlds");
+        rfa::LogDetail("Road log: on (RoadLog=1); the terrain's constants are logged in our worlds");
     else
         rfa::Log("Road log: could not wrap the device's methods; nothing logged");
 }
@@ -7778,7 +8008,7 @@ HRESULT WINAPI CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driver, HMODU
                             D3D_FEATURE_LEVEL* level, ID3D11DeviceContext** context) {
     const HRESULT result = g_createDevice(adapter, driver, software, flags, levels, levelCount, sdk, device, level, context);
     if (SUCCEEDED(result) && device && *device && context && *context) {
-        if (g_context) rfa::Log("Sky: the game made another Direct3D device; the sky uses the newest");
+        if (g_context) rfa::LogDetail("Sky: the game made another Direct3D device; the sky uses the newest");
         (*device)->AddRef();
         (*context)->AddRef();
         g_device = *device;
@@ -7848,7 +8078,58 @@ void MoreParticleRoom() {
     }
     const DWORD room = kParticlePool;
     if (rfa::PatchCode(reinterpret_cast<void*>(kParticlePoolSize), &room, sizeof(room)))
-        rfa::Log("Particles: room for %lu emitters (the game's %lu)", kParticlePool, kGameParticlePool);
+        rfa::LogDetail("Particles: room for %lu emitters (the game's %lu)", kParticlePool, kGameParticlePool);
+}
+
+// ---- Room for more script point pointers
+
+// Every object_mover (a building, a prop, a piece of one) holds a pointer for each script point of its chunk (the
+// chunk's script points: lights, effects, a kiosk's screen; the header's count at 0x180), taken as the mover is set up
+// (0x8D6B50 → 0x7AC230 → 0x7ABDD0) from one pool and given back as it goes (0x8D8660 → 0x7AC2B0); nothing else takes or
+// gives them. The pool (0x1A759A0) is made by a start-up initializer (0xF2C520: 0xCC9740 on it with the buffer
+// 0x19FEAB0, 0x3C00 bytes, its name, 0x3C0 allocations, 1, 0). Its allocations' 12-byte headers come from the buffer's
+// end (0xCC9830: +0x60 = count × 12), so 960 of them leave 3,840 bytes: 960 pointers for every loaded mover together.
+// Armageddon's own levels fit; Guerrilla's world, its buildings full of script points and its destruction, didn't
+// ("Ran out of script point pointers trying to allocate 2 of them. We may need to bump the limit.", on screen 3 s into
+// a Mayhem run, 2026-11-21). Guerrilla has no such pool. The mod makes it on a buffer of its own for 3,840 (the same
+// 16 bytes an allocation: its header and one pointer), replacing the initializer after checking its pushes; the
+// initializer registers the pool's atexit (0xDA6E01(0xF63E90)) as the game's did.
+constexpr DWORD kScriptPointPoolInit = 0xF2C520;
+constexpr DWORD kScriptPointPool = 0x1A759A0, kGameScriptPointBuffer = 0x19FEAB0, kScriptPointPoolName = 0xFB91DC;
+constexpr DWORD kGameScriptPointBytes = 0x3C00, kGameScriptPoints = 0x3C0, kScriptPoints = 3840;
+constexpr DWORD kScriptPointBytes = kScriptPoints * 16;  // the game's ratio: 12 bytes of header and a 4-byte pointer
+alignas(16) BYTE g_scriptPointBuffer[kScriptPointBytes];
+using PoolMakeFn = void*(__fastcall*)(void* pool, void* unused, void* buffer, DWORD bytes, const char* name, DWORD allocations, int a, int b);
+auto const ScriptPointPoolMake = reinterpret_cast<PoolMakeFn>(0xCC9740);
+auto const RegisterAtExit = reinterpret_cast<int(__cdecl*)(void (__cdecl*)())>(0xDA6E01);
+constexpr DWORD kScriptPointPoolAtExit = 0xF63E90;
+
+void __cdecl MakeScriptPointPool() {
+    ScriptPointPoolMake(reinterpret_cast<void*>(kScriptPointPool), nullptr, g_scriptPointBuffer, kScriptPointBytes,
+                        reinterpret_cast<const char*>(kScriptPointPoolName), kScriptPoints, 1, 0);
+    RegisterAtExit(reinterpret_cast<void (__cdecl*)()>(kScriptPointPoolAtExit));
+}
+
+void MoreScriptPointRoom() {
+    // Its pushes: 68 C0 03 00 00 (0x3C0) at +7, 68 00 3C 00 00 (0x3C00) at +0x11, 68 B0 EA 9F 01 (the buffer) at +0x16.
+    const BYTE* code = reinterpret_cast<const BYTE*>(kScriptPointPoolInit);
+    const bool asExpected = code[0] == 0x55 && code[7] == 0x68 && rfa::CodeValue(kScriptPointPoolInit + 8) == kGameScriptPoints &&
+                            code[0x11] == 0x68 && rfa::CodeValue(kScriptPointPoolInit + 0x12) == kGameScriptPointBytes && code[0x16] == 0x68 &&
+                            rfa::CodeValue(kScriptPointPoolInit + 0x17) == kGameScriptPointBuffer;
+    if (!asExpected) {
+        rfa::Log("Script points: the movers' pointer pool's initializer isn't as expected; the game keeps its %lu", kGameScriptPoints);
+        return;
+    }
+    // The pool is a static object, all zero until its initializer runs; the initializer sets its buffer at +0x44 (0xCC9830).
+    // Set already: the start-up initializers ran before the mods, and the replacement would never be called.
+    if (*reinterpret_cast<const DWORD*>(kScriptPointPool + 0x44) != 0) {
+        rfa::Log("Script points: the movers' pointer pool was made already (its buffer 0x%08lX); the game keeps its %lu",
+                 *reinterpret_cast<const DWORD*>(kScriptPointPool + 0x44), kGameScriptPoints);
+        return;
+    }
+    if (rfa::ReplaceFunction(kScriptPointPoolInit, reinterpret_cast<const void*>(&MakeScriptPointPool)))
+        rfa::LogDetail("Script points: room for %lu of the movers' script point pointers (the game's %lu)", kScriptPoints, kGameScriptPoints);
+    else rfa::Log("Script points: couldn't replace the movers' pointer pool's initializer; the game keeps its %lu", kGameScriptPoints);
 }
 
 // ---- Room for more effect templates
@@ -7912,7 +8193,7 @@ void __cdecl MemoryPoolsSetUp() {
             rfa::Log("Effect pools: %s holds %lu, not the game's %lu; left as it is", room.name, count, room.game);
         else {
             count = room.ours;
-            rfa::Log("Effect pools: %s holds %lu (the game's %lu)", room.name, room.ours, room.game);
+            rfa::LogDetail("Effect pools: %s holds %lu (the game's %lu)", room.name, room.ours, room.game);
         }
     }
     g_memoryPoolsSetUp();
@@ -7977,7 +8258,7 @@ void MoreEmitterRoom() {
         rfa::Log("Effect emitters: could not change the game's code; it keeps its %lu", kGameEmitters);
         return;
     }
-    rfa::Log("Effect emitters: the game holds %lu (its own %lu)", kEmitters, kGameEmitters);
+    rfa::LogDetail("Effect emitters: the game holds %lu (its own %lu)", kEmitters, kGameEmitters);
 }
 
 // ---- Guerrilla's material events
@@ -8109,7 +8390,7 @@ void LoadMaterialEvents() {
         }
     }
     if (g_materialEvents.empty()) {
-        rfa::Log("Material events: material_events.txt names no material; the pieces play Armageddon's own");
+        rfa::LogDetail("Material events: material_events.txt names no material; the pieces play Armageddon's own");
         return;
     }
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14};
@@ -8121,7 +8402,7 @@ void LoadMaterialEvents() {
         return;
     }
     g_materialEventsOn = true;
-    rfa::Log("Material events: %zu of Guerrilla's materials, %zu rows; in the Guerrilla world the pieces play Guerrilla's effects and sounds",
+    rfa::LogDetail("Material events: %zu of Guerrilla's materials, %zu rows; in the Guerrilla world the pieces play Guerrilla's effects and sounds",
              g_materialEvents.size(), rows);
 }
 
@@ -8194,7 +8475,7 @@ void NumberWheelEffects() {
         m.rearNumber = m.rear.empty() ? -1 : EffectNumber(m.rear.c_str());
         if (m.frontNumber >= 0 || m.rearNumber >= 0) ++dusty;
     }
-    rfa::Log("Wheel effects: %zu of Guerrilla's %zu materials found among the game's (%zu with dust of their own)%s%s; the wheel table's "
+    rfa::LogDetail("Wheel effects: %zu of Guerrilla's %zu materials found among the game's (%zu with dust of their own)%s%s; the wheel table's "
              "front %d, rear %d, skid %d, peel %d, brake %d", found, g_wheelMaterials.size(), dusty, missing.empty() ? "" : "; not found: ",
              missing.c_str(), g_wheelTableNumbers[0], g_wheelTableNumbers[1], g_wheelTableNumbers[2], g_wheelTableNumbers[3], g_wheelTableNumbers[4]);
 }
@@ -8206,7 +8487,7 @@ void __cdecl WheelEffects(void* car) {
         return;
     }
     if (!g_wheelNumbered) NumberWheelEffects();
-    RFA_LOG_FIRST(4, "Wheel effects: the wheels play Guerrilla's dust, braking and skids in world \"%s\"", WorldName());
+    RFA_LOG_DETAIL_FIRST(4, "Wheel effects: the wheels play Guerrilla's dust, braking and skids in world \"%s\"", WorldName());
     int* table = reinterpret_cast<int*>(kWheelTableEffects);
     int tableBefore[kWheelTableFields];
     for (int i = 0; i < kWheelTableFields; ++i) {
@@ -8298,7 +8579,7 @@ void LoadWheelEffects() {
     std::string table;
     for (int i = 0; i < kWheelTableFields; ++i)
         table += std::string(i ? ", " : "") + kWheelTableFieldNames[i] + " " + (g_wheelTableNames[i].empty() ? "none" : g_wheelTableNames[i]);
-    rfa::Log("Wheel effects: Guerrilla's for %zu materials and the wheel table (%s); in our worlds the wheels play them", g_wheelMaterials.size(),
+    rfa::LogDetail("Wheel effects: Guerrilla's for %zu materials and the wheel table (%s); in our worlds the wheels play them", g_wheelMaterials.size(),
              table.c_str());
 }
 
@@ -8345,7 +8626,7 @@ void MoreMaterialEffectRoom() {
         rfa::Log("Material effects: could not change the game's code; it keeps its %lu bytes", kGameMaterialEffectRoom);
         return;
     }
-    rfa::Log("Material effects: the pool holds %lu bytes (the game's %lu)", kMaterialEffectRoom, kGameMaterialEffectRoom);
+    rfa::LogDetail("Material effects: the pool holds %lu bytes (the game's %lu)", kMaterialEffectRoom, kGameMaterialEffectRoom);
 }
 
 // ---- Room for what the game draws one by one
@@ -8416,7 +8697,7 @@ void MoreUnbatchedRenderableRoom() {
             rfa::Log("Unbatched renderables: could not change the game's code at 0x%08lX, nor put back what was changed before it", values[i].at);
         return;
     }
-    rfa::Log("Unbatched renderables: %lu a frame (the game's %lu), in the mod's own list", kUnbatchedRenderables, kGameUnbatchedRenderables);
+    rfa::LogDetail("Unbatched renderables: %lu a frame (the game's %lu), in the mod's own list", kUnbatchedRenderables, kGameUnbatchedRenderables);
 }
 
 // ---- Room in the sound engine's own memory
@@ -8453,7 +8734,7 @@ void MoreSoundEngineRoom() {
         rfa::Log("Sound engine memory: could not change the game's code; it keeps its %lu bytes", kGameSoundEngineMemory);
         return;
     }
-    rfa::Log("Sound engine memory: %lu bytes (the game's %lu)", kSoundEngineMemory, kGameSoundEngineMemory);
+    rfa::LogDetail("Sound engine memory: %lu bytes (the game's %lu)", kSoundEngineMemory, kGameSoundEngineMemory);
 }
 
 // ---- Room for the sound engine's streams
@@ -8510,7 +8791,7 @@ void MoreStreamRoom() {
                  kGameStreamMemory, back ? kGameStreamRecords : kStreamRecords);
         return;
     }
-    rfa::Log("Stream memory: %lu bytes for the streams' pieces (the game's %lu: %lu pieces where it had %lu) and %lu for their records (the game's %lu)",
+    rfa::LogDetail("Stream memory: %lu bytes for the streams' pieces (the game's %lu: %lu pieces where it had %lu) and %lu for their records (the game's %lu)",
              kStreamMemory, kGameStreamMemory, kStreamMemory / 0x6800, kGameStreamMemory / 0x6800, kStreamRecords, kGameStreamRecords);
 }
 
@@ -8531,7 +8812,7 @@ constexpr float kGameStreamLookAheadMs = 380.0f, kStreamLookAheadMs = 1000.0f;
 
 void MoreStreamLookAhead() {
     if (*reinterpret_cast<const DWORD*>(kStreamMemoryInUse) != 0) {
-        rfa::Log("Stream look-ahead: the game's audio has already started; it keeps Wwise's %.0f ms", kGameStreamLookAheadMs);
+        rfa::LogDetail("Stream look-ahead: the game's audio has already started; it keeps Wwise's %.0f ms", kGameStreamLookAheadMs);
         return;
     }
     if (*reinterpret_cast<const float*>(kStreamLookAheadValue) != kGameStreamLookAheadMs) {
@@ -8542,7 +8823,7 @@ void MoreStreamLookAhead() {
         rfa::Log("Stream look-ahead: could not change Wwise's value; it keeps %.0f ms", kGameStreamLookAheadMs);
         return;
     }
-    rfa::Log("Stream look-ahead: Wwise reads each stream %.0f ms ahead (its default %.0f ms)", kStreamLookAheadMs, kGameStreamLookAheadMs);
+    rfa::LogDetail("Stream look-ahead: Wwise reads each stream %.0f ms ahead (its default %.0f ms)", kStreamLookAheadMs, kGameStreamLookAheadMs);
 }
 
 // ---- Room in the game's audio pool, and so in its cache of stream pieces
@@ -8582,7 +8863,7 @@ void MoreAudioPool() {
                  back ? "" : " (one of its two values could not be put back)");
         return;
     }
-    rfa::Log("Audio pool: %lu bytes (the game's %lu); what the banks' slots leave of it is the cache of stream pieces", kAudioPoolSize, kGameAudioPool);
+    rfa::LogDetail("Audio pool: %lu bytes (the game's %lu); what the banks' slots leave of it is the cache of stream pieces", kAudioPoolSize, kGameAudioPool);
 }
 
 // ---- A sound's distance, given to Wwise whenever it has changed
@@ -8654,7 +8935,7 @@ void InstallSoundDistances() {
         rfa::Log("Sound distances: could not change the game's code; a sound's distance goes to Wwise by the game's own rule");
         return;
     }
-    rfa::Log("Sound distances: each sound's distance goes to Wwise once it differs by more than %.2f m from the one last sent (the game: from the one "
+    rfa::LogDetail("Sound distances: each sound's distance goes to Wwise once it differs by more than %.2f m from the one last sent (the game: from the one "
              "33 ms before), and every %lu ms in any case",
              kDistanceStep, kDistanceResendMs);
 }
@@ -8734,7 +9015,7 @@ void MusicTestCommand() {
     if (g_musicTestPlaying >= 0) {
         const MusicTestClip& before = g_musicTestClips[g_musicTestPlaying];
         const bool playing = MusicTestPlaying();
-        rfa::Log("Music test: clip %d (%.1f s long) %s %.1f s after its start", g_musicTestPlaying + 1, before.seconds,
+        rfa::LogDetail("Music test: clip %d (%.1f s long) %s %.1f s after its start", g_musicTestPlaying + 1, before.seconds,
                  playing ? "was still playing" : "had ended", (GetTickCount() - g_musicTestStarted) / 1000.0f);
         if (playing) PlaySoundEvent(g_musicTestObject, WwiseNameId(before.stopEvent.c_str()), nullptr, 0, 0);
     }
@@ -8745,7 +9026,7 @@ void MusicTestCommand() {
     const MusicTestClip& clip = g_musicTestClips[g_musicTestNext];
     DWORD handle = 0;
     const int result = g_musicTestObject ? PlaySoundEvent(g_musicTestObject, WwiseNameId(clip.event.c_str()), &handle, 0, 0) : -1;
-    rfa::Log("Music test: clip %d of %u, event %s (bank %s; %s; %d Hz, %d channels, %.1f s): %s (sound object 0x%08lX, handle %lu, result %d)",
+    rfa::LogDetail("Music test: clip %d of %u, event %s (bank %s; %s; %d Hz, %d channels, %.1f s): %s (sound object 0x%08lX, handle %lu, result %d)",
              g_musicTestNext + 1, static_cast<unsigned>(g_musicTestClips.size()), clip.event.c_str(), clip.bank.c_str(), g_musicTestFormat.c_str(), clip.rate,
              clip.channels, clip.seconds,
              handle ? "STARTED" : "NOT STARTED (the event or its bank isn't loaded, or the game gave no sound object)", g_musicTestObject, handle, result);
@@ -8765,11 +9046,11 @@ void MusicTestFrame() {
         using RegisterCommandFn = void*(__fastcall*)(void* command, void* unused, const char* name, const char* description, int type, void (*handler)());
         reinterpret_cast<RegisterCommandFn>(0xC7BD70)(g_musicTestCommand, nullptr, "rfg_music_test",
                                                        "Plays the next clip of the music format test (Guerrilla's ambience as Wwise ADPCM)", 3, &MusicTestCommand);
-        rfa::Log("Music test: console command rfg_music_test added");
+        rfa::LogDetail("Music test: console command rfg_music_test added");
     }
     if (g_musicTestChecked || GetTickCount() - g_musicTestStarted < 2000) return;
     g_musicTestChecked = true;
-    rfa::Log("Music test: two seconds on, clip %d %s", g_musicTestPlaying + 1,
+    rfa::LogDetail("Music test: two seconds on, clip %d %s", g_musicTestPlaying + 1,
              MusicTestPlaying() ? "is still playing: Wwise took the file and is decoding it"
                                 : "has ended already: it did not play (Wwise's reason, if it gave one, is in a \"Wwise:\" line)");
 }
@@ -8820,7 +9101,7 @@ void LogSoundLimit() {
         rfa::Log("Sounds at once: the override of init.bnk_pc has no bus 0x%08lX; the limit isn't known", kTopSoundBus);
         return;
     }
-    rfa::Log("Sounds at once: %u (the game's own %lu), the top bus's limit, and %u of the effects' one-shots (the game's own %lu), in the override of init.bnk_pc",
+    rfa::LogDetail("Sounds at once: %u (the game's own %lu), the top bus's limit, and %u of the effects' one-shots (the game's own %lu), in the override of init.bnk_pc",
              top, kGameSoundsAtOnce, effects, kGameEffectSoundsAtOnce);
 }
 
@@ -9051,7 +9332,7 @@ void MoreEffectRoom() {
             return;
         }
     }
-    rfa::Log("Effects: the two name lookups (effects, effect files) hold %d names each (the game's 1225)", kLookupPlaces);
+    rfa::LogDetail("Effects: the two name lookups (effects, effect files) hold %d names each (the game's 1225)", kLookupPlaces);
     for (DWORD i = 0; i < kMaxEffects; ++i) BuildEffect(g_effects + i * kEffectSize, nullptr);
     rfa::MoveTable("Effects", kEffects, kEffectSize, kGameMaxEffects, kEffectReferences, kEffectLimits, g_effects, kMaxEffects);
 }
@@ -9114,7 +9395,7 @@ bool __fastcall LoadShaders(void* library, void* unused) {
         }
         ++count;
     }
-    if (count > 0) rfa::Log("Guerrilla's material shaders: %d files loaded", count);
+    if (count > 0) rfa::LogDetail("Guerrilla's material shaders: %d files loaded", count);
     return loaded;
 }
 
@@ -9235,7 +9516,7 @@ bool GroundUnder(float x, float z, float& height, GrowthVector& normal, int& ove
 // middle: its middle.
 void __cdecl RandomlyPlace(GrowthCell** cells, int count, uint8_t* zone, GrowthLayer** layer, const uint8_t* record,
                            const float* low, const float* high, const GrowthVector* middle) {
-    RFA_LOG_FIRST(1, "Undergrowth: pieces scattered on the ground (the game's random scatter replaced)");
+    RFA_LOG_DETAIL_FIRST(1, "Undergrowth: pieces scattered on the ground (the game's random scatter replaced)");
     const bool logThis = g_growthCallsLogged < 12;
     int kept = 0, firstModel = -1, withoutGround = 0, underRock = 0;
     GrowthVector firstAt{};
@@ -9593,7 +9874,7 @@ void GlassUpdate() {
     } else {
         g_glassLod = g_glassLodBefore;
     }
-    rfa::Log("Glass: %s shatter (impact force %.0f, rotation %.0f-%.0f, damping %.0f, scale %.0f, fewer shards %s)", ours ? "Guerrilla's" : "the game's own",
+    rfa::LogDetail("Glass: %s shatter (impact force %.0f, rotation %.0f-%.0f, damping %.0f, scale %.0f, fewer shards %s)", ours ? "Guerrilla's" : "the game's own",
              *reinterpret_cast<const float*>(kGlassSettings[0].address), *reinterpret_cast<const float*>(kGlassSettings[1].address),
              *reinterpret_cast<const float*>(kGlassSettings[2].address), *reinterpret_cast<const float*>(kGlassSettings[3].address),
              *reinterpret_cast<const float*>(kGlassSettings[4].address), g_glassLod ? "on" : "off");
@@ -10248,7 +10529,7 @@ void SetGuerrillaValues(bool ours, const char* when) {
         ++changed;
         rfa::LogDetail("Buildings: %s's %s %.10g (%s; the game's own %.10g)", v.record, v.field, to, ours ? "Guerrilla's" : "the game's own back", v.game);
     }
-    rfa::Log("Buildings: %s (%d values, %s)", ours ? "Guerrilla's materials and load in this world" : "the game's own materials and load again", changed, when);
+    rfa::LogDetail("Buildings: %s (%d values, %s)", ours ? "Guerrilla's materials and load in this world" : "the game's own materials and load again", changed, when);
 }
 
 // On entering or leaving our worlds (whenever the game is about to work something out from these values,
@@ -10269,7 +10550,7 @@ void BuildingsSync(const char* when) {
         const bool anchors = world && g_anchorsSetting && g_createWorldAnchor;
         if (anchors != g_anchorsOurs) {
             g_anchorsOurs = anchors;
-            rfa::Log(anchors ? "Buildings: pieces on the ground hold to it as Guerrilla's (GuerrillaAnchors=1; %s)"
+            rfa::LogDetail(anchors ? "Buildings: pieces on the ground hold to it as Guerrilla's (GuerrillaAnchors=1; %s)"
                              : "Buildings: pieces on the ground hold to it as the game's own (%s)", when);
         }
         const bool materials = world && g_materialsSetting;
@@ -10686,7 +10967,7 @@ constexpr float kGuerrillaMeleeBuildingScale = 100.0f;
 DWORD __fastcall PropDamaged(BYTE* prop, void* unused, float damage, int kind, const float* a, const float* b, BYTE* attacker, DWORD handle,
                              float scale, int x, int y, int z) {
     if (kind == kMeleeDamageKind && InOurWorld()) {
-        RFA_LOG_FIRST(1, "Props: a melee hit on a loose prop takes Guerrilla's figure, the table's divided by %.0f (%.0f for %.0f)",
+        RFA_LOG_DETAIL_FIRST(1, "Props: a melee hit on a loose prop takes Guerrilla's figure, the table's divided by %.0f (%.0f for %.0f)",
                       kGuerrillaMeleeBuildingScale, damage / kGuerrillaMeleeBuildingScale, damage);
         damage /= kGuerrillaMeleeBuildingScale;
     }
@@ -10727,7 +11008,7 @@ DWORD __fastcall PropDamaged(BYTE* prop, void* unused, float damage, int kind, c
 // When one of our worlds loads: PropLog= (0, off, unless set).
 void ReadPropLog() {
     g_propLog = rfa::ReadLogSwitch(L"GuerrillaWorld", L"PropLog") && g_propDamage;
-    if (g_propLog) rfa::Log("Props: hits and tips of the props near the player are logged (PropLog=1, at most %d lines)", kPropLines);
+    if (g_propLog) rfa::LogDetail("Props: hits and tips of the props near the player are logged (PropLog=1, at most %d lines)", kPropLines);
 }
 
 // Each frame with PropLog=1 in our worlds: the hits' follow-ups, then a slice of the props for tips.
@@ -10979,12 +11260,12 @@ void BuildingsSettingsChanged() {
         g_anchorsSetting = anchors;
         g_materialsSetting = materials;
         g_destructionLog = log;
-        rfa::Log("Buildings: rfa_mods.ini saved: GuerrillaAnchors=%d, GuerrillaMaterials=%d, DestructionLog=%d", anchors ? 1 : 0, materials ? 1 : 0, log ? 1 : 0);
+        rfa::LogDetail("Buildings: rfa_mods.ini saved: GuerrillaAnchors=%d, GuerrillaMaterials=%d, DestructionLog=%d", anchors ? 1 : 0, materials ? 1 : 0, log ? 1 : 0);
         if (g_buildingsWorld) {
             const bool anchorsOurs = anchors && g_createWorldAnchor;
             if (anchorsOurs != g_anchorsOurs) {
                 g_anchorsOurs = anchorsOurs;
-                rfa::Log(anchorsOurs ? "Buildings: pieces anchored from now on hold to the ground as Guerrilla's (`level` again anchors every building so)"
+                rfa::LogDetail(anchorsOurs ? "Buildings: pieces anchored from now on hold to the ground as Guerrilla's (`level` again anchors every building so)"
                                      : "Buildings: pieces anchored from now on hold to the ground as the game's own (`level` again anchors every building so)");
             }
             if (materials != g_materialsOurs) {
@@ -11329,7 +11610,7 @@ void KillMovedObject(BYTE* mover, DWORD handle) {
     const BYTE* levelObject = MoverLevelObject(mover);
     const int hitpoints = levelObject ? *reinterpret_cast<const int*>(levelObject + kLevelObjectHitpoints) : 0;
     if (hitpoints <= 0 || hitpoints > 10000000) {
-        RFA_LOG_FIRST(4, "Effects: %08lX moved, but its level object's hit points read %d; left alive", handle, hitpoints);
+        RFA_LOG_DETAIL_FIRST(4, "Effects: %08lX moved, but its level object's hit points read %d; left alive", handle, hitpoints);
         return;
     }
     static const float kNoDirection[3] = {0, 0, 0};
@@ -11537,7 +11818,7 @@ bool __cdecl SetMoverCallbacks(BYTE* mover, bool flag) {
         if (streamedIn != &MoverStreamedIn) g_moverCallbacks[watched].streamedIn = streamedIn;
         if (streamedIn) streamedIn = &MoverStreamedIn;
         else CustomObjectStreamedIn(watched);  // (no stream-in callback of the game's: its watch begins now)
-        RFA_LOG_FIRST(1, "Effects: Guerrilla's smokestacks, vents, antennas, PA speakers, comms, fire barrels, power cores and computers act as "
+        RFA_LOG_DETAIL_FIRST(1, "Effects: Guerrilla's smokestacks, vents, antennas, PA speakers, comms, fire barrels, power cores and computers act as "
                          "Guerrilla's in our worlds");
     }
     auto& damaged = *reinterpret_cast<MoverCallbackFn*>(mover + kMoverDamagedCallback);
@@ -11552,7 +11833,7 @@ bool __cdecl SetMoverCallbacks(BYTE* mover, bool flag) {
     // A turbine made again (its zone loaded again): its motor may be given its damage again.
     if (const int i = TurbineOf(handle, false); i >= 0)
         g_motorsKilled.erase(std::remove(g_motorsKilled.begin(), g_motorsKilled.end(), g_turbines[i].motor), g_motorsKilled.end());
-    RFA_LOG_FIRST(1, "Buildings: their damaged and destroyed callbacks watched in our worlds (Guerrilla's turbine code, the minimap's buildings)");
+    RFA_LOG_DETAIL_FIRST(1, "Buildings: their damaged and destroyed callbacks watched in our worlds (Guerrilla's turbine code, the minimap's buildings)");
     return result;
 }
 
@@ -11637,7 +11918,7 @@ void InstallTurbines() {
     }
     if (g_turbines.empty()) rfa::Log("Wind turbines: no mods\\guerrilla_world\\turbines.txt (build the world); Guerrilla's turbine code is off");
     else
-        rfa::Log("Wind turbines: %u read from mods\\guerrilla_world\\turbines.txt; Guerrilla's turbine code plays on them in our worlds",
+        rfa::LogDetail("Wind turbines: %u read from mods\\guerrilla_world\\turbines.txt; Guerrilla's turbine code plays on them in our worlds",
                  static_cast<unsigned>(g_turbines.size()));
 }
 
@@ -11716,7 +11997,7 @@ void InstallPropBalance() {
             g_generalMoverBody = reinterpret_cast<GeneralMoverBodyFn>(
                 rfa::HookFunction(kGeneralMoverBody, kGeneralMoverBodyPrologue, reinterpret_cast<void*>(&GeneralMoverBody)));
     }
-    if (g_generalMoverBody) rfa::Log("Props: in our worlds a loose prop's balance point is its origin, as Guerrilla's (Armageddon's: its box's middle)");
+    if (g_generalMoverBody) rfa::LogDetail("Props: in our worlds a loose prop's balance point is its origin, as Guerrilla's (Armageddon's: its box's middle)");
     else rfa::Log("Props: could not wrap the making of a prop's body (the game's code isn't as expected); props balance as Armageddon's");
 }
 
@@ -11771,7 +12052,7 @@ void LoadBuildingList() {
         }
     }
     fclose(file);
-    rfa::Log("Buildings: %u read from mods\\guerrilla_world\\buildings.txt, for Guerrilla's minimap", static_cast<unsigned>(g_buildingList.size()));
+    rfa::LogDetail("Buildings: %u read from mods\\guerrilla_world\\buildings.txt, for Guerrilla's minimap", static_cast<unsigned>(g_buildingList.size()));
 }
 
 void BuildingDamaged(const MoverEvent& event) {
@@ -11991,7 +12272,7 @@ void __cdecl LadderSlideSound(BYTE* human) {
     land = ours ? kGuerrillaSlideRelease : g_armageddonSlideLand;
     if (ours && !g_guerrillaSlideLogged) {
         g_guerrillaSlideLogged = true;
-        rfa::Log("Ladders: a slide down a ladder plays Guerrilla's RFG_MOV_FOLEY_LADDER_LOOP_01 and, landing, _RELEASE_01 (in place of the game's "
+        rfa::LogDetail("Ladders: a slide down a ladder plays Guerrilla's RFG_MOV_FOLEY_LADDER_LOOP_01 and, landing, _RELEASE_01 (in place of the game's "
                  "events %08lX and %08lX)", g_armageddonSlideLoop, g_armageddonSlideLand);
     }
     g_ladderSlideSound(human);
@@ -12007,7 +12288,7 @@ void InstallLadders() {
         g_ladderSlideSound = reinterpret_cast<LadderSlideSoundFn>(
             rfa::HookFunction(kLadderSlideSound, kLadderSlideSoundPrologue, reinterpret_cast<void*>(&LadderSlideSound)));
     if (g_ladderBuildingDamaged && g_ladderSlideSound)
-        rfa::Log("Ladders: in our worlds a damaged building's ladder goes by Guerrilla's rule (off past 2.5%% or moving), and a slide down one sounds as Guerrilla's");
+        rfa::LogDetail("Ladders: in our worlds a damaged building's ladder goes by Guerrilla's rule (off past 2.5%% or moving), and a slide down one sounds as Guerrilla's");
     else
         rfa::Log("Ladders: the game's code isn't as expected (%s%s); Armageddon's own there", g_ladderBuildingDamaged ? "" : "the damaged building's callback ",
                  g_ladderSlideSound ? "" : "the slide's sound");
@@ -12016,7 +12297,7 @@ void InstallLadders() {
 }  // namespace
 
 void guerrilla_world::Init() {
-    if (rfa::ReadLogSwitch(L"GuerrillaWorld")) rfa::Log("Log=1: routine lines and the diagnoses (\"[guerrilla_world:log]\") are on");
+    if (rfa::ReadLogSwitch(L"GuerrillaWorld")) rfa::LogDetail("Log=1: routine lines and the diagnoses (\"[guerrilla_world:log]\") are on");
     if (!rfa::game::IsSupportedBuild()) {
         rfa::Log("Not the publicbeta build; nothing to do");
         return;
@@ -12028,6 +12309,7 @@ void guerrilla_world::Init() {
     MoreParticleRoom();
     MoreEffectTemplateRoom();
     MoreEmitterRoom();
+    MoreScriptPointRoom();
     MoreMaterialEffectRoom();
     LoadMaterialEvents();
     LoadWheelEffects();
@@ -12075,6 +12357,7 @@ void guerrilla_world::Init() {
     ReadSunCorona();
     ReadSharpen();
     ReadSunShadows();
+    ReadCloudShadows();
     ReadParticles();
     ReadParticleFog();
     ReadDust();
@@ -12083,7 +12366,7 @@ void guerrilla_world::Init() {
     if (g_zoneWidth > 0) {
         g_zoneSize = reinterpret_cast<ZoneSizeFn>(rfa::HookFunction(kZoneSize, kZoneSizePrologue, reinterpret_cast<void*>(&ZoneSize)));
         if (g_zoneSize) {
-            rfa::Log("Those worlds' zones are %.0f m wide (ZoneSize=)", g_zoneWidth);
+            rfa::LogDetail("Those worlds' zones are %.0f m wide (ZoneSize=)", g_zoneWidth);
             WidenWorld();
         } else {
             rfa::Log("Could not hook the game's zone size; ZoneSize= does nothing (and a world built for it won't load right)");
@@ -12137,7 +12420,7 @@ void guerrilla_world::Init() {
         if (armageddonCuts) file += L"explosions_armageddon_cuts.xtbl";
         else for (const char* c = table.name; *c; ++c) file += static_cast<wchar_t>(*c);
         if (strcmp(table.name, "explosions.xtbl") == 0)
-            rfa::Log(armageddonCuts ? "Explosions: they cut buildings by Armageddon's radii for the same names (GuerrillaExplosions=0)"
+            rfa::LogDetail(armageddonCuts ? "Explosions: they cut buildings by Armageddon's radii for the same names (GuerrillaExplosions=0)"
                                     : "Explosions: they cut buildings by Guerrilla's own radii, if the world was built with them (GuerrillaExplosions=1)");
         if (ReadWholeFile(file, table.bytes) && !table.bytes.empty()) {
             table.bytes.push_back(0);
@@ -12171,7 +12454,7 @@ void guerrilla_world::Init() {
         if (!g_playEffect || !g_makeObject) rfa::Log("Could not watch the game's effects playing (the log won't say why one doesn't)");
     }
     if (!g_skyOn && !g_lightOn && g_fog <= 0 && g_clockSpeed <= 0) {
-        rfa::Log("Guerrilla's sky, light, fog and clock are off (Sky=0, Light=0, Fog=0, ClockSpeed=0)");
+        rfa::LogDetail("Guerrilla's sky, light, fog and clock are off (Sky=0, Light=0, Fog=0, ClockSpeed=0)");
         return;
     }
     if ((g_skyOn || g_lightOn || g_fog > 0) &&
@@ -12245,14 +12528,22 @@ void guerrilla_world::Init() {
         rfa::Log("Could not hook the game's sky step; no sky, clock or setting changes while playing");
         return;
     }
+    g_waitForRender = reinterpret_cast<WaitForRenderFn>(
+        rfa::HookFunction(kWaitForRender, kWaitForRenderPrologue, reinterpret_cast<void*>(&WaitForRender)));
+    g_frameCameraHooked = g_waitForRender != nullptr;
+    if (g_frameCameraHooked)
+        rfa::LogDetail("Camera: the mod's draws use the camera as the main thread leaves it after waiting for the frame before (0x527BE0)");
+    else
+        rfa::Log("Could not hook the main thread's wait for the render thread (0x527BE0); the sky and the mod's other draws read the "
+                 "live camera, which can be a frame ahead of the world");
     if (g_skyOn)
-        rfa::Log(g_cloudsOn ? "Guerrilla's sky and clouds are drawn in the worlds named by Worlds= in [GuerrillaWorld]"
+        rfa::LogDetail(g_cloudsOn ? "Guerrilla's sky and clouds are drawn in the worlds named by Worlds= in [GuerrillaWorld]"
                             : "Guerrilla's sky is drawn (no clouds) in the worlds named by Worlds= in [GuerrillaWorld]");
-    if (g_lightOn) rfa::Log("The sky's light and the sun light those worlds (Light=; Ambient=%.3g, Sun=%.3g)", g_ambient, g_sun);
-    if (!g_fogFailed) rfa::Log("Guerrilla's fog is drawn in those worlds (Fog=%.3g)", g_fog);
+    if (g_lightOn) rfa::LogDetail("The sky's light and the sun light those worlds (Light=; Ambient=%.3g, Sun=%.3g)", g_ambient, g_sun);
+    if (!g_fogFailed) rfa::LogDetail("Guerrilla's fog is drawn in those worlds (Fog=%.3g)", g_fog);
     if (!g_toneMappingFailed)
-        rfa::Log(g_toneMapping ? "Guerrilla's tone mapping draws those worlds' picture (ToneMapping=1, Exposure=%.3g)"
+        rfa::LogDetail(g_toneMapping ? "Guerrilla's tone mapping draws those worlds' picture (ToneMapping=1, Exposure=%.3g)"
                                : "Armageddon's own tone mapping in those worlds (ToneMapping=0)", g_exposure);
-    if (g_clockSpeed > 0) rfa::Log("The game clock runs at %.3g game seconds a second in those worlds (ClockSpeed=)", g_clockSpeed);
-    if (g_streamRadius > 0) rfa::Log("Those worlds' zones stay loaded %.0f m around the player (StreamRadius=)", g_streamRadius);
+    if (g_clockSpeed > 0) rfa::LogDetail("The game clock runs at %.3g game seconds a second in those worlds (ClockSpeed=)", g_clockSpeed);
+    if (g_streamRadius > 0) rfa::LogDetail("Those worlds' zones stay loaded %.0f m around the player (StreamRadius=)", g_streamRadius);
 }

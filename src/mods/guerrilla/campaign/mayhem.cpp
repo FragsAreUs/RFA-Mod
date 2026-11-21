@@ -148,7 +148,7 @@ void LoadNumbers() {
         g_timePerScore = entry.Number("Time_per_score", g_timePerScore);
         g_destroyBonus = entry.Number("Destroy_bonus", g_destroyBonus);
     }
-    rfa::Log("Mayhem: %u levels from %.0f million, %.0f ms of time a million, timer %d-%d ms (%d ms to begin)",
+    rfa::LogDetail("Mayhem: %u levels from %.0f million, %.0f ms of time a million, timer %d-%d ms (%d ms to begin)",
              static_cast<unsigned>(g_levels.size()), g_levels.empty() ? 0.0f : g_levels.front().threshold, g_timePerScore, g_minDuration, g_maxDuration,
              g_startDuration);
 }
@@ -179,7 +179,7 @@ void ReadValues() {
     if (g_valued.empty())
         rfa::Log("No building_values.txt (editor\\GuerrillaBuilder.exe build people writes it): mayhem prices every building by its size");
     else
-        rfa::Log("building_values.txt: %u buildings with a value of their own", static_cast<unsigned>(g_valued.size()));
+        rfa::LogDetail("building_values.txt: %u buildings with a value of their own", static_cast<unsigned>(g_valued.size()));
 }
 
 bool SamePlace(const Vector& a, const Vector& b) {
@@ -309,14 +309,14 @@ protected:
         timerSet_ = false;
         if (score_ > highScore_) highScore_ = score_;
         const int level = LevelReached();
-        rfa::Log("Mayhem: over at %.2f million (%d killed, %d vehicles, %d buildings, %d explosions): level %d%s", score_, humansKilled_,
+        rfa::LogDetail("Mayhem: over at %.2f million (%d killed, %d vehicles, %d buildings, %d explosions): level %d%s", score_, humansKilled_,
                  vehiclesDestroyed_, structuresDestroyed_, explosionsCaused_, level + 1, level >= 0 ? "" : ", no reward");
         if (level >= 0 && g_levels[static_cast<size_t>(level)].reward != 0.0f) liberation::ChangeMorale(g_levels[static_cast<size_t>(level)].reward, -1);
     }
 
     // kill 0x798C80: nothing given, everything cleared.
     void Kill() override {
-        if (IsActive()) rfa::Log("Mayhem: stopped at %.2f million (nothing given)", score_);
+        if (IsActive()) rfa::LogDetail("Mayhem: stopped at %.2f million (nothing given)", score_);
         Activity::End();
         ResetMayhem();
         timerSet_ = false;
@@ -328,7 +328,7 @@ private:
         AddTime(g_maxDuration);
         if (!StartFree()) return;
         messages::Tip("Mayhem", kTipMs);
-        rfa::Log("Mayhem: started at %.2f million", score_);
+        rfa::LogDetail("Mayhem: started at %.2f million", score_);
     }
 
     // add_time 0x76EB00.

@@ -86,7 +86,7 @@ void LoadBaseData() {
         data.allowGuerrillaReinforcement = row.Flag("guerrilla_reinforcement");
         g_baseData.push_back(data);
     }
-    rfa::Log("activity.xtbl: %u activities", static_cast<unsigned>(g_baseData.size()));
+    rfa::LogDetail("activity.xtbl: %u activities", static_cast<unsigned>(g_baseData.size()));
 }
 
 int ReadyCount() {
@@ -373,7 +373,7 @@ void Activity::RecordVictory(const Rewards& rewards) {
     // (kiosk_lines.xtbl's, by the activity's name; guerrilla_kiosks keeps them).
     if (data_)
         if (const int unlocked = GuerrillaKiosks_UnlockActivity(data_->name.c_str()); unlocked > 0)
-            rfa::Log("Activities: %s won: %d kiosk lines unlocked", data_->name.c_str(), unlocked);
+            rfa::LogDetail("Activities: %s won: %d kiosk lines unlocked", data_->name.c_str(), unlocked);
 }
 
 void Activity::RecordLoss() { ChangeInterface(Interface::Loss); }
@@ -602,7 +602,7 @@ void MissionActivated(int missionMode) {
     if (missionMode != kTutorial) return;
     // mission_activate_post_save: mayhem killed (when nothing disables it yet) and disabled for good (ADR_MISSION).
     if (Activity* mayhem = Get(Mayhem)) {
-        rfa::Log("Activities: the Tutorial mission switches mayhem off for good, as Guerrilla's");
+        rfa::LogDetail("Activities: the Tutorial mission switches mayhem off for good, as Guerrilla's");
         if (!mayhem->Disabled()) mayhem->KillNow();
         mayhem->Disable(ByMission);
     }
@@ -617,6 +617,7 @@ void Init() {
     Register(MakeMayhem());
     Register(MakeCarBomb());
     Register(MakeContinuousAttack());
+    Register(MakeAreaDefense());
     InitializeCriticalSection(&g_reportsLock);
     g_reportsLockMade = true;
     StartDamageFeeds();
@@ -747,10 +748,14 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     if (!guerrilla_campaign::Running()) return 0;
     g_shown = {};
     if (!Playing()) return 0;
-    // The running kind's: demolitions master's (briefing, corner panel, results), else Transporter's corner panel.
+    // The running kind's: demolitions master's (briefing, corner panel, results), else Transporter's corner panel, else
+    // area defense's (its corner panel, timer and a win's stamp).
     if (!activities::DemolitionsScreen(g_shown) || g_shown.screen == 0) {
         g_shown = {};
-        if (!activities::DeliveryScreen(g_shown) || g_shown.screen == 0) return 0;
+        if (!activities::DeliveryScreen(g_shown) || g_shown.screen == 0) {
+            g_shown = {};
+            if (!activities::AreaDefenseScreen(g_shown) || g_shown.screen == 0) return 0;
+        }
     }
     info->mode = static_cast<int>(g_shown.mode);
     info->screen = g_shown.screen;
@@ -844,7 +849,10 @@ void GuerrillaCampaign_ActivityChoose(int accept) {
 // The use prompt at the start of one of Guerrilla's activities: its icon (Guerrilla's use_object_icon; 1 the
 // default hand), 0 none. The use key itself the campaign reads.
 int GuerrillaCampaign_UsePrompt() {
-    return guerrilla_campaign::Running() && campaign::Playing() ? campaign::activities::DemolitionsUsePrompt() : 0;
+    using namespace campaign::activities;
+    if (!guerrilla_campaign::Running() || !campaign::Playing()) return 0;
+    if (const int icon = DemolitionsUsePrompt()) return icon;
+    return AreaDefenseUsePrompt();
 }
 
 // The rings on the minimap's ground now (render_regions): demolitions master's play area, green (50, 200, 50, 80),
@@ -853,6 +861,14 @@ int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most) {
     using namespace campaign;
     if (!rings || most <= 0 || !guerrilla_campaign::Running() || !Playing()) return 0;
     activities::Screen screen;
+    // Area defense's ring while it runs (render_regions RM 0x76A020: add_decal of CIRCLE_FILLED_OUTLINE, Area_radius,
+    // green 50, 200, 50, 150; it doesn't change while the player is out of it).
+    Vector areaCenter{};
+    float areaRadius = 0.0f;
+    if (activities::AreaDefenseRing(areaCenter, areaRadius)) {
+        rings[0] = {areaCenter.x, areaCenter.z, areaRadius, 50, 200, 50, 150, 0};
+        return 1;
+    }
     if (!activities::DemolitionsScreen(screen) || screen.screen != 2) {
         // Transporter's end (render_regions RM 0x76C780: add_decal of CIRCLE_FILLED_OUTLINE, End_Radius, 0, 0, 255, 192).
         activities::Screen delivery;
@@ -875,17 +891,19 @@ int GuerrillaCampaign_MapRings(GuerrillaCampaignMapRing* rings, int most) {
 // The player's death timer ran out (guerrilla_save, from Armageddon's game-over screen's start): Guerrilla's
 // gamestate_gp_simulate_frame (RM 0x7EDB49) gave the death to the running activity, in this order: demolitions master
 // (mode 11), raids (8, 9), house arrest (10), Collateral Damage (1), the Transporter (4), area defense (16); none: its
-// death screen. Of those the Transporter takes it here (demolitions master's still ends its run as the player dies: how
+// death screen. Of those the Transporter and area defense take it here (demolitions master's still ends its run as the player dies: how
 // Guerrilla brings its dead player back isn't found yet).
 int GuerrillaCampaign_TakePlayerDeath() {
     using namespace campaign;
     if (!guerrilla_campaign::Running() || !Playing()) return 0;
-    return activities::DeliveryTakePlayerDeath() ? 1 : 0;
+    return activities::DeliveryTakePlayerDeath() || activities::AreaDefenseTakePlayerDeath() ? 1 : 0;
 }
 
 // guerrilla_save's reload at a spot runs again: a retry's start is set up (delivery.cpp).
 void GuerrillaCampaign_ReloadedAtSpot() {
-    if (guerrilla_campaign::Running()) campaign::activities::DeliveryReopened("guerrilla_save's reload runs again");
+    if (!guerrilla_campaign::Running()) return;
+    campaign::activities::DeliveryReopened("guerrilla_save's reload runs again");
+    campaign::activities::AreaDefenseReopened("guerrilla_save's reload runs again");
 }
 
 // The campaign's map icons now (each activity's render_icons): a running Transporter's end point (RM 0x7977F0:

@@ -227,7 +227,7 @@ void DrawWindow() {
 
 }  // namespace
 
-void limits::Init() { rfa::Log("Limits window ready: open the console, then Limits in the bar at the bottom"); }
+void limits::Init() { rfa::LogDetail("Limits window ready: open the console, then Limits in the bar at the bottom"); }
 
 void limits::Menu(const RFAMenu* menu) {
     if (!rfa::menu::Use(menu)) return;

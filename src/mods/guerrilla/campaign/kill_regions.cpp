@@ -173,7 +173,7 @@ void Kill(BYTE* human, const Region& region, bool entering) {
         g_playerLoggedIn = region.handle;
         g_playerKilledAt = GameTime();
         g_playerAliveSaid = false;
-        rfa::Log("Kill region 0x%08X (%s, %s of Guerrilla's): the player came in at (%.0f, %.0f, %.0f)%s and was killed", region.handle, region.zone.c_str(), Kind(region),
+        rfa::LogDetail("Kill region 0x%08X (%s, %s of Guerrilla's): the player came in at (%.0f, %.0f, %.0f)%s and was killed", region.handle, region.zone.c_str(), Kind(region),
                  at->x, at->y, at->z, inVehicle ? " in a vehicle" : "");
         return;
     }
@@ -191,7 +191,7 @@ void Kill(BYTE* human, const Region& region, bool entering) {
 void Init() {
     g_on = rfa::IniInt(L"GuerrillaCampaign", L"KillRegions", 1) != 0;
     if (!g_on) {
-        rfa::Log("Guerrilla's kill regions are off (KillRegions=0 in [GuerrillaCampaign])");
+        rfa::LogDetail("Guerrilla's kill regions are off (KillRegions=0 in [GuerrillaCampaign])");
         return;
     }
     std::ifstream file(ModFolder() + L"\\kill_regions.txt");
@@ -235,7 +235,7 @@ void Enter() {
     g_said = true;
     int mines = 0;
     for (const Region& region : g_regions) mines += region.mine ? 1 : 0;
-    rfa::Log("kill_regions.txt: %u of Guerrilla's kill regions (%u pits, %d minefields); the mines' explosion %s %s", static_cast<unsigned>(g_regions.size()),
+    rfa::LogDetail("kill_regions.txt: %u of Guerrilla's kill regions (%u pits, %d minefields); the mines' explosion %s %s", static_cast<unsigned>(g_regions.size()),
              static_cast<unsigned>(g_regions.size()) - mines, mines, kMineExplosion, g_mineExplosion ? "found" : "NOT FOUND in explosions.xtbl (the minefields kill without it)");
 }
 
@@ -268,7 +268,7 @@ void Frame(bool activityRunning) {
     // A second after his death in one, the player should be dead: say so if he isn't.
     if (g_playerLoggedIn && player && !g_playerAliveSaid && GameTime() - g_playerKilledAt > 1000 && !IsDead(player)) {
         g_playerAliveSaid = true;
-        rfa::Log("Kill region 0x%08X: the player is STILL ALIVE a second after its kill (inside it: %s)", g_playerLoggedIn, playerInside ? "yes" : "no");
+        rfa::LogDetail("Kill region 0x%08X: the player is STILL ALIVE a second after its kill (inside it: %s)", g_playerLoggedIn, playerInside ? "yes" : "no");
     }
     if (!playerInside && GameTime() - g_playerKilledAt > 1000) g_playerLoggedIn = 0;
     // People gone from the world: forget them now and then.

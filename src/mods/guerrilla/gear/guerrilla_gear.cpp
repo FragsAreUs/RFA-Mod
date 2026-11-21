@@ -287,7 +287,7 @@ void MoreInventoryItems() {
             rfa::Log("Inventory items: could not change the game's size at 0x%08lX", at);
             return;
         }
-    rfa::Log("Inventory items: the game holds %lu (its own %lu): the table moved to 0x%08lX, %u places in its code changed",
+    rfa::LogDetail("Inventory items: the game holds %lu (its own %lu): the table moved to 0x%08lX, %u places in its code changed",
              kMaxInventoryItems, kGameMaxInventoryItems, moved,
              static_cast<unsigned>(std::size(kInventoryItemReferences) + std::size(kInventoryItemLimits)));
 }
@@ -357,7 +357,7 @@ void MoreTriggerRoom() {
             ++changed;
         }
     g_triggerPoolsMoved = true;
-    rfa::Log("Animation triggers: the pools moved to the mod's own (effects %lu, voice lines %lu, sounds %lu, props %lu, IKs %lu; "
+    rfa::LogDetail("Animation triggers: the pools moved to the mod's own (effects %lu, voice lines %lu, sounds %lu, props %lu, IKs %lu; "
              "the game's 64, 320, 960, 256, 1300), %u places in its code changed",
              g_triggerPools[0].room, g_triggerPools[1].room, g_triggerPools[2].room, g_triggerPools[3].room, g_triggerPools[4].room, changed);
 }
@@ -367,7 +367,7 @@ void LogTriggerPools() {
     for (const TriggerPool& pool : g_triggerPools) {
         const DWORD used = *reinterpret_cast<const DWORD*>(pool.count);
         const DWORD room = g_triggerPoolsMoved ? pool.room : pool.gameRoom;
-        rfa::Log("Animation triggers: %s %lu of %lu%s", pool.name, used, room,
+        rfa::LogDetail("Animation triggers: %s %lu of %lu%s", pool.name, used, room,
                  used > room ? ": MORE than the pool holds, the game's memory after it is spoilt (expect a crash)" : "");
     }
 }
@@ -483,7 +483,7 @@ DWORD MempoolRoom() {
 void MoreMapRoom() {
     DWORD& places = *reinterpret_cast<DWORD*>(kMapPlaces);
     if (places != kGameMapPlaces) {
-        rfa::Log("Animation map: the game gives it %lu places, not its %lu; left as it is", places, kGameMapPlaces);
+        rfa::LogDetail("Animation map: the game gives it %lu places, not its %lu; left as it is", places, kGameMapPlaces);
         return;
     }
     const DWORD more = (kOurMapPlaces - kGameMapPlaces) * kMapBytesPerPlace + (kOurMapPlaces - kGameMapPlaces) / 8 + 64;
@@ -494,7 +494,7 @@ void MoreMapRoom() {
         return;
     }
     places = kOurMapPlaces;
-    rfa::Log("Animation map: %lu places (the game's %lu): %lu bytes more of the Permanent Mempool's %lu left", kOurMapPlaces, kGameMapPlaces, more, room);
+    rfa::LogDetail("Animation map: %lu places (the game's %lu): %lu bytes more of the Permanent Mempool's %lu left", kOurMapPlaces, kGameMapPlaces, more, room);
 }
 
 // How many places the sets read take: the furthest any group's names reach.
@@ -560,7 +560,7 @@ void LoadPlayerAnimations() {
         bytes += size;
     } while (FindNextFileW(search, &found));
     FindClose(search);
-    rfa::Log("Player animations: %u of Guerrilla's loaded and kept (%.1f MB)", loaded, bytes / 1048576.0);
+    rfa::LogDetail("Player animations: %u of Guerrilla's loaded and kept (%.1f MB)", loaded, bytes / 1048576.0);
     if (noRoom) rfa::Log("Player animations: %u had no place in the animation library (it is full: is guerrilla_vehicles on?)", noRoom);
     if (failed) rfa::Log("Player animations: %u could not be read", failed);
 }
@@ -570,7 +570,7 @@ int __cdecl LoadAnimationSets(bool addOn, int which) {
     const int result = g_loadAnimationSets(addOn, which);
     if (!addOn) {
         const DWORD use = MapUse(), places = *reinterpret_cast<const DWORD*>(kMapPlaces);
-        rfa::Log("Animation map: %lu of its %lu places in use", use, places);
+        rfa::LogDetail("Animation map: %lu of its %lu places in use", use, places);
         if (use > places) rfa::Log("Animation map: MORE in use than it has places: the game's memory after it is spoilt (expect a crash)");
         LogTriggerPools();
         LoadPlayerAnimations();
@@ -591,7 +591,7 @@ void PlayerAnimations() {
     g_setAnimationGroup = reinterpret_cast<SetAnimationGroupFn>(
         rfa::HookFunction(kSetAnimationGroup, kSetAnimationGroupPrologue, reinterpret_cast<void*>(&SetAnimationGroup)));
     if (!g_setAnimationGroup) rfa::Log("Player animations: could not wrap the animation group's setting; Darius plays his own");
-    else rfa::Log("Player animations: Guerrilla's for %u guns", static_cast<unsigned>(g_playerWeapons.size()));
+    else rfa::LogDetail("Player animations: Guerrilla's for %u guns", static_cast<unsigned>(g_playerWeapons.size()));
 }
 
 // ---- Guerrilla's dropped guns (see the top)
@@ -776,7 +776,7 @@ void DroppedGuns() {
         rfa::Log("Dropped guns: could not wrap the game's %s; Guerrilla's guns an NPC drops carry Armageddon's rounds",
                  !g_adjustDroppedAmmo ? "dropped-ammo step" : !g_giveItem ? "pickup" : "inventory");
     else
-        rfa::Log("Dropped guns: Guerrilla's rounds for its guns an NPC drops (player ammo pickup %.2f / %.2f / %.2f / %.2f)",
+        rfa::LogDetail("Dropped guns: Guerrilla's rounds for its guns an NPC drops (player ammo pickup %.2f / %.2f / %.2f / %.2f)",
                  g_ammoPickup[0], g_ammoPickup[1], g_ammoPickup[2], g_ammoPickup[3]);
 }
 
@@ -807,7 +807,7 @@ void ReadAmmoCapacity() {
     if (g_ammoCapacities.empty())
         rfa::Log("Ammo capacity: no mods\\guerrilla_gear\\ammo_capacity.txt (build Guerrilla's weapons again); the ammo types keep what the build gave them");
     else
-        rfa::Log("Ammo capacity: Guerrilla's rounds for %zu guns (Max_Rounds; Max_Rounds_Upgrade with the gun's ammo upgrade; x a worn pack's ammo_factor)",
+        rfa::LogDetail("Ammo capacity: Guerrilla's rounds for %zu guns (Max_Rounds; Max_Rounds_Upgrade with the gun's ammo upgrade; x a worn pack's ammo_factor)",
                  g_ammoCapacities.size());
 }
 
@@ -991,7 +991,7 @@ void HeldInPlace() {
     g_meleeStart = reinterpret_cast<MeleeStartFn>(
         rfa::HookFunction(kMeleeStart, kMeleeStartPrologue, reinterpret_cast<void*>(&MeleeStart)));
     if (!g_meleeStart) rfa::Log("Held: could not wrap the melee start; Mason can walk through a standing swing");
-    else rfa::Log("Held: Mason's standing swings hold him where he stands, as Guerrilla's do");
+    else rfa::LogDetail("Held: Mason's standing swings hold him where he stands, as Guerrilla's do");
 }
 
 // The camera's look-at bone. A character entry keeps its skeleton's "camera" and "camera-lookat" bones
@@ -1181,7 +1181,7 @@ void __cdecl LookVector(BYTE* human, float* out) {
 void LookAheadStill() {
     g_lookVector = reinterpret_cast<LookVectorFn>(rfa::HookFunction(kLookVector, kLookVectorPrologue, reinterpret_cast<void*>(&LookVector)));
     if (!g_lookVector) rfa::Log("Look: could not wrap the look direction; standing still, his torso and head still turn to the camera");
-    else rfa::Log("Look: standing still, Mason and Darius look ahead (Guerrilla's: the camera's way only while combat ready)");
+    else rfa::LogDetail("Look: standing still, Mason and Darius look ahead (Guerrilla's: the camera's way only while combat ready)");
 }
 
 void KeepHammer(BYTE* player);  // (Mason's sledgehammer, below)
@@ -1242,13 +1242,13 @@ void __cdecl HeadingStep(BYTE* human) {
         const char* who = PlaysSet(player, kMasonSet) ? "Mason" : "Darius";
         if (!g_walkLogged || std::strcmp(g_walkLogged, who) != 0) {
             g_walkLogged = who;
-            rfa::Log("Movement: %s turns to where he walks and runs (aiming or attacking, to the camera)", who);
+            rfa::LogDetail("Movement: %s turns to where he walks and runs (aiming or attacking, to the camera)", who);
         }
     } else if (facing == Facing::Still) {
         const char* who = PlaysSet(player, kMasonSet) ? "Mason" : "Darius";
         if (!g_stillLogged || std::strcmp(g_stillLogged, who) != 0) {
             g_stillLogged = who;
-            rfa::Log("Movement: %s standing still doesn't turn with the camera", who);
+            rfa::LogDetail("Movement: %s standing still doesn't turn with the camera", who);
         }
     }
 }
@@ -1289,10 +1289,10 @@ void KeepSprint() {
     if (static_cast<int>(ours) != g_sprintInOurWorld) {
         if (ours) {
             g_sprintSwitchWas = unlimited;
-            rfa::Log("Sprint: world %s: as long as he likes, as Guerrilla's (Armageddon's limit off)", world);
+            rfa::LogDetail("Sprint: world %s: as long as he likes, as Guerrilla's (Armageddon's limit off)", world);
         } else if (g_sprintInOurWorld == 1) {
             unlimited = g_sprintSwitchWas;
-            rfa::Log("Sprint: world %s: Armageddon's limit %s", world, unlimited ? "off (as it was set)" : "back");
+            rfa::LogDetail("Sprint: world %s: Armageddon's limit %s", world, unlimited ? "off (as it was set)" : "back");
         }
         g_sprintInOurWorld = ours;
     }
@@ -1304,7 +1304,7 @@ void PlayerMovement() {
     g_headingStep = reinterpret_cast<HeadingStepFn>(
         rfa::HookFunction(kHeadingStep, kHeadingStepPrologue, reinterpret_cast<void*>(&HeadingStep)));
     if (!g_headingStep) rfa::Log("Movement: could not wrap the heading step; the player faces the camera as Armageddon has it");
-    else rfa::Log("Movement: Darius and Mason turn to face where they walk and run, through all 360 degrees; aiming and attacking face the camera");
+    else rfa::LogDetail("Movement: Darius and Mason turn to face where they walk and run, through all 360 degrees; aiming and attacking face the camera");
 }
 
 // ---- Mason's sledgehammer (see the top)
@@ -1395,7 +1395,7 @@ void KeepHammer(BYTE* player) {
     }
     if (lesser) {
         DropRecord(player, lesser);
-        rfa::Log("Hammer: dropped the lesser hammer for %s (bought)", bought.c_str());
+        rfa::LogDetail("Hammer: dropped the lesser hammer for %s (bought)", bought.c_str());
     }
     int slot = RecordInSlot(player, kHammerSlot) ? -1 : kHammerSlot;
     for (int s = 0; slot < 0 && s < kRadialSlots; ++s)
@@ -1403,12 +1403,12 @@ void KeepHammer(BYTE* player) {
     if (slot < 0) {
         if (now - g_lastHammerNote > 60000) {
             g_lastHammerNote = now;
-            rfa::Log("Hammer: Mason has no sledgehammer and no free slot for it (four guns); it waits for a free slot");
+            rfa::LogDetail("Hammer: Mason has no sledgehammer and no free slot for it (four guns); it waits for a free slot");
         }
         return;
     }
     const BYTE* given = GiveByInventoryItem(player, give, 0, slot, false, false, false);
-    rfa::Log("Hammer: Mason %s; given %s %s, slot %d", lesser ? "had a lesser hammer" : "had no sledgehammer", given ? "him" : "nothing (the game refused)",
+    rfa::LogDetail("Hammer: Mason %s; given %s %s, slot %d", lesser ? "had a lesser hammer" : "had no sledgehammer", given ? "him" : "nothing (the game refused)",
              kHammers[best], slot);
 }
 
@@ -1449,7 +1449,7 @@ BYTE* __fastcall LaunchThrown(BYTE* weapon, void* unused, const float* position,
     // damage (shot, blown up) sets it off.
     BYTE* result = g_launchThrown(weapon, unused, position, orientation, velocity, placed);
     if (carried) {
-        rfa::Log("Thrown: %s thrown as Guerrilla's (the tank itself; it goes off only when shot or blown up); in his hands now: %s; on its way: %s",
+        rfa::LogDetail("Thrown: %s thrown as Guerrilla's (the tank itself; it goes off only when shot or blown up); in his hands now: %s; on its way: %s",
                  WeaponName(info), RecordName(RecordEquipped(player, nullptr, 0)), RecordName(RecordWanted(player, nullptr, 0)));
         g_carriedThrownAt = GetTickCount64();
         g_nextHandsCheck = g_carriedThrownAt + kHandsSettleMs;
@@ -1512,7 +1512,7 @@ bool __cdecl SetDown(BYTE* human) {
     const float place[3] = {at[0] + facing[0] * kSetDownAhead, at[1] + facing[1] * kSetDownAhead, at[2] + facing[2] * kSetDownAhead};
     const float still[3] = {0.0f, 0.0f, 0.0f};
     g_launchThrown(weapon, nullptr, place, reinterpret_cast<const float*>(weapon + 0x10), still, false);
-    rfa::Log("Thrown: %s set down as Guerrilla's (no animation; in his hands now: %s)", WeaponName(info), RecordName(RecordEquipped(player, nullptr, 0)));
+    rfa::LogDetail("Thrown: %s set down as Guerrilla's (no animation; in his hands now: %s)", WeaponName(info), RecordName(RecordEquipped(player, nullptr, 0)));
     return true;
 }
 
@@ -1577,7 +1577,7 @@ void AfterCarriedPickup(BYTE* player) {
     BYTE* held = RecordEquipped(player, nullptr, 0);
     BYTE* wanted = RecordWanted(player, nullptr, 0);
     if (held == record) {
-        rfa::Log("Thrown: %s in his hands %llu ms after he took it%s", WeaponName(info), now - p.at, p.askedAt ? " (its equip asked again)" : "");
+        rfa::LogDetail("Thrown: %s in his hands %llu ms after he took it%s", WeaponName(info), now - p.at, p.askedAt ? " (its equip asked again)" : "");
         p.at = 0;
         return;
     }
@@ -1612,7 +1612,7 @@ bool __cdecl PickUpCarried(BYTE* player, bool take) {
     if (taken && record && Field(record, kInventoryInfo) == handle) g_carriedPickup = {handle, before, GetTickCount64(), 0};
     const int slot = record ? static_cast<int>(Field(record, kRecordSlot)) : -2;
     const DWORD holds = record ? Field(record, kInventoryInfo) : 0xFFFFFFFF;
-    rfa::Log("Thrown: %s %s (handle %08X; item flags %08X, parent %08X, body %08X before; item flags %08X, parent %08X after); "
+    rfa::LogDetail("Thrown: %s %s (handle %08X; item flags %08X, parent %08X, body %08X before; item flags %08X, parent %08X after); "
              "its record: %s, selection slot %d, %s; in his hands: %s (on its way: %s)",
              WeaponName(info), taken ? "picked up" : "not picked up", handle, flags, parent, body, Field(weapon, kItemFlags), Field(weapon, kParent),
              record ? "there" : "none", slot, !record ? "-" : holds == handle ? "the thing he took" : "another object (a copy)",
@@ -1624,10 +1624,10 @@ void ThrownCarried() {
     g_launchThrown = reinterpret_cast<LaunchThrownFn>(
         rfa::HookFunction(kLaunchThrown, kLaunchThrownPrologue, reinterpret_cast<void*>(&LaunchThrown)));
     if (!g_launchThrown) rfa::Log("Thrown: could not wrap the weapons' launch; a thrown tank stays in the hands");
-    else rfa::Log("Thrown: a carried weapon (Guerrilla's propane tank) is thrown itself, as Guerrilla's: it bounces, and goes off only when shot or blown up");
+    else rfa::LogDetail("Thrown: a carried weapon (Guerrilla's propane tank) is thrown itself, as Guerrilla's: it bounces, and goes off only when shot or blown up");
     g_setDown = reinterpret_cast<SetDownFn>(rfa::HookFunction(kSetDown, kSetDownPrologue, reinterpret_cast<void*>(&SetDown)));
     if (!g_setDown) rfa::Log("Thrown: could not wrap the set-down; a carried tank is put down Armageddon's way");
-    else rfa::Log("Thrown: a carried tank set down (another weapon, a swap) leaves his hands as Guerrilla's: no animation, it drops");
+    else rfa::LogDetail("Thrown: a carried tank set down (another weapon, a swap) leaves his hands as Guerrilla's: no animation, it drops");
     g_pickUpCarried = reinterpret_cast<PickUpCarriedFn>(rfa::HookFunction(kPickUpCarried, kPickUpCarriedPrologue, reinterpret_cast<void*>(&PickUpCarried)));
     if (!g_pickUpCarried) rfa::Log("Thrown: could not wrap the pickup of a carried thing; what a tank's pickup does isn't written here");
 }
@@ -1694,7 +1694,7 @@ void NoteRed(void* library, DWORD shader, int kind, int variant) {
     const char* name = nullptr;
     for (const auto& known : g_redShaders)
         if (known.second == shader) name = known.first.c_str();
-    if (name) rfa::Log("Red: a material on %s is drawn as a mesh of the kind %s, and there is no %s%s", name, ShaderEnding(kind, variant), name, ShaderEnding(kind, variant));
+    if (name) rfa::LogDetail("Red: a material on %s is drawn as a mesh of the kind %s, and there is no %s%s", name, ShaderEnding(kind, variant), name, ShaderEnding(kind, variant));
     else rfa::Log("Red: a material on the library's shader %lu (none of Guerrilla's) is drawn as a mesh of the kind %s, which it has no version for", shader, ShaderEnding(kind, variant));
 }
 
@@ -1713,7 +1713,7 @@ void RedMaterials() {
     g_bindShader = reinterpret_cast<BindShaderFn>(
         rfa::HookFunction(kBindShader, kBindShaderPrologue, reinterpret_cast<void*>(&BindShader)));
     if (!g_bindShader) rfa::Log("Red: could not watch the game's shader binding; materials drawn red aren't named in the log");
-    else rfa::Log("Red: a material the game draws red (no shader for it, or none for its mesh's kind) is named here, once each");
+    else rfa::LogDetail("Red: a material the game draws red (no shader for it, or none for its mesh's kind) is named here, once each");
 }
 
 }  // namespace
@@ -1755,7 +1755,7 @@ bool gear::GiveWeapon(BYTE* player, const char* name, std::string& why) {
         why = "the game refused it";
         return false;
     }
-    rfa::Log("Upgrades: gave %s, slot %d", name, slot);
+    rfa::LogDetail("Upgrades: gave %s, slot %d", name, slot);
     return true;
 }
 
@@ -1851,7 +1851,7 @@ void __cdecl SwapWeapon(BYTE* human, BYTE* item, int slot) {
             const ULONGLONG now = GetTickCount64();
             if (now - g_lastHammerNote > 5000) {
                 g_lastHammerNote = now;
-                rfa::Log("Hammer: not swapped away (Guerrilla never drops it); swap with a gun in his hands");
+                rfa::LogDetail("Hammer: not swapped away (Guerrilla never drops it); swap with a gun in his hands");
             }
             return;
         }
@@ -1933,7 +1933,7 @@ int ProjectilesHeld() { return PoolHolds(kProjectilePool); }
 int ProjectilesInUse() { return PoolInUse(kProjectilePool); }
 
 void LogPoolUse(const char* what, DWORD pool) {
-    rfa::Log("Projectiles: %s %lu of %lu bytes in use", what, *reinterpret_cast<const DWORD*>(pool + kMempoolUsed),
+    rfa::LogDetail("Projectiles: %s %lu of %lu bytes in use", what, *reinterpret_cast<const DWORD*>(pool + kMempoolUsed),
              *reinterpret_cast<const DWORD*>(pool + kMempoolSize));
 }
 
@@ -1941,7 +1941,7 @@ void LogPoolUse(const char* what, DWORD pool) {
 // Guerrilla's, from the guerrilla_world mod): how full they are. Add-ons' come later.
 void __cdecl ProjectileLoader() {
     g_projectileLoader();
-    rfa::Log("Projectiles: %d of %d places in use", ProjectilesInUse(), ProjectilesHeld());
+    rfa::LogDetail("Projectiles: %d of %d places in use", ProjectilesInUse(), ProjectilesHeld());
     LogPoolUse("names:", kNamePool);
     LogPoolUse("stages:", kStagePool);
 }
@@ -1975,7 +1975,7 @@ void MoreProjectiles() {
     }
     g_projectileLoader = reinterpret_cast<ProjectileLoaderFn>(
         rfa::HookFunction(kProjectileLoader, kProjectileLoaderPrologue, reinterpret_cast<void*>(&ProjectileLoader)));
-    rfa::Log("Projectiles: the game holds %lu (its own %lu), their names %lu bytes (0x%lX), their stages %lu bytes (0x%lX)", kProjectiles,
+    rfa::LogDetail("Projectiles: the game holds %lu (its own %lu), their names %lu bytes (0x%lX), their stages %lu bytes (0x%lX)", kProjectiles,
              kGameProjectiles, kProjectileRooms[1].ours, kProjectileRooms[1].game, kProjectileRooms[3].ours, kProjectileRooms[3].game);
 }
 
@@ -2049,21 +2049,21 @@ void MoreNameRoom() {
             rfa::Log("%s: could not change the game's code; it keeps its %lu bytes", p.what, p.game);
             continue;
         }
-        rfa::Log("%s: %lu bytes (the game's %lu)", p.what, p.ours, p.game);
+        rfa::LogDetail("%s: %lu bytes (the game's %lu)", p.what, p.ours, p.game);
     }
 }
 
 // Each pool's use, once its tables are read (logged at the player's first step).
 void LogNameRoom() {
     for (const NamePool& p : kNamePools)
-        if (NamePoolValue(p, kMempoolSize)) rfa::Log("%s: %lu of %lu bytes in use", p.what, NamePoolValue(p, kMempoolUsed), NamePoolValue(p, kMempoolSize));
+        if (NamePoolValue(p, kMempoolSize)) rfa::LogDetail("%s: %lu of %lu bytes in use", p.what, NamePoolValue(p, kMempoolUsed), NamePoolValue(p, kMempoolSize));
 }
 
 constexpr DWORD kMeleeNamesPool = 0x21B1BD8;
 
 int __cdecl MeleeLoader(int first, int second) {
     const int result = g_meleeLoader(first, second);
-    rfa::Log("Melee moves: %d of %d places in use; names %lu of %lu bytes", PoolInUse(kMeleePool), PoolHolds(kMeleePool),
+    rfa::LogDetail("Melee moves: %d of %d places in use; names %lu of %lu bytes", PoolInUse(kMeleePool), PoolHolds(kMeleePool),
              *reinterpret_cast<const DWORD*>(kMeleeNamesPool + kMempoolUsed), *reinterpret_cast<const DWORD*>(kMeleeNamesPool + kMempoolSize));
     return result;
 }
@@ -2085,7 +2085,7 @@ void MoreMeleeMoves() {
         return;
     }
     g_meleeLoader = reinterpret_cast<MeleeLoaderFn>(rfa::HookFunction(kMeleeLoader, kMeleeLoaderPrologue, reinterpret_cast<void*>(&MeleeLoader)));
-    rfa::Log("Melee moves: the game holds %lu (its own %lu)", kMeleeMoves, kGameMeleeMoves);
+    rfa::LogDetail("Melee moves: the game holds %lu (its own %lu)", kMeleeMoves, kGameMeleeMoves);
 }
 
 // ---- Room in the start-up's memory pools (see the top: the preloaded items, the Permanent Mempool)
@@ -2133,7 +2133,7 @@ void MoreStartupRoom() {
             rfa::Log("%s: could not change the game's code; it keeps its %lu MB", p.what, gameMb);
             continue;
         }
-        rfa::Log("%s: %lu MB (the game's %lu MB): %s", p.what, oursMb, gameMb, p.holds);
+        rfa::LogDetail("%s: %lu MB (the game's %lu MB): %s", p.what, oursMb, gameMb, p.holds);
     }
 }
 
@@ -2142,7 +2142,7 @@ void LogItemPreload() {
     for (const StartupPool& p : kStartupPools) {
         const DWORD size = *reinterpret_cast<const DWORD*>(p.pool + kMempoolSize);
         const DWORD used = *reinterpret_cast<const DWORD*>(p.pool + kMempoolUsed);
-        if (size) rfa::Log("%s: %lu of %lu bytes in use (%lu left)", p.what, used, size, size > used ? size - used : 0);
+        if (size) rfa::LogDetail("%s: %lu of %lu bytes in use (%lu left)", p.what, used, size, size > used ? size - used : 0);
     }
 }
 
@@ -2151,7 +2151,7 @@ bool g_upgradesRunning = false;
 void MasonsHammer() {
     g_swapWeapon = reinterpret_cast<SwapWeaponFn>(rfa::HookFunction(kSwapWeapon, kSwapWeaponPrologue, reinterpret_cast<void*>(&SwapWeapon)));
     if (!g_swapWeapon) rfa::Log("Hammer: could not wrap the swap; Guerrilla's hammer can be swapped away");
-    else rfa::Log("Hammer: Mason is given Guerrilla's sledgehammer (slot 3) when he has none, and never swaps it away");
+    else rfa::LogDetail("Hammer: Mason is given Guerrilla's sledgehammer (slot 3) when he has none, and never swaps it away");
 }
 
 // ---- The player's melee hits, logged (the user's Round 1, 2026-11-06: the hammer "does no damage")
@@ -2200,7 +2200,7 @@ float __cdecl MeleeDamage(BYTE* attacker, const BYTE* data, BYTE* target) {
 void LogMeleeHits() {
     g_meleeDamage = reinterpret_cast<MeleeDamageFn>(rfa::HookFunction(kMeleeDamage, kMeleeDamagePrologue, reinterpret_cast<void*>(&MeleeDamage)));
     if (!g_meleeDamage) rfa::Log("Melee hits: could not wrap the damage pick; they aren't logged");
-    else if (rfa::DetailLog()) rfa::Log("Melee hits: the player's are logged (\"Melee hit:\" lines)");
+    else if (rfa::DetailLog()) rfa::LogDetail("Melee hits: the player's are logged (\"Melee hit:\" lines)");
 }
 
 // ---- The guns' high-detail copies, logged (2026-11-12: does a gun he swaps to stay on its low copy?)
@@ -2253,7 +2253,7 @@ void LogHighDetailGuns() {
     g_streamHighDetail = reinterpret_cast<StreamHighDetailFn>(
         rfa::HookFunction(kStreamHighDetail, sizeof kStreamHighDetailPrologue, reinterpret_cast<void*>(&StreamHighDetail)));
     if (!g_streamHighDetail) rfa::Log("Guns: could not wrap the high-detail stream-in; not logged");
-    else rfa::Log("Guns: each gun he draws says whether its high-detail copy streamed in (\"Guns:\" lines)");
+    else rfa::LogDetail("Guns: each gun he draws says whether its high-detail copy streamed in (\"Guns:\" lines)");
 }
 
 // ---- The held weapon sounds' starts and stops, logged (the user, 2026-11-10: a turret gun held sounds once, then is silent)
@@ -2357,13 +2357,13 @@ void LogHeldSounds() {
     g_playSound = reinterpret_cast<PlaySoundFn>(rfa::HookFunction(kPlaySound, kAudioPrologue, reinterpret_cast<void*>(&PlaySoundLogged)));
     g_stopSound = reinterpret_cast<StopSoundFn>(rfa::HookFunction(kStopSound, kAudioPrologue, reinterpret_cast<void*>(&StopSoundLogged)));
     if (!g_setSwitch || !g_playSound || !g_stopSound) rfa::Log("Held sounds: could not wrap the game's audio functions; they aren't all logged");
-    else rfa::Log("Held sounds: %u held weapon sounds' starts and stops are logged (\"Held sounds:\" lines)", static_cast<unsigned>(g_heldEvents.size()));
+    else rfa::LogDetail("Held sounds: %u held weapon sounds' starts and stops are logged (\"Held sounds:\" lines)", static_cast<unsigned>(g_heldEvents.size()));
 }
 
 }  // namespace
 
 void guerrilla_gear::Init() {
-    if (rfa::ReadLogSwitch(L"GuerrillaGear")) rfa::Log("Log=1: routine lines and the diagnoses (\"[guerrilla_gear:log]\") are on");
+    if (rfa::ReadLogSwitch(L"GuerrillaGear")) rfa::LogDetail("Log=1: routine lines and the diagnoses (\"[guerrilla_gear:log]\") are on");
     if (!rfa::game::IsSupportedBuild()) {
         rfa::Log("Not the publicbeta build; nothing to do");
         return;

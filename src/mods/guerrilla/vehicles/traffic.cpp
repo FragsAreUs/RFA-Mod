@@ -109,7 +109,7 @@ void TrySpawn(const BYTE* player, const Zone& zone) {
     // Guerrilla's caps on the whole world (do_frame_spawn_vehicle): more than 90 people or 28 cars (of its 32), no
     // new car; here kMostCars of kCarsAtOnce.
     const int people = *reinterpret_cast<const int*>(kPeopleCount), cars = *reinterpret_cast<const int*>(kCarCount);
-    RFA_LOG_FIRST(1, "Traffic: the world has %d people and %d cars (no new car above %d or %d)", people, cars, kMostPeople, kMostCars);
+    RFA_LOG_DETAIL_FIRST(1, "Traffic: the world has %d people and %d cars (no new car above %d or %d)", people, cars, kMostPeople, kMostCars);
     const bool counted = people >= 0 && people < 100000 && cars >= 0 && cars < 100000;
     if (counted && (people > kMostPeople || cars > kMostCars)) {
         RFA_LOG_DETAIL_FIRST(5, "Traffic: no new car: the world has %d people and %d cars", people, cars);
@@ -393,12 +393,18 @@ void AggressiveDespawn(BYTE* player) {
 // despawns are Guerrilla's, nothing of ours removed it). So twice a second, a vehicle within 40 m of the player
 // that would draw at alpha 0, is hidden, or whose model isn't loaded is logged once with its state, and so is the
 // vehicle the player gets into, each time.
+// Every new vehicle fades in over a second (0x5FFAC0, at its making, unless +0x4FB4 bit 24: 0x605660 with 1000 ms;
+// the alpha is the game clock's elapsed over that), so one seen in its first 50 ms read 0.01 and was logged as not
+// showing though it went on to show (Walker_Min, 2026-11-21 12:19, 9 ms after its making). A vehicle is logged only
+// once it has still not shown 2 s after the watch first saw it so: a fade that never ends, or one restarted.
 auto const VehicleAlpha = reinterpret_cast<float(__fastcall*)(BYTE* vehicle, void* unused)>(0x60F2B0);
 auto const VehicleCount = reinterpret_cast<int(__fastcall*)(void* world, void* unused)>(0x477090);
 auto const VehicleAt = reinterpret_cast<BYTE*(__fastcall*)(void* world, void* unused, int index)>(0x4770E0);
 constexpr DWORD kFadingIn = 1u << 15, kFadingOut = 1u << 16, kFromNano = 1u << 17, kHidden = 1u << 18;
 constexpr float kLookRadius = 40.0f;
+constexpr int kUnseenPatience = 2000;
 std::vector<DWORD> g_unseenLogged;
+std::vector<std::pair<DWORD, int>> g_unseenSince;  // vehicles not showing yet, and when the watch first saw them so
 DWORD g_lastBoarded = kNone;
 int g_nextLook = 0;
 
@@ -476,10 +482,73 @@ void LookForUnseenVehicles(BYTE* player) {
         if (distance > kLookRadius) continue;
         const DWORD flags = *reinterpret_cast<const DWORD*>(vehicle + kVehicleFlags);
         BYTE* entry = *reinterpret_cast<BYTE* const*>(vehicle + 0x3DA8);
-        if (VehicleAlpha(vehicle, nullptr) > 0.05f && !(flags & kHidden) && entry && VehicleLoaded(entry)) continue;
-        if (std::find(g_unseenLogged.begin(), g_unseenLogged.end(), Handle(vehicle)) != g_unseenLogged.end()) continue;
-        if (g_unseenLogged.size() < 200) g_unseenLogged.push_back(Handle(vehicle));
-        DescribeVisibility("near the player, not showing:", vehicle, distance);
+        const DWORD handle = Handle(vehicle);
+        auto since = std::find_if(g_unseenSince.begin(), g_unseenSince.end(), [&](const std::pair<DWORD, int>& s) { return s.first == handle; });
+        if (VehicleAlpha(vehicle, nullptr) > 0.05f && !(flags & kHidden) && entry && VehicleLoaded(entry)) {
+            if (since != g_unseenSince.end()) g_unseenSince.erase(since);
+            continue;
+        }
+        if (std::find(g_unseenLogged.begin(), g_unseenLogged.end(), handle) != g_unseenLogged.end()) continue;
+        if (since == g_unseenSince.end()) {  // first seen so: wait, a fade-in may be under way
+            if (g_unseenSince.size() < 200) g_unseenSince.push_back({handle, now});
+            continue;
+        }
+        if (now - since->second < kUnseenPatience) continue;
+        g_unseenSince.erase(since);
+        if (g_unseenLogged.size() < 200) g_unseenLogged.push_back(handle);
+        DescribeVisibility("near the player, still not showing 2 s on:", vehicle, distance);
+    }
+    // Vehicles gone or out of the radius before they showed: forgotten after a minute.
+    g_unseenSince.erase(std::remove_if(g_unseenSince.begin(), g_unseenSince.end(), [&](const std::pair<DWORD, int>& s) { return now - s.second > 60000; }),
+                        g_unseenSince.end());
+}
+
+// A walker's first 6 s (the log, Log=1). Area defense's given Walker_Min fell under the ground twice (2026-11-21
+// 12:19 and 14:42), made by its layer's node 5 cm below the ground (Guerrilla's own height: its node spawns place
+// a vehicle where the node is, static_spawn_placement 0x100, no snap to the ground); Walker_Min2 at the same node
+// didn't. Each walker's height is logged as it settles, and a drop of 3 m in its first 6 s as a fall through the
+// ground, with its state.
+constexpr int kWalkerSubtype = 8, kWalkerWatch = 6000;
+struct NewWalker {
+    DWORD handle;
+    int since, nextLog;
+    float startY, lastY;
+    bool fell;
+};
+std::vector<NewWalker> g_newWalkers;
+std::vector<DWORD> g_walkersSeen;
+
+void WatchNewWalkers(BYTE* player) {
+    if (!rfa::DetailLog()) return;
+    const int now = GameTime();
+    for (int i = 0, n = VehicleCount(kWorld, nullptr); i < n; ++i) {
+        BYTE* vehicle = VehicleAt(kWorld, nullptr, i);
+        if (!vehicle || VehicleSubtype(vehicle, nullptr) != kWalkerSubtype) continue;
+        const DWORD handle = Handle(vehicle);
+        if (std::find(g_walkersSeen.begin(), g_walkersSeen.end(), handle) != g_walkersSeen.end()) continue;
+        if (g_walkersSeen.size() >= 256) g_walkersSeen.erase(g_walkersSeen.begin());
+        g_walkersSeen.push_back(handle);
+        const float y = Pos(vehicle).y;
+        g_newWalkers.push_back({handle, now, now, y, y, false});
+    }
+    const V3 me = Pos(player);
+    for (auto walker = g_newWalkers.begin(); walker != g_newWalkers.end();) {
+        BYTE* vehicle = VehicleByHandle(kWorld, nullptr, walker->handle);
+        const int age = now - walker->since;
+        if (!vehicle || age > kWalkerWatch || walker->fell) { walker = g_newWalkers.erase(walker); continue; }
+        const V3 at = Pos(vehicle);
+        if (!walker->fell && at.y < walker->startY - 3.0f) {
+            walker->fell = true;
+            char state[64];
+            sprintf_s(state, "fell %.1f m in %d ms", walker->startY - at.y, age);
+            DescribeVisibility(state, vehicle, Distance(at, me));
+        } else if (now >= walker->nextLog) {
+            RFA_LOG_DETAIL_FIRST(120, "Vehicles: walker %s (0x%08lX) %d ms after it appeared: at %.2f %.2f %.2f (%+.2f m from where it appeared, %+.2f since the last look), %.1f m from the player",
+                                 VehicleNameOf(vehicle), walker->handle, age, at.x, at.y, at.z, at.y - walker->startY, at.y - walker->lastY, Distance(at, me));
+            walker->lastY = at.y;
+            walker->nextLog = now + (age < 1000 ? 250 : 1000);
+        }
+        ++walker;
     }
 }
 
@@ -494,6 +563,7 @@ void TrafficFrame() {
     if (!player) return;
     AggressiveDespawn(player);
     LookForUnseenVehicles(player);
+    WatchNewWalkers(player);
     const V3 at = Pos(player);
     const int now = GameTime();  // the game's clock: a pause doesn't count
     const DWORD playerVehicle = *reinterpret_cast<const DWORD*>(player + kInVehicle);
@@ -627,7 +697,7 @@ void TrafficFrame() {
         if (car->hasDestination) {
             const int result = TravelTo(driver, vehicle, &car->destination.x, 0xFFFFFFFF, 0xFFFFFFFF, 1, kStopShort, 0, 0, 0, 1);
             if (result == 0) {
-                RFA_LOG_FIRST(20, "Traffic: a car couldn't find its way to (%.0f, %.0f, %.0f)", car->destination.x, car->destination.y, car->destination.z);
+                RFA_LOG_DETAIL_FIRST(20, "Traffic: a car couldn't find its way to (%.0f, %.0f, %.0f)", car->destination.x, car->destination.y, car->destination.z);
                 car->hasDestination = false;
                 ++car->failures;
             }
@@ -677,7 +747,7 @@ void __cdecl SpawnNodeFrame() {
 void StartTraffic() {
     const std::wstring worlds = rfa::IniString(L"GuerrillaVehicles", L"TrafficWorlds", L"rfg");
     ReadWorlds(worlds);
-    if (worlds.empty()) { rfa::Log("Traffic: off ([GuerrillaVehicles] TrafficWorlds= names no world)"); return; }
+    if (worlds.empty()) { rfa::LogDetail("Traffic: off ([GuerrillaVehicles] TrafficWorlds= names no world)"); return; }
     if (Files().zones.empty()) { rfa::Log("Traffic: no mods\\guerrilla_vehicles\\traffic.txt (build the vehicles); no traffic"); return; }
     const BYTE opening[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x14};
     if (memcmp(reinterpret_cast<const void*>(kSpawnNodeFrame), opening, sizeof(opening)) != 0) {
@@ -685,9 +755,12 @@ void StartTraffic() {
         return;
     }
     g_spawnNodeFrame = reinterpret_cast<FrameFn>(rfa::HookFunction(kSpawnNodeFrame, kSpawnNodeFramePrologue, reinterpret_cast<void*>(&SpawnNodeFrame)));
-    rfa::Log(g_spawnNodeFrame ? "Traffic: Guerrilla's in %ls: %u zones, %u vehicle groups, %u resources' drivers"
-                              : "Traffic: could not hook the game's frame (%ls)",
-             worlds.c_str(), static_cast<unsigned>(Files().zones.size()), static_cast<unsigned>(Files().groups.size()), static_cast<unsigned>(Files().people.size()));
+    if (g_spawnNodeFrame)
+        rfa::LogDetail("Traffic: Guerrilla's in %ls: %u zones, %u vehicle groups, %u resources' drivers", worlds.c_str(),
+                       static_cast<unsigned>(Files().zones.size()), static_cast<unsigned>(Files().groups.size()),
+                       static_cast<unsigned>(Files().people.size()));
+    else
+        rfa::Log("Traffic: could not hook the game's frame (%ls)", worlds.c_str());
     if (g_spawnNodeFrame) {
         gv::StartConvoys();
         gv::StartEdf();

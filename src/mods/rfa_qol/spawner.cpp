@@ -289,12 +289,12 @@ bool g_inDropStep = false;  // drop_car's step is running: a vehicle made now is
 
 void Remove(unsigned handle) {
     const int removed = RemoveByHandle(kWorld, nullptr, handle, 0);
-    rfa::Log("Removing vehicle %08X: %s", handle, removed ? "removed" : "already gone");
+    rfa::LogDetail("Removing vehicle %08X: %s", handle, removed ? "removed" : "already gone");
 }
 
 void Drop(const std::string& name) {
     RunCommand("drop_car %s", name.c_str());
-    rfa::Log("Spawning %s", name.c_str());
+    rfa::LogDetail("Spawning %s", name.c_str());
     SetStatus("Spawned " + name);
     g_expected = name;
     g_expectedSince = GetTickCount64();
@@ -317,7 +317,7 @@ void SpawnVehicle(int i) {
     // While the area's resource is still changing (state 1-3, as after a reload) a model reserved can't stream
     // yet, and the change waits for what it doesn't want to be let go: reserve only once it's in force (4).
     if (g_poolState != kResourceInForce) {
-        rfa::Log("%s: not yet; this area's spawn resource is still changing (state %d)", name.c_str(), static_cast<int>(g_poolState));
+        rfa::LogDetail("%s: not yet; this area's spawn resource is still changing (state %d)", name.c_str(), static_cast<int>(g_poolState));
         SetStatus("This area is still loading its people and vehicles; try again in a moment");
         return;
     }
@@ -326,7 +326,7 @@ void SpawnVehicle(int i) {
         SetStatus("No room for " + name + " here");
         return;
     }
-    rfa::Log("%s: added to this area's spawn resource; it spawns once it has streamed in", name.c_str());
+    rfa::LogDetail("%s: added to this area's spawn resource; it spawns once it has streamed in", name.c_str());
     SetStatus("Loading " + name + "...");
     g_loading = vehicle;
     g_loadingName = name;
@@ -338,14 +338,14 @@ void Carry(const Request& request) {
     case Request::kVehicle: SpawnVehicle(request.index); break;
     case Request::kItem:
         if (request.index < ItemCount()) {
-            rfa::Log("Dropping item %s", ItemName(request.index));
+            rfa::LogDetail("Dropping item %s", ItemName(request.index));
             RunCommand("drop_item %s", ItemName(request.index));
             SetStatus(std::string("Dropped ") + ItemName(request.index));
         }
         break;
     case Request::kWeapon:
         if (request.index < WeaponCount() && *WeaponItem(request.index)) {
-            rfa::Log("Giving weapon %s (%s)", WeaponName(request.index), WeaponItem(request.index));
+            rfa::LogDetail("Giving weapon %s (%s)", WeaponName(request.index), WeaponItem(request.index));
             RunCommand("give_player_item %s", WeaponItem(request.index));
             SetStatus(std::string("Gave ") + WeaponName(request.index));
         }
@@ -423,7 +423,7 @@ BYTE* __cdecl CreateVehicle(BYTE* vehicle, const float* where, const float* orie
 
 void __cdecl HumanDebug(void* object) {
     if (object && !CastHuman(kWorld, nullptr, object)) {
-        RFA_LOG_FIRST(3, "Left out the game's debug update of a human it can't cast (a walker), which would crash it");
+        RFA_LOG_DETAIL_FIRST(3, "Left out the game's debug update of a human it can't cast (a walker), which would crash it");
         return;
     }
     g_humanDebug(object);
@@ -442,7 +442,7 @@ void spawner::Init() {
     if (!g_createVehicle) rfa::Log("Could not hook the vehicle create; Spawned won't list what you spawn");
     g_humanDebug = reinterpret_cast<HumanDebugFn>(rfa::HookFunction(kHumanDebug, kHumanDebugPrologue, reinterpret_cast<void*>(&HumanDebug)));
     if (!g_humanDebug) rfa::Log("Could not hook the humans' debug update; a spawned walker may crash the game");
-    rfa::Log("Spawn windows ready: open the console, then Spawn in the bar at the bottom");
+    rfa::LogDetail("Spawn windows ready: open the console, then Spawn in the bar at the bottom");
 }
 
 void spawner::Menu(const RFAMenu* menu) {

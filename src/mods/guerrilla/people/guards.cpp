@@ -100,7 +100,7 @@ void ReadPosts() {
         g_posts[std::stoul(box, nullptr, 16)].nodes.push_back(n);
         ++nodes;
     }
-    rfa::Log("Guards: %d of Guerrilla's guard posts read, %d guard nodes; their squads stand at the nodes and fight from them, as Guerrilla's",
+    rfa::LogDetail("Guards: %d of Guerrilla's guard posts read, %d guard nodes; their squads stand at the nodes and fight from them, as Guerrilla's",
              static_cast<int>(g_posts.size()), nodes);
 }
 
@@ -184,7 +184,7 @@ void Step(BYTE* human, DWORD handle, Guard& g, int now) {
         const int result = ai ? GoTo(ai, nullptr, &n.at.x, kWalk, kStanding, kLowPriority, kNone, kNone, false) : kNoPath;
         if (result == kNoPath || result == kStartOffMesh || result == kDestinationOffMesh) {
             ++g_noWay;
-            RFA_LOG_FIRST(16, "Guards: NPC 0x%08X of post 0x%08X can't walk to its guard node at (%.1f, %.1f, %.1f) (the go-to's %d); tries again in 30 s", handle,
+            RFA_LOG_DETAIL_FIRST(16, "Guards: NPC 0x%08X of post 0x%08X can't walk to its guard node at (%.1f, %.1f, %.1f) (the go-to's %d); tries again in 30 s", handle,
                           g.box, n.at.x, n.at.y, n.at.z, result);
             g.phase = kNoWay;
             g.until = now + kNoWayAgain;

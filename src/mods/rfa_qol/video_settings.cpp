@@ -64,7 +64,7 @@ int __cdecl WriteSetting(const char* section, const char* name, DWORD value) {
 
 void video_settings::Init() {
     bool exists = GetFileAttributesW(CfgPath().c_str()) != INVALID_FILE_ATTRIBUTES;
-    rfa::Log("Video settings are kept in %ls%s", CfgPath().c_str(),
+    rfa::LogDetail("Video settings are kept in %ls%s", CfgPath().c_str(),
              exists ? "" : " (not created yet: set your options once in Options > Display)");
 
     if (!rfa::game::IsSupportedBuild()) {
@@ -73,7 +73,7 @@ void video_settings::Init() {
     }
     if (rfa::ReplaceFunction(kReadSetting, reinterpret_cast<void*>(&ReadSetting)) &&
         rfa::ReplaceFunction(kWriteSetting, reinterpret_cast<void*>(&WriteSetting)))
-        rfa::Log("The game now loads and saves its video settings from the cfg file");
+        rfa::LogDetail("The game now loads and saves its video settings from the cfg file");
     else
         rfa::Log("Could not redirect the game's settings functions (error %lu)", GetLastError());
 }

@@ -382,7 +382,7 @@ void __cdecl Presim(BYTE* vehicle) {
     if (*reinterpret_cast<const DWORD*>(vehicle + kVehicleFlags) & kEngineRunning) {
         Field<float>(vehicle, kUrgency) = kUrgencyGuerrilla;  // Guerrilla's flyer_default_urgency
         FlightComputePhysics(vehicle, body, *model, dt);
-        RFA_LOG_FIRST(1, "Flyers: Guerrilla's flight model flies an NPC's flyer");
+        RFA_LOG_DETAIL_FIRST(1, "Flyers: Guerrilla's flight model flies an NPC's flyer");
     }
     const float force = Field<float>(vehicle, kEngineForce);
     if (force > 0.0f) {  // anti-gravity, as Guerrilla's applyAction
@@ -410,7 +410,7 @@ bool ReadModels() {
 bool FlyersFly() { return g_on; }
 
 void StartFlyers() {
-    if (!rfa::IniInt(L"GuerrillaVehicles", L"NpcFlight", 1)) { rfa::Log("Flyers: Guerrilla's flight model off ([GuerrillaVehicles] NpcFlight=0)"); return; }
+    if (!rfa::IniInt(L"GuerrillaVehicles", L"NpcFlight", 1)) { rfa::LogDetail("Flyers: Guerrilla's flight model off ([GuerrillaVehicles] NpcFlight=0)"); return; }
     if (!ReadModels()) { rfa::Log("Flyers: no mods\\guerrilla_vehicles\\flyers.txt (build the vehicles); NPCs can't fly Guerrilla's flyers"); return; }
     const BYTE opening[] = {0x53, 0x8B, 0xDC, 0x83, 0xEC, 0x08};
     if (memcmp(reinterpret_cast<const void*>(kPresim), opening, sizeof(opening)) != 0) {
@@ -419,8 +419,10 @@ void StartFlyers() {
     }
     g_presim = reinterpret_cast<PresimFn>(rfa::HookFunction(kPresim, kPresimPrologue, reinterpret_cast<void*>(&Presim)));
     g_on = g_presim != nullptr;
-    rfa::Log(g_on ? "Flyers: Guerrilla's flight model for NPCs' flyers (%u of Guerrilla's)" : "Flyers: could not hook the vehicles' presim (%u flyers)",
-             static_cast<unsigned>(g_models.size()));
+    if (g_on)
+        rfa::LogDetail("Flyers: Guerrilla's flight model for NPCs' flyers (%u of Guerrilla's)", static_cast<unsigned>(g_models.size()));
+    else
+        rfa::Log("Flyers: could not hook the vehicles' presim (%u flyers)", static_cast<unsigned>(g_models.size()));
 }
 
 }  // namespace gv

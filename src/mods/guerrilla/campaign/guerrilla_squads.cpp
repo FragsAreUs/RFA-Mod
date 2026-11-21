@@ -192,7 +192,7 @@ std::vector<BYTE*> Members(DWORD squad) {
 void Spawn(BYTE* player, const Row& row) {
     Vector place{};
     if (!SpawnPlace(player, place)) {
-        RFA_LOG_FIRST(8, "Guerrilla squads: no road 150 to 250 m from the player; no squad comes");
+        RFA_LOG_DETAIL_FIRST(8, "Guerrilla squads: no road 150 to 250 m from the player; no squad comes");
         return;
     }
     const char* version = GuerrillaPeople_GuerrillaSquadAt(row.size, place.x, place.z);
@@ -200,7 +200,7 @@ void Spawn(BYTE* player, const Row& row) {
     if (!definition) {
         if (!g_noVersionSaid) {
             g_noVersionSaid = true;
-            rfa::Log("Guerrilla squads: no version of %s for (%.0f, %.0f) (%s); no squad comes there", row.squad.c_str(), place.x, place.z,
+            rfa::LogDetail("Guerrilla squads: no version of %s for (%.0f, %.0f) (%s); no squad comes there", row.squad.c_str(), place.x, place.z,
                      version ? version : "guerrilla_people names none");
         }
         return;
@@ -228,14 +228,14 @@ void Spawn(BYTE* player, const Row& row) {
     g_row = &row;
     g_told = false;
     const Vector here = PositionOf(player);
-    rfa::Log("Guerrilla squads: %s (%s, %d) comes from (%.0f, %.0f, %.0f), %.0f m away (morale %.0f %%, %s)", version, row.squad.c_str(), row.size, place.x,
+    rfa::LogDetail("Guerrilla squads: %s (%s, %d) comes from (%.0f, %.0f, %.0f), %.0f m away (morale %.0f %%, %s)", version, row.squad.c_str(), row.size, place.x,
              place.y, place.z, sqrtf(Distance2(place, here)), liberation::EffectiveMoralePercent(-1) * 100.0f, allied ? "defending the player" : "NOT allied: standard orders");
 }
 
 void Release(const std::vector<BYTE*>& members) {
     for (BYTE* member : members)
         if (!IsDead(member)) converts::SendAway(HandleOf(member));
-    rfa::Log("Guerrilla squads: green again; the squad goes home");
+    rfa::LogDetail("Guerrilla squads: green again; the squad goes home");
     g_squad = kNone;
     g_row = nullptr;
 }
@@ -245,12 +245,12 @@ void Release(const std::vector<BYTE*>& members) {
 void Init() {
     g_on = rfa::IniInt(L"GuerrillaCampaign", L"GuerrillaSquads", 1) != 0;
     LoadRows();
-    if (!g_on) rfa::Log("Guerrilla squads: off (GuerrillaSquads=0 in [GuerrillaCampaign])");
+    if (!g_on) rfa::LogDetail("Guerrilla squads: off (GuerrillaSquads=0 in [GuerrillaCampaign])");
     else if (g_rows.empty()) rfa::Log("Guerrilla squads: no guerrilla_reinforcement.xtbl; no Red Faction squads come");
     else {
         float least = 1.0f;
         for (const Row& row : g_rows) least = row.morale < least ? row.morale : least;
-        rfa::Log("guerrilla_reinforcement.xtbl: %u rows; Red Faction squads join fights at orange and red from %.0f %% morale", static_cast<unsigned>(g_rows.size()),
+        rfa::LogDetail("guerrilla_reinforcement.xtbl: %u rows; Red Faction squads join fights at orange and red from %.0f %% morale", static_cast<unsigned>(g_rows.size()),
                  least * 100.0f);
     }
 }
@@ -261,7 +261,7 @@ void Enter() {
     g_told = false;
     g_respawnAt = -1;
     g_nextLook = 0;
-    if (g_on && !guerrilla_people::Running()) rfa::Log("Guerrilla squads: guerrilla_people is off; no Red Faction squads come");
+    if (g_on && !guerrilla_people::Running()) rfa::LogDetail("Guerrilla squads: guerrilla_people is off; no Red Faction squads come");
 }
 
 void Frame() {

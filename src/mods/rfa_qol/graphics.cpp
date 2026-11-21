@@ -57,6 +57,7 @@ Switch g_switches[] = {
     {L"ToneMapping", "Guerrilla's tone mapping", true, "The picture's brightness adapts as in Guerrilla. Off = Armageddon's own exposure and grading", false},
     {L"ColourCorrection", "Guerrilla's colour correction", true, "Its time of day's tint over the light and sky. Off = pinker", false},
     {L"SunShadows", "Sun and moon shadows", true, "Off = sunlight goes through buildings", false},
+    {L"CloudShadows", "Cloud shadows", true, "The clouds' shadows drifting over the ground, as Re-Mars-tered's. Needs sun shadows", false},
     {L"Particles", "Particles as Guerrilla's", true, "With its tone mapping: fire and smoke in a layer of their own, keeping their colours", false},
     {L"ParticleFog", "Fogged particles", true, "Smoke, fire and explosions fade into the haze far off, as Guerrilla's", false},
     {L"Dust", "Dust on the wind", true, "Guerrilla's dust blowing round you, thicker the stronger the wind", false},
@@ -150,7 +151,7 @@ void DrawWindow() {
 
 }  // namespace
 
-void graphics::Init() { rfa::Log("Graphics window ready: press F7, then Graphics in the bar at the bottom"); }
+void graphics::Init() { rfa::LogDetail("Graphics window ready: press F7, then Graphics in the bar at the bottom"); }
 
 void graphics::Menu(const RFAMenu* menu) {
     if (!rfa::menu::Use(menu)) return;

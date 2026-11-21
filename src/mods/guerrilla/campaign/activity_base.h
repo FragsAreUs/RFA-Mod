@@ -165,6 +165,7 @@ void CarBombEnter();
 Activity* MakeContinuousAttack();
 bool ContinuousAttackStart(unsigned target, const char* row, const char* who);
 void ContinuousAttackEnd(const char* why);
+void ContinuousAttackClear(const char* why);  // ended, its squads taken away now (behind a fade)
 void ContinuousAttackSetCount(int count);
 void ContinuousAttackChangeCount(int change);
 void ContinuousAttackSetSubGroup(int group);
@@ -172,6 +173,22 @@ void CarBombFrame();
 // The damage feeds (damage_feeds.cpp): Armageddon's vehicle damage and end, the movers' hits, the buildings' damage
 // reports and destruction, the explosions, wrapped once at start-up.
 void StartDamageFeeds();
+
+// Area defense, "HEAVY METAL" (area_defense.cpp): the use prompt at a start object (Guerrilla's icon, 0 none), the
+// running run's play area for the minimap's ring (false: none), whether a node (or its start object) is completed, the
+// progress read again after a load, the player's death.
+Activity* MakeAreaDefense();
+int AreaDefenseUsePrompt();
+bool AreaDefenseRing(Vector& center, float& radius);
+bool AreaDefenseNodeDone(unsigned handle);
+void AreaDefenseReloadProgress();
+void AreaDefensePlayerDied();
+// For the HUD: the corner panel, the timer and a win's stamp (false: none); the results screen's answer (1 RETRY,
+// 2 EXIT); the player's death timer ran out (true when the run took the death); a retry's reload is in.
+bool AreaDefenseScreen(Screen& screen);
+void AreaDefenseChoose(int choice);
+bool AreaDefenseTakePlayerDeath();
+void AreaDefenseReopened(const char* how);
 
 // Demolitions master (demolitions_master.cpp).
 Activity* MakeDemolitionsMaster();

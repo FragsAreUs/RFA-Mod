@@ -135,7 +135,7 @@ void Set(int action, int code) {
     a.code = code;
     WritePrivateProfileStringW(kSection, a.name, NameOf(code).c_str(), rfa::IniPath().c_str());
     ++g_version;
-    rfa::Log("Guerrilla's keys: %s is %s now ([GuerrillaKeys] %s=%s)", a.shown, code ? Narrow(NameOf(code)).c_str() : "no key",
+    rfa::LogDetail("Guerrilla's keys: %s is %s now ([GuerrillaKeys] %s=%s)", a.shown, code ? Narrow(NameOf(code)).c_str() : "no key",
              Narrow(a.name).c_str(), Narrow(NameOf(code)).c_str());
 }
 
@@ -204,7 +204,7 @@ void Capture() {
     if (!code) return;
     const char* shown = g_actions[g_capturing].shown;
     if (code == VK_ESCAPE) {
-        rfa::Log("Guerrilla's keys: %s kept as it was (Esc, seen through %s)", shown, how);
+        rfa::LogDetail("Guerrilla's keys: %s kept as it was (Esc, seen through %s)", shown, how);
         g_capturing = -1;
         g_status = "Kept as it was.";
         return;
@@ -217,11 +217,11 @@ void Capture() {
         return;
     }
     if (code == MenuKey()) {
-        rfa::Log("Guerrilla's keys: %s: %s opens the F7 menus; not taken", shown, Narrow(NameOf(code)).c_str());
+        rfa::LogDetail("Guerrilla's keys: %s: %s opens the F7 menus; not taken", shown, Narrow(NameOf(code)).c_str());
         g_status = "That key opens these menus ([Loader] MenuKey); pick another.";
         return;
     }
-    rfa::Log("Guerrilla's keys: %s: %s pressed (seen through %s)", shown, Narrow(NameOf(code)).c_str(), how);
+    rfa::LogDetail("Guerrilla's keys: %s: %s pressed (seen through %s)", shown, Narrow(NameOf(code)).c_str(), how);
     Set(g_capturing, code);
     g_capturing = -1;
     g_status.clear();
@@ -318,7 +318,7 @@ void keys::Read() {
                      Narrow(a.name).c_str(), Narrow(name).c_str(), a.shown);
         summary += (summary.empty() ? "" : ", ") + Narrow(a.name) + " " + (a.code ? Narrow(NameOf(a.code)) : "none");
     }
-    rfa::Log("Guerrilla's keys ([GuerrillaKeys], F7 Guerrilla > Keys): %s", summary.c_str());
+    rfa::LogDetail("Guerrilla's keys ([GuerrillaKeys], F7 Guerrilla > Keys): %s", summary.c_str());
 }
 
 int keys::Key(Action action) {

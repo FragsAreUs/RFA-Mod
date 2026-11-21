@@ -201,7 +201,7 @@ bool DistrictLiberated(const std::string& district) {
     if (!guerrilla_campaign::Running()) {
         if (!saidMissing) {
             saidMissing = true;
-            rfa::Log("Upgrades: guerrilla_campaign is off; upgrades unlocked by a district's liberation are for sale");
+            rfa::LogDetail("Upgrades: guerrilla_campaign is off; upgrades unlocked by a district's liberation are for sale");
         }
         return true;
     }
@@ -285,7 +285,7 @@ void Buy(BYTE* player, int index) {
         SaveBought();
         g_status = "Bought " + (level.name.empty() ? u.shown : level.name) + " for " + std::to_string(cost) + " salvage" + given;
     }
-    rfa::Log("Upgrades: bought %s level %d (%s) for %d salvage%s", u.name.c_str(), next, level.name.c_str(), cost, given.c_str());
+    rfa::LogDetail("Upgrades: bought %s level %d (%s) for %d salvage%s", u.name.c_str(), next, level.name.c_str(), cost, given.c_str());
 }
 
 void Take(BYTE* player, int index) {
@@ -310,7 +310,7 @@ void upgrades::Init() {
     for (const auto& [name, level] : g_bought) bought += level > 0 ? 1 : 0;
     size_t ours = 0;
     for (const auto& u : g_upgrades) ours += u.ours ? 1 : 0;
-    rfa::Log("Upgrades: %zu of Guerrilla's and %zu of RFA-Mod's own for sale in the F7 window (Guerrilla > Upgrades), %d bought", g_upgrades.size() - ours, ours,
+    rfa::LogDetail("Upgrades: %zu of Guerrilla's and %zu of RFA-Mod's own for sale in the F7 window (Guerrilla > Upgrades), %d bought", g_upgrades.size() - ours, ours,
              bought);
 }
 
@@ -577,7 +577,7 @@ int GuerrillaGear_LiberationUnlocks(const char* district, GuerrillaGearUnlock* o
         Copy(out[count].levelName, sizeof(out[count].levelName), level.name.empty() ? u.shown : level.name);
         ++count;
     }
-    if (count > 0) rfa::Log("Upgrades: liberating %s unlocked %d to buy", district, count);
+    if (count > 0) rfa::LogDetail("Upgrades: liberating %s unlocked %d to buy", district, count);
     return count;
 }
 

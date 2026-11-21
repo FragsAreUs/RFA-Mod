@@ -165,7 +165,7 @@ void StartDamageFeeds() {
     g_explosion = Wrap<ExplosionFn>("explosion", 0x6E5060, {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x14, 0x03, 0x00, 0x00}, reinterpret_cast<void*>(&Explosion));
     const int wrapped = (g_vehicleDamage ? 1 : 0) + (g_blowUp ? 1 : 0) + (g_bulletHit ? 1 : 0) + (g_meleeHit ? 1 : 0) + (g_explosionHit ? 1 : 0) +
                         (g_cutMark ? 1 : 0) + (g_frameReport ? 1 : 0) + (g_setDestroyed ? 1 : 0) + (g_explosion ? 1 : 0);
-    rfa::Log("Damage feeds: %d of 9 of the game's damage functions wrapped for the activities", wrapped);
+    rfa::LogDetail("Damage feeds: %d of 9 of the game's damage functions wrapped for the activities", wrapped);
 }
 
 }  // namespace campaign::activities

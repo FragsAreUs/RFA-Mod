@@ -337,11 +337,11 @@ static std::string QueueLuaCommand(const std::string& code, DWORD timeoutMs = 50
 
 // Initialize the live analysis mod
 void Init() {
-    rfa::Log("Initializing live analysis mod");
+    rfa::LogDetail("Initializing live analysis mod");
 
     // Register FrameUpdate callback for main thread Lua command processing
     console::RegisterFrameUpdateCallback(ProcessLuaCommandsCallback);
-    rfa::Log("Registered FrameUpdate callback for main thread Lua command processing");
+    rfa::LogDetail("Registered FrameUpdate callback for main thread Lua command processing");
 
     // Start the named pipe server thread
     g_pipeRunning = true;
@@ -352,12 +352,12 @@ void Init() {
     // Hook some key game functions for call tracing
     // These are example hooks - more can be added via the pipe interface
 
-    rfa::Log("Live analysis mod initialized. Pipe: %ls", kPipeName);
+    rfa::LogInfo("Live analysis mod initialized. Pipe: %ls", kPipeName);
 }
 
 // Cleanup
 void Shutdown() {
-    rfa::Log("Shutting down live analysis mod");
+    rfa::LogDetail("Shutting down live analysis mod");
 
     g_pipeRunning = false;
     g_luaQueueRunning = false;
@@ -374,7 +374,7 @@ void Shutdown() {
 
     // Unregister FrameUpdate callback
     console::UnregisterFrameUpdateCallback(ProcessLuaCommandsCallback);
-    rfa::Log("Unregistered FrameUpdate callback");
+    rfa::LogDetail("Unregistered FrameUpdate callback");
 
     // Remove all hooks
     std::lock_guard<std::mutex> lock(g_hooksMutex);
@@ -385,7 +385,7 @@ void Shutdown() {
     }
     g_hooks.clear();
 
-    rfa::Log("Live analysis mod shutdown complete");
+    rfa::LogDetail("Live analysis mod shutdown complete");
 }
 
 // Who may open the pipe: the system and the Windows user the game runs as, nobody else. Null (the
@@ -410,7 +410,7 @@ PSECURITY_DESCRIPTOR PipeSecurity() {
 
 // Named pipe server thread - handles communication with external tools
 void PipeServerThread() {
-    rfa::Log("Pipe server thread started");
+    rfa::LogDetail("Pipe server thread started");
     // Only this PC (PIPE_REJECT_REMOTE_CLIENTS) and only this Windows user (the security below).
     SECURITY_ATTRIBUTES security = {sizeof(security), PipeSecurity(), FALSE};
     if (!security.lpSecurityDescriptor) rfa::Log("Pipe: couldn't limit it to this Windows user; the default rights apply");
@@ -446,7 +446,7 @@ void PipeServerThread() {
         }
 
         g_pipe = pipe;
-        rfa::Log("Waiting for client connection on pipe...");
+        rfa::LogDetail("Waiting for client connection on pipe...");
 
         // Wait for client to connect
         BOOL connected = ConnectNamedPipe(pipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
@@ -462,7 +462,7 @@ void PipeServerThread() {
             }
         }
 
-        rfa::Log("Client connected to analysis pipe");
+        rfa::LogDetail("Client connected to analysis pipe");
 
         // Communication loop
         BYTE buffer[8192];
@@ -473,7 +473,7 @@ void PipeServerThread() {
             if (!ReadFile(pipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED) {
-                    rfa::Log("Client disconnected");
+                    rfa::LogDetail("Client disconnected");
                     break;
                 }
                 rfa::Log("Pipe read error: %lu", err);
@@ -1878,10 +1878,10 @@ void PipeServerThread() {
 
         CloseHandle(pipe);
         g_pipe = INVALID_HANDLE_VALUE;
-        rfa::Log("Pipe closed, waiting for next connection...");
+        rfa::LogDetail("Pipe closed, waiting for next connection...");
     }
 
-    rfa::Log("Pipe server thread ended");
+    rfa::LogDetail("Pipe server thread ended");
 }
 
 // Send binary response

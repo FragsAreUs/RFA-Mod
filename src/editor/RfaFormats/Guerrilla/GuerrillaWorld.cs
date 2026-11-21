@@ -82,8 +82,10 @@ public static class GuerrillaWorld
     /// the carried propane tank's explosion, and the map icons.
     /// 11 (v0.6.7-beta): Transporter's start nodes with their car and player start, its end marker effect,
     /// the buildings' values for Mayhem, the M.O.A.B. item, and Guerrilla's text sizes on the HUD's screens.
+    /// 12: the area defenses' managed layers (their given walker, tank or turret), their spawn nodes and their start
+    /// objects' player starts in the campaign's markers.
     /// </summary>
-    public const int Format = 11;
+    public const int Format = 12;
     // The effects' emitters the game holds (guerrilla_world makes its pool 6,600) and Armageddon's own files' (639 files).
     const int EmitterRoom = 6600, ArmageddonEmitters = 3457;
 

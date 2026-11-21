@@ -383,7 +383,7 @@ void CheckSound(const BYTE* kiosk) {
     const float camera = Distance(g_cameraPosition, PlaceOf(kiosk));
     const BYTE* object = SoundObjectFromHandle(g_soundObject);
     if (!object) {
-        rfa::Log("Broadcast sound: camera %.1f m from the kiosk; the game has no sound object for the broadcast's handle %lu", camera, g_soundObject);
+        rfa::LogDetail("Broadcast sound: camera %.1f m from the kiosk; the game has no sound object for the broadcast's handle %lu", camera, g_soundObject);
         return;
     }
     const float* place = reinterpret_cast<const float*>(object + 0x24);
@@ -416,7 +416,7 @@ void CheckSound(const BYTE* kiosk) {
                   view.registered ? "registered" : "NOT registered", view.hasValue ? "" : "NONE, so ", view.hasValue ? view.value : view.global, view.global,
                   view.objectsWithValue, view.subscriptions, view.nodeSubscriptions, view.playing, ids, line);
     }
-    rfa::Log("Broadcast sound: camera %.1f m from the kiosk; %s; playing %s%s; Guerrilla's curve gives the newsreader %.1f dB here; %s", camera, game, playing,
+    rfa::LogDetail("Broadcast sound: camera %.1f m from the kiosk; %s; playing %s%s; Guerrilla's curve gives the newsreader %.1f dB here; %s", camera, game, playing,
              music, GuerrillaKioskDb(camera), wwise);
     // The listener as audiolib gives it to Wwise (its front and top need length 1 and right angles), with Log=1.
     static const float zero[3] = {0.0f, 0.0f, 0.0f};
@@ -506,7 +506,7 @@ void Init() {
     srand(static_cast<unsigned>(time(nullptr)));
     Load();
     ReadSounds();
-    rfa::Log("Broadcast: %u of %u lines available (%u start unlocked), %u voice lines and %s built (kiosk_sounds.txt)%s",
+    rfa::LogDetail("Broadcast: %u of %u lines available (%u start unlocked), %u voice lines and %s built (kiosk_sounds.txt)%s",
              static_cast<unsigned>(g_available.size()), static_cast<unsigned>(tables::Lines().size()),
              static_cast<unsigned>(std::count_if(tables::Lines().begin(), tables::Lines().end(), [](const tables::Line& l) { return l.startsUnlocked; })),
              static_cast<unsigned>(g_lineSounds.size()), g_intro.event.empty() ? "no music" : "the music",
@@ -659,7 +659,7 @@ int UnlockActivity(const char* activity) {
     for (size_t i = 0; i < lines.size(); ++i)
         if (_stricmp(lines[i].activity.c_str(), activity) == 0 && Unlock(static_cast<int>(i))) ++unlocked;
     if (unlocked) {
-        rfa::Log("Broadcast: %d lines unlocked by the activity %s", unlocked, activity);
+        rfa::LogDetail("Broadcast: %d lines unlocked by the activity %s", unlocked, activity);
         Save();
     }
     return unlocked;
@@ -672,7 +672,7 @@ int UnlockMission(const char* mission) {
     for (size_t i = 0; i < lines.size(); ++i)
         if (_stricmp(lines[i].mission.c_str(), mission) == 0 && Unlock(static_cast<int>(i))) ++unlocked;
     if (unlocked) {
-        rfa::Log("Broadcast: %d lines unlocked by the mission %s", unlocked, mission);
+        rfa::LogDetail("Broadcast: %d lines unlocked by the mission %s", unlocked, mission);
         Save();
     }
     return unlocked;

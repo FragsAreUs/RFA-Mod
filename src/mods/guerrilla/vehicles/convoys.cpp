@@ -219,7 +219,7 @@ bool BeginSpawning(Convoy& convoy) {
         const V3 where = PointAt(def, convoy.ghost - kSpacing * k, &direction, &member.routeIndex);
         BYTE* entry = PickVehicle(member.info->vehicles);
         if (!entry) {
-            RFA_LOG_FIRST(10, "Convoys: %s: none of its %s's vehicles is known to the game", def.name.c_str(), RoleName(member.info->role));
+            RFA_LOG_DETAIL_FIRST(10, "Convoys: %s: none of its %s's vehicles is known to the game", def.name.c_str(), RoleName(member.info->role));
             return false;
         }
         PrepareSpawn(member.spawn, entry, {where.x, where.y + 0.5f, where.z}, direction, def.normal, 0x40B);
@@ -309,7 +309,7 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
         member.spawning = false;
         if (result == 0 && vehicle) NoteMadeBy(Handle(vehicle), "a convoy");
         if (result == 2) {
-            RFA_LOG_FIRST(10, "Convoys: %s couldn't make its vehicles; it's called off", def.name.c_str());
+            RFA_LOG_DETAIL_FIRST(10, "Convoys: %s couldn't make its vehicles; it's called off", def.name.c_str());
             TakeAway(convoy);
             return false;
         }
@@ -454,10 +454,10 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
 }  // namespace
 
 void StartConvoys() {
-    if (!rfa::IniInt(L"GuerrillaVehicles", L"Convoys", 1)) { rfa::Log("Convoys: off ([GuerrillaVehicles] Convoys=0)"); return; }
+    if (!rfa::IniInt(L"GuerrillaVehicles", L"Convoys", 1)) { rfa::LogDetail("Convoys: off ([GuerrillaVehicles] Convoys=0)"); return; }
     g_waitAfterLoad = (std::max)(0, rfa::IniInt(L"GuerrillaVehicles", L"ConvoyWaitAfterLoad", 600)) * 1000;
     if (!ReadConvoys()) { rfa::Log("Convoys: no mods\\guerrilla_vehicles\\convoys.txt (build the vehicles); no convoys"); return; }
-    rfa::Log("Convoys: Guerrilla's %u, the first no sooner than %d s in the world", static_cast<unsigned>(g_definitions.size()), g_waitAfterLoad / 1000);
+    rfa::LogDetail("Convoys: Guerrilla's %u, the first no sooner than %d s in the world", static_cast<unsigned>(g_definitions.size()), g_waitAfterLoad / 1000);
 }
 
 void ConvoysFrame() {

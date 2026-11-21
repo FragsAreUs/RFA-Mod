@@ -197,7 +197,7 @@ void LoadDefinitions() {
         }
         g_definitions.push_back(d);
     }
-    rfa::Log("activity_timed_delivery.xtbl: %u deliveries", static_cast<unsigned>(g_definitions.size()));
+    rfa::LogDetail("activity_timed_delivery.xtbl: %u deliveries", static_cast<unsigned>(g_definitions.size()));
 }
 
 const Definition* DefinitionNamed(const std::string& name) {
@@ -294,7 +294,7 @@ void LoadRoutes() {
     }
     int done = 0;
     for (const auto& entry : g_progress) done += entry.second.completed ? 1 : 0;
-    rfa::Log("Transporter: %u routes, %d done", static_cast<unsigned>(g_routes.size()), done);
+    rfa::LogDetail("Transporter: %u routes, %d done", static_cast<unsigned>(g_routes.size()), done);
 }
 
 // A route's vehicle spawn node (the game's node at that place), or null while its zone isn't loaded.
@@ -374,7 +374,7 @@ public:
             // again (world::save_and_reload: he wakes at the nearest safehouse); guerrilla_save's respawn here.
             BYTE* player = static_cast<BYTE*>(Player());
             if (player && IsDead(player)) {
-                rfa::Log("Transporter: EXIT with the player dead: he wakes at the nearest safehouse (Guerrilla's save and reload)");
+                rfa::LogDetail("Transporter: EXIT with the player dead: he wakes at the nearest safehouse (Guerrilla's save and reload)");
                 if (!GuerrillaSave_Respawn()) rfa::Log("Transporter: guerrilla_save couldn't respawn him (its lines say why)");
             }
             return;
@@ -383,14 +383,14 @@ public:
         retryDeferred_ = won_;  // pending_retry: after a win, one call later
         exitAsked_ = false;
         retryWaited_ = 0.0f;
-        rfa::Log("Transporter %s: RETRY chosen (after a %s)", route_->definition->name.c_str(), won_ ? "win" : "loss");
+        rfa::LogDetail("Transporter %s: RETRY chosen (after a %s)", route_->definition->name.c_str(), won_ ? "win" : "loss");
     }
 
     // As the player dies: nothing ends yet. Guerrilla's run stands still while he lies dead (do_frame_active returns,
     // re-arming its post-death timer each frame so that it never runs out) until his death timer runs out:
     // TakePlayerDeath.
     void PlayerDied() {
-        if (IsActive() && !ended_) rfa::Log("Transporter %s: the player died; the run waits for his death timer", route_->definition->name.c_str());
+        if (IsActive() && !ended_) rfa::LogDetail("Transporter %s: the player died; the run waits for his death timer", route_->definition->name.c_str());
     }
 
     // His death timer ran out (gamestate_gp_simulate_frame → activity_guerrilla_express_process_player_death RM 0x76C8E0
@@ -402,7 +402,7 @@ public:
         won_ = false;
         rewardCount_ = 0;
         deadWaited_ = 0.0f;
-        rfa::Log("Transporter %s: failed: the player died (his death timer ran out; the closest it came: %.1f m from the end ring)",
+        rfa::LogDetail("Transporter %s: failed: the player died (his death timer ran out; the closest it came: %.1f m from the end ring)",
                  route_->definition->name.c_str(), closest_ > 1e8f ? -1.0f : closest_);
         ShowResults(false, Failed);
         return awaiting_;
@@ -463,7 +463,7 @@ protected:
         }
         route_ = best;
         car_ = HandleOf(bestCar);
-        rfa::Log("Transporter %s: started in the car %08X", best->definition->name.c_str(), car_);
+        rfa::LogDetail("Transporter %s: started in the car %08X", best->definition->name.c_str(), car_);
     }
 
     // Why a run can't start now ("" when it can): Guerrilla's do_frame_inactive asks activity_can_initialize (the
@@ -492,7 +492,7 @@ protected:
             const int most = d.mostHitPoints > 0 ? d.mostHitPoints : 1;
             SetMostHitPoints(most, car_);
             SetHitPoints(car_, static_cast<int>(static_cast<float>(most) * d.health));
-            rfa::Log("Transporter %s: the car's hit points %d (x %.2f)", d.name.c_str(), most, d.health);
+            rfa::LogDetail("Transporter %s: the car's hit points %d (x %.2f)", d.name.c_str(), most, d.health);
         }
         if (d.speed != -1.0f) rfa::Log("Transporter %s: a speed override (%.1f) isn't ported (no row of Guerrilla's has one)", d.name.c_str(), d.speed);
         return true;
@@ -539,7 +539,7 @@ protected:
         if (player && IsDead(player)) return;  // do_frame_active: the run stands still while he lies dead (see PlayerDied)
         BYTE* car = VehicleByHandle(car_);
         if (!player || !car) {
-            rfa::Log("Transporter: the car is gone; the run stops");
+            rfa::LogDetail("Transporter: the car is gone; the run stops");
             Kill();
             return;
         }
@@ -591,10 +591,10 @@ protected:
         if (distanceToEnd_ < kAlertDropReach && nearLog_ <= 0.0f) {
             nearLog_ = distanceToEnd_ <= 0.0f ? 1.0f : 2.0f;
             if (distanceToEnd_ <= 0.0f)
-                rfa::Log("Transporter %s: inside the end ring (%.1f m from the end, the ring %.1f m) but moving %.1f m/s: it counts under %.1f m/s",
+                rfa::LogDetail("Transporter %s: inside the end ring (%.1f m from the end, the ring %.1f m) but moving %.1f m/s: it counts under %.1f m/s",
                          d.name.c_str(), distanceToEnd_ + d.endRadius, d.endRadius, speed, kStoppedSpeed);
             else
-                rfa::Log("Transporter %s: %.1f m from the end ring (%.1f m from the end), %.1f m/s", d.name.c_str(), distanceToEnd_,
+                rfa::LogDetail("Transporter %s: %.1f m from the end ring (%.1f m from the end), %.1f m/s", d.name.c_str(), distanceToEnd_,
                          distanceToEnd_ + d.endRadius, speed);
         }
         if (distanceToEnd_ < kAlertDropReach && !alertDropped_) {
@@ -629,7 +629,7 @@ private:
         rewardCount_ = (firstWin ? 1 : 0) + (parNow ? 1 : 0);
         Activity::RecordVictory({});  // the framework's (interface VICTORY, kiosk lines); the rewards come at the end
         won_ = true;
-        rfa::Log("Transporter %s: delivered in %.2f s (best %.2f s, par %d s)%s%s", route_->definition->name.c_str(), elapsed_ / 1000.0f,
+        rfa::LogDetail("Transporter %s: delivered in %.2f s (best %.2f s, par %d s)%s%s", route_->definition->name.c_str(), elapsed_ / 1000.0f,
                  p.best / 1000.0f, route_->definition->parTime / 1000, firstWin ? ", the first time" : "", parNow ? ", par beaten" : "");
         ShowResults(true, Success);
     }
@@ -638,7 +638,7 @@ private:
         RecordLoss();
         won_ = false;
         rewardCount_ = 0;
-        rfa::Log("Transporter %s: failed: %s (the closest it came: %.1f m from the end ring, moving %.1f m/s then)", route_->definition->name.c_str(), why,
+        rfa::LogDetail("Transporter %s: failed: %s (the closest it came: %.1f m from the end ring, moving %.1f m/s then)", route_->definition->name.c_str(), why,
                  closest_ > 1e8f ? -1.0f : closest_, closestSpeed_);
         ShowResults(false, reason);
     }
@@ -658,7 +658,7 @@ private:
         const float turn[9] = {scale, 0, 0, 0, scale, 0, 0, 0, scale};
         const Vector at{route_->end->pos.x, route_->end->pos.y + kRingUp, route_->end->pos.z};
         ringEffect_ = EffectsPlay(number, &at.x, turn, true, kNone, -1, kNone, false, 0, 0);
-        rfa::Log("Transporter %s: the end's ground ring %s (%.1f m ring, scale %.2f)", route_->definition->name.c_str(),
+        rfa::LogDetail("Transporter %s: the end's ground ring %s (%.1f m ring, scale %.2f)", route_->definition->name.c_str(),
                  ringEffect_ >= 0 ? "shown" : "couldn't be played", route_->definition->endRadius, scale);
         if (ringEffect_ < 0) ringEffect_ = -2;
     }
@@ -686,7 +686,7 @@ private:
         results.numbers[3] = static_cast<float>(elapsed_);
         awaiting_ = GuerrillaHud_ActivityComplete(&results) != 0;
         if (!awaiting_) {
-            rfa::Log("Transporter: no activity-complete screen; the run ends");
+            rfa::LogDetail("Transporter: no activity-complete screen; the run ends");
             Exit();
         }
     }
@@ -698,7 +698,7 @@ private:
             if (r.control != 0.0f) liberation::ChangeEdfControl(-r.control * rewardCount_, -1);
             if (r.morale != 0.0f) liberation::ChangeMorale(r.morale * rewardCount_, -1);
             if (r.salvage != 0) liberation::AddSalvage(r.salvage * rewardCount_);
-            rfa::Log("Transporter: rewards x %d (salvage %d)", rewardCount_, r.salvage * rewardCount_);
+            rfa::LogDetail("Transporter: rewards x %d (salvage %d)", rewardCount_, r.salvage * rewardCount_);
         }
         rewardCount_ = 0;
     }
@@ -741,7 +741,7 @@ private:
             }
             retryWaited_ += seconds;
             if (retryWaited_ < kLeaveCarSeconds) return;
-            rfa::Log("Transporter %s: RETRY: the player is still in a vehicle after %.0f s; saved as he is", route_->definition->name.c_str(),
+            rfa::LogDetail("Transporter %s: RETRY: the player is still in a vehicle after %.0f s; saved as he is", route_->definition->name.c_str(),
                      kLeaveCarSeconds);
         }
         retrying_ = false;
@@ -763,7 +763,7 @@ private:
                 rfa::Log("Transporter %s: RETRY: its EDF garage %08X isn't loaded; not rebuilt", name, garage.mover);
             } else if (dead && !IsDead(mover) && !(*reinterpret_cast<const DWORD*>(mover + kMoverFlags) & kPristine)) {
                 const bool rebuilt = RestoreObject(kWorld, nullptr, garage.mover, false);
-                rfa::Log("Transporter %s: RETRY after a death: its damaged EDF garage %08X %s", name, garage.mover,
+                rfa::LogDetail("Transporter %s: RETRY after a death: its damaged EDF garage %08X %s", name, garage.mover,
                          rebuilt ? "rebuilt (world::restore_object)" : "not rebuilt (the game said no)");
             }
         }
@@ -777,7 +777,7 @@ private:
         g_retryOldCar = car_;
         g_reopened = false;
         g_startOnLoadWaited = 0.0f;
-        rfa::Log("Transporter %s: RETRY: the world saved with the player at its start (%.1f, %.1f, %.1f%s)%s and opened again; the run's car %08X "
+        rfa::LogDetail("Transporter %s: RETRY: the world saved with the player at its start (%.1f, %.1f, %.1f%s)%s and opened again; the run's car %08X "
                  "is seen to after it", name, route.playerStart[0], route.playerStart[1], route.playerStart[2],
                  route.hasPlayerStart ? ", its player_start" : ", the node", dead ? " after his death (a respawn's save: his weapons kept)" : "",
                  car_);
@@ -852,7 +852,7 @@ private:
         else
             sprintf_s(oldText, "the old car %08X kept (%.1f m from the node)", oldHandle, away);
         g_retryOldCar = kNone;
-        rfa::Log("Transporter %s: RETRY: set up again at its start: %s; %s", name, oldText,
+        rfa::LogDetail("Transporter %s: RETRY: set up again at its start: %s; %s", name, oldText,
                  made != kNone && made != oldHandle && VehicleByHandle(made) ? "a fresh car made" :
                  made != kNone && made == oldHandle ? "the node keeps its car" : "the node's car asked for (it comes once its model streams in)");
     }
@@ -921,12 +921,14 @@ void DeliveryReopened(const char* how) {
     if (g_startOnLoad == kNone || g_reopened) return;
     g_reopened = true;
     g_startOnLoadWaited = 0.0f;
-    rfa::Log("Transporter: the retry's reload is in (%s); its start is set up as soon as its node is there", how);
+    rfa::LogDetail("Transporter: the retry's reload is in (%s); its start is set up as soon as its node is there", how);
 }
 
 }  // namespace campaign::activities
 
 // The activity-complete screen's answer (guerrilla_hud's CloseActivityComplete): 1 its first hint, 2 its second.
 void GuerrillaCampaign_ActivityCompleteChoose(int choice) {
-    if (guerrilla_campaign::Running()) campaign::activities::DeliveryChoose(choice);
+    if (!guerrilla_campaign::Running()) return;
+    campaign::activities::DeliveryChoose(choice);
+    campaign::activities::AreaDefenseChoose(choice);
 }

@@ -229,7 +229,7 @@ void LookAtBuildings() {
         g_said = true;
         unsigned listed = 0;
         for (const auto& entry : g_seen) listed += entry.second.listed ? 1 : 0;
-        rfa::Log("District sources: %u of the %d buildings loaded give control or are propaganda", listed, count);
+        rfa::LogDetail("District sources: %u of the %d buildings loaded give control or are propaganda", listed, count);
     }
 }
 
@@ -263,12 +263,13 @@ void HumanKilled(BYTE* victim, BYTE* attacker) {
     if (victim == player) {
         activities::DemolitionsPlayerDied();
         activities::DeliveryPlayerDied();
+        activities::AreaDefensePlayerDied();
         if (g_playerDeathCounted) return;
         g_playerDeathCounted = true;
         if (activities::CurrentMode() == activities::DemolitionsMaster) return;
         g_deathMorale = liberation::PlayerDeathMorale();
         g_deathDistrict = liberation::PlayerDistrict();
-        rfa::Log("District sources: the player died");
+        rfa::LogDetail("District sources: the player died");
         liberation::ChangeMorale(g_deathMorale, g_deathDistrict);
         return;
     }
@@ -321,7 +322,7 @@ void Init() {
     if (g_listed.empty())
         rfa::Log("No edf_buildings.txt (editor\\GuerrillaBuilder.exe build people writes it): destroying the EDF's buildings and propaganda changes nothing");
     else
-        rfa::Log("edf_buildings.txt: %u of Guerrilla's buildings give control or are propaganda; %u counted already", static_cast<unsigned>(g_listed.size()),
+        rfa::LogDetail("edf_buildings.txt: %u of Guerrilla's buildings give control or are propaganda; %u counted already", static_cast<unsigned>(g_listed.size()),
                  static_cast<unsigned>(g_counted.size()));
     if (memcmp(reinterpret_cast<const void*>(kDied), kDiedStart, kDiedPrologue) != 0) {
         rfa::Log("District sources: the game's human death function isn't as expected; kills don't change morale");
@@ -351,7 +352,7 @@ void ReloadState() {
     ReadCounted();
     g_seen.clear();  // seen again as they are now, without counting
     if (g_deathMorale != 0.0f && g_deathDistrict >= 0) {
-        rfa::Log("District sources: the player's death costs its morale again after the reload");
+        rfa::LogDetail("District sources: the player's death costs its morale again after the reload");
         liberation::ChangeMorale(g_deathMorale, g_deathDistrict);
         g_deathMorale = 0.0f;
         g_deathDistrict = -1;
@@ -366,7 +367,7 @@ void ReloadState() {
 void GuerrillaCampaign_RespawnSaved() {
     using namespace campaign::district_sources;
     if (!guerrilla_campaign::Running()) return;
-    if (g_deathMorale != 0.0f) rfa::Log("District sources: the respawn's save already holds the death's morale");
+    if (g_deathMorale != 0.0f) rfa::LogDetail("District sources: the respawn's save already holds the death's morale");
     g_deathMorale = 0.0f;
     g_deathDistrict = -1;
 }

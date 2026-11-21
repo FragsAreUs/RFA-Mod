@@ -197,7 +197,7 @@ void FollowHudKey() {
     g_hudVersionSeen = version;
     const UINT key = static_cast<UINT>(GuerrillaHud_Key("Backpack"));
     if (key == g_key) return;
-    rfa::Log("Backpacks: the key is %s (%s)", KeyName(key).c_str(),
+    rfa::LogDetail("Backpacks: the key is %s (%s)", KeyName(key).c_str(),
              first ? "Guerrilla's keys, as guerrilla_hud reads them" : "changed in F7 > Guerrilla > Keys");
     g_key = key;
 }
@@ -1454,7 +1454,7 @@ DWORD PutOnModel(BYTE* player, const Pack& pack, const Worn& worn) {
     if (!worn.itemProp.empty())
         std::snprintf(itsOwn, sizeof itsOwn, tag >= 0 ? ", by its own tag %s (%d)" : ", its own tag %s isn't on the model: by its middle",
                       worn.itemProp.c_str(), tag);
-    rfa::Log("Backpacks: %s's model %s %s (%s%s%s)", pack.name.c_str(), name.c_str(), attached ? "on his back" : "made but not attached",
+    rfa::LogDetail("Backpacks: %s's model %s %s (%s%s%s)", pack.name.c_str(), name.c_str(), attached ? "on his back" : "made but not attached",
              how.c_str(), itsOwn, !worn.characterProp.empty() ? "" : bound ? ", bound to his bones" : ", NOT bound to his bones");
     if (!attached) {
         DestroyObject(kWorld, object, true);
@@ -1473,7 +1473,7 @@ void PutOn(BYTE* player, const Pack& pack) {
     if (pack.worn.empty()) rfa::Log("Backpacks: %s has no model to wear in backpacks.txt (build the weapons part again)", pack.name.c_str());
     for (const Worn& worn : pack.worn) {
         if (worn.characterProp.empty() && !kCharacterModelsToo) {
-            rfa::Log("Backpacks: %s's model %s follows his bones (a character model): not worn yet", pack.name.c_str(), worn.item.c_str());
+            rfa::LogDetail("Backpacks: %s's model %s follows his bones (a character model): not worn yet", pack.name.c_str(), worn.item.c_str());
             continue;
         }
         if (const DWORD handle = PutOnModel(player, pack, worn)) g_models.push_back(handle);
@@ -1589,7 +1589,7 @@ void BulletEffects() {
     }
     g_activeAbility = reinterpret_cast<ActiveAbilityFn>(rfa::HookFunction(kActiveAbility, sizeof kActiveAbilityPrologue, reinterpret_cast<void*>(&ActiveAbility)));
     if (!g_activeAbility) rfa::Log("Backpacks: could not wrap the active ability's getter; the packs' bullet hit effects are off");
-    else rfa::Log("Backpacks: the packs' bullet hit effects (Firepower's, Thrust's and Rhino's) go through the game's own bullet hit effects");
+    else rfa::LogDetail("Backpacks: the packs' bullet hit effects (Firepower's, Thrust's and Rhino's) go through the game's own bullet hit effects");
 }
 
 // Guerrilla's attempt_ripple's timer (ripple_timer_ms; Concussion has none: every hit).
@@ -1611,10 +1611,10 @@ void backpacks::Init() {
     if (g_packs.empty())
         rfa::Log("Backpacks: no mods\\guerrilla_gear\\backpacks.txt (build Guerrilla's weapons with GuerrillaBuilder.exe); none can be worn");
     else if (g_key)
-        rfa::Log("Backpacks: %zu of Guerrilla's; the jetpack climbs with jump held in the air, the others switch on with %s (%s)", g_packs.size(),
+        rfa::LogDetail("Backpacks: %zu of Guerrilla's; the jetpack climbs with jump held in the air, the others switch on with %s (%s)", g_packs.size(),
                  KeyName(g_key).c_str(), where);
     else
-        rfa::Log("Backpacks: %zu of Guerrilla's; the jetpack climbs with jump held in the air, the others have no key (%s is \"%ls\")",
+        rfa::LogDetail("Backpacks: %zu of Guerrilla's; the jetpack climbs with jump held in the air, the others have no key (%s is \"%ls\")",
                  g_packs.size(), where, key.c_str());
 }
 
@@ -1629,7 +1629,7 @@ void backpacks::Step(BYTE* player) {
         g_on = false;
         g_rampUntil = 0;
         auto found = g_packs.find(worn);
-        if (worn >= 0) rfa::Log("Backpacks: wearing %s", found != g_packs.end() ? found->second.name.c_str() : "an unknown pack");
+        if (worn >= 0) rfa::LogDetail("Backpacks: wearing %s", found != g_packs.end() ? found->second.name.c_str() : "an unknown pack");
         if (found != g_packs.end() && g_wearingSeen) PlayPackEffect(player, found->second, kEquipEffect, false);  // Guerrilla's pickup_effects
         g_wearingSeen = true;  // (not for the pack he wears as the game starts)
     }

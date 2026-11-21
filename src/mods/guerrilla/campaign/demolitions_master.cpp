@@ -138,7 +138,7 @@ void LoadLevels() {
         }
         g_levels.push_back(level);
     }
-    rfa::Log("activity_demolitions_master.xtbl: %u challenges", static_cast<unsigned>(g_levels.size()));
+    rfa::LogDetail("activity_demolitions_master.xtbl: %u challenges", static_cast<unsigned>(g_levels.size()));
 }
 
 Progress LoadProgress(const world::Object& node) {
@@ -582,7 +582,7 @@ public:
             memcpy(startOrientation_, player + kOrientation, sizeof(startOrientation_));
             haveStart_ = true;
         }
-        rfa::Log("Demolitions master %s: started at node %08X, target building %08X", level_->name.c_str(), node.handle, target_);
+        rfa::LogDetail("Demolitions master %s: started at node %08X, target building %08X", level_->name.c_str(), node.handle, target_);
         return true;
     }
 
@@ -841,7 +841,7 @@ protected:
             if (elapsed_ - damageChangedAt_ < kCollapseQuiet) {
                 outOfAmmoTime_ = 0.0f;
             } else {
-                if (outOfAmmoTime_ == 0.0f) rfa::Log("Demolitions master %s: out of ammo, the building isn't coming down", level_->name.c_str());
+                if (outOfAmmoTime_ == 0.0f) rfa::LogDetail("Demolitions master %s: out of ammo, the building isn't coming down", level_->name.c_str());
                 outOfAmmoTime_ += kPollPeriod;
                 if (outOfAmmoTime_ >= kOutOfAmmoGrace) return Ending(false, OutOfAmmo);
             }
@@ -906,7 +906,7 @@ private:
         rangeTimer_ = 0.0f;
         postTimer_ = success ? kSuccessDelay : kFailureDelay;
         step_ = Step::PostgameDelay;
-        rfa::Log("Demolitions master %s: %s after %.1f s", level_->name.c_str(), ResultText().c_str(), elapsed_);
+        rfa::LogDetail("Demolitions master %s: %s after %.1f s", level_->name.c_str(), ResultText().c_str(), elapsed_);
         ConsolePrint("Demolitions master %s: %s (%.1f s)\n", level_->name.c_str(), ResultText().c_str(), elapsed_);
     }
 
@@ -930,7 +930,7 @@ private:
         choice_ = -1;
         screenAsked_ = false;
         resultsTime_ = 0.0f;
-        rfa::Log("Demolitions master %s: the results (%s, salvage %d%s)", level_->name.c_str(), success_ ? "won" : FailureTag(reason_), salvageGiven_,
+        rfa::LogDetail("Demolitions master %s: the results (%s, salvage %d%s)", level_->name.c_str(), success_ ? "won" : FailureTag(reason_), salvageGiven_,
                  proTime_ ? ", PRO TIME" : "");
     }
 
@@ -978,7 +978,7 @@ private:
         }
         const bool use = ButtonHeld(UseAction(g_localPlayer), g_localPlayer);
         if (use && !useDown_ && offerNode_) {
-            rfa::Log("Demolitions master: the player starts %s at its node", offerNode_->Property("demolitions_master_type").c_str());
+            rfa::LogDetail("Demolitions master: the player starts %s at its node", offerNode_->Property("demolitions_master_type").c_str());
             const world::Object* node = offerNode_;
             offerNode_ = nullptr;
             StartAt(*node);
@@ -1025,14 +1025,14 @@ Activity* MakeDemolitionsMaster() {
         g_done[node->handle] = LoadProgress(*node).completed;
         done += g_done[node->handle] ? 1 : 0;
     }
-    if (!g_done.empty()) rfa::Log("Demolitions master: %d of %u challenges done", done, static_cast<unsigned>(g_done.size()));
+    if (!g_done.empty()) rfa::LogDetail("Demolitions master: %d of %u challenges done", done, static_cast<unsigned>(g_done.size()));
     g_demolitions = new Demolitions();
     return g_demolitions;
 }
 
 bool NodeDone(unsigned node) {
     const auto found = g_done.find(node);
-    return (found != g_done.end() && found->second) || DeliveryNodeDone(node);
+    return (found != g_done.end() && found->second) || DeliveryNodeDone(node) || AreaDefenseNodeDone(node);
 }
 
 bool DemolitionsScreen(Screen& screen) {
@@ -1053,13 +1053,14 @@ void DemolitionsPlayerDied() {
 
 void ReloadProgress() {
     DeliveryReloadProgress();
+    AreaDefenseReloadProgress();
     for (const world::Object* node : world::OfClass("object_demolitions_master_node")) g_done[node->handle] = LoadProgress(*node).completed;
 }
 
 bool StartDemolitionsMaster(const char* level) {
     for (const world::Object* node : world::OfClass("object_demolitions_master_node"))
         if (_stricmp(node->Property("demolitions_master_type").c_str(), level) == 0) return g_demolitions->StartAt(*node);
-    rfa::Log("No demolitions master node of \"%s\" in campaign_objects.xml", level);
+    rfa::LogDetail("No demolitions master node of \"%s\" in campaign_objects.xml", level);
     return false;
 }
 

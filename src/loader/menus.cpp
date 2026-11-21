@@ -26,6 +26,7 @@
 #include "rfa_mod.h"
 #include "rfa_menu.h"
 #include "menus.h"
+#include "profiler.h"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
@@ -295,7 +296,7 @@ bool Start() {
         rfa::Log("Could not read the game window's messages; no menus");
         return false;
     }
-    rfa::Log("Dear ImGui %s set up on the game's picture (%ux%u)", IMGUI_VERSION, g_pictureWidth, g_pictureHeight);
+    rfa::LogDetail("Dear ImGui %s set up on the game's picture (%ux%u)", IMGUI_VERSION, g_pictureWidth, g_pictureHeight);
     return true;
 }
 
@@ -304,7 +305,7 @@ void FindMenus() {
     if (!g_mods) return;
     for (HMODULE mod : *g_mods)
         if (auto menu = reinterpret_cast<MenuFn>(GetProcAddress(mod, "RFAMod_Menu"))) g_menus.push_back(menu);
-    rfa::Log("%u mod(s) with menus", static_cast<unsigned>(g_menus.size()));
+    rfa::LogDetail("%u mod(s) with menus", static_cast<unsigned>(g_menus.size()));
 }
 
 // Calls a mod's menu; a crash in it ends up in the log, and that mod's menus are off from then on.
@@ -439,7 +440,10 @@ public:
 
     // IDXGISwapChain
     HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override {
-        if (real_ == g_chain && !(flags & DXGI_PRESENT_TEST)) DrawMenus();
+        if (real_ == g_chain && !(flags & DXGI_PRESENT_TEST)) {
+            DrawMenus();
+            ProfilerFramePresented();  // counts the frame ([Loader] Profile=1)
+        }
         return real_->Present(sync, flags);
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT buffer, REFIID id, void** surface) override { return real_->GetBuffer(buffer, id, surface); }
@@ -467,7 +471,7 @@ HRESULT STDMETHODCALLTYPE CreateSwapChain(IDXGIFactory* factory, IUnknown* devic
         LetGoOfTarget();
         g_chain = *chain;
         *chain = new ChainProxy(g_chain);
-        rfa::Log("The game made a new swap chain: %ux%u", desc->BufferDesc.Width, desc->BufferDesc.Height);
+        rfa::LogDetail("The game made a new swap chain: %ux%u", desc->BufferDesc.Width, desc->BufferDesc.Height);
         return made;
     }
     ID3D11Device* d3d = nullptr;
@@ -478,7 +482,7 @@ HRESULT STDMETHODCALLTYPE CreateSwapChain(IDXGIFactory* factory, IUnknown* devic
     *chain = new ChainProxy(g_chain);
     g_window = desc->OutputWindow;
     g_windowProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WindowProc)));
-    rfa::Log("The game's swap chain: %ux%u; menus will show while the console is open", desc->BufferDesc.Width, desc->BufferDesc.Height);
+    rfa::LogDetail("The game's swap chain: %ux%u; menus will show while the console is open", desc->BufferDesc.Width, desc->BufferDesc.Height);
     return made;
 }
 
@@ -524,7 +528,7 @@ void InstallMenus(const std::vector<HMODULE>* mods) {
     const std::wstring key = rfa::IniString(L"Loader", L"MenuKey", L"F7");
     g_menuKey = KeyNamed(key);
     g_menuKeyName = Utf8(key);
-    rfa::Log(g_menuKey ? "Menus: %ls opens them" : "Menus: no key of their own (\"%ls\"); open the console", key.c_str());
+    rfa::LogDetail(g_menuKey ? "Menus: %ls opens them" : "Menus: no key of their own (\"%ls\"); open the console", key.c_str());
     if (!rfa::HookImport(GetModuleHandleW(nullptr), "dxgi.dll", "CreateDXGIFactory", &CreateFactory, &g_createFactory))
         rfa::Log("Could not hook the game's CreateDXGIFactory; no menus");
 }

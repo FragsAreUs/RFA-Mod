@@ -84,6 +84,10 @@ void LetGo(Squad& squad);
 // object freed (the game's world::destroy_object) once none of its people is left.
 void RetireLeaving(BYTE* player);
 
+// A squad taken away now, seen or not (behind a fade: an activity's clean-up): its chase given back, its people, its
+// vehicle (unless the player is in it) and its squad object removed.
+void RemoveNow(Squad& squad);
+
 // How many squads are leaving (let go, their people or objects not yet gone).
 size_t Leaving();
 

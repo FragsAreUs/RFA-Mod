@@ -321,7 +321,7 @@ void __fastcall AskForSave(void* world, void* /*unused*/, bool message, bool b) 
 // from a save's block); without it, saves carry none (said once).
 bool CampaignThere() {
     const bool running = guerrilla_campaign::Running();
-    if (!running) RFA_LOG_FIRST(1, "guerrilla_campaign is off: saves carry no campaign state");
+    if (!running) RFA_LOG_DETAIL_FIRST(1, "guerrilla_campaign is off: saves carry no campaign state");
     return running;
 }
 
@@ -344,7 +344,7 @@ std::vector<unsigned char> CampaignState() {
     std::vector<unsigned char> state(needed);
     const int written = GuerrillaCampaign_SaveState(state.data(), needed);
     if (written <= 0 || written > needed) {
-        rfa::Log("GuerrillaCampaign_SaveState wrote %d bytes of the %d it asked for; no campaign state in this save", written,
+        rfa::LogDetail("GuerrillaCampaign_SaveState wrote %d bytes of the %d it asked for; no campaign state in this save", written,
                  needed);
         return {};
     }
@@ -437,7 +437,7 @@ void AddCampaignBlock() {
     } else {
         memcpy(data + size, g_blockToAdd.data(), length);
         *reinterpret_cast<int*>(kSavedSize) = size + length;
-        rfa::Log("Campaign state added to the save: %d bytes after its %d", length, size);
+        rfa::LogDetail("Campaign state added to the save: %d bytes after its %d", length, size);
     }
     g_blockToAdd.clear();
 }
@@ -514,7 +514,7 @@ void GiveKit(BYTE* player, const Kit& kit) {
         }
         given += std::string(given.empty() ? "" : ", ") + w.name;
     }
-    rfa::Log("Respawn: weapons given back: %s; now %s%s%s", given.empty() ? "none" : given.c_str(), KitText(TakeKit(player)).c_str(),
+    rfa::LogDetail("Respawn: weapons given back: %s; now %s%s%s", given.empty() ? "none" : given.c_str(), KitText(TakeKit(player)).c_str(),
              missed.empty() ? "" : "; not given: ", missed.c_str());
     g_equipSlot = kit.inHands;  // taken in hand by EquipHeldGun
     g_equipSince = GetTickCount();
@@ -529,7 +529,7 @@ void EquipHeldGun() {
     BYTE* record = player ? RecordInSlot(player, g_equipSlot) : nullptr;
     const DWORD now = GetTickCount();
     if (record && RecordInHands(player) == record) {
-        rfa::Log("Respawn: slot %d's gun is in his hands again (%lu ms after its weapons were given back)", g_equipSlot, now - g_equipSince);
+        rfa::LogDetail("Respawn: slot %d's gun is in his hands again (%lu ms after its weapons were given back)", g_equipSlot, now - g_equipSince);
         g_equipSlot = -1;
         return;
     }
@@ -593,7 +593,7 @@ void ReadSpots() {
             g_spots.push_back(spot);
         }
         fclose(file);
-        rfa::Log("Respawns: %u places from mods\\guerrilla_save\\respawns.txt", static_cast<unsigned>(g_spots.size()));
+        rfa::LogDetail("Respawns: %u places from mods\\guerrilla_save\\respawns.txt", static_cast<unsigned>(g_spots.size()));
         return;
     }
     if (FILE* file = _wfopen((rfa::RootDir() + L"\\mods\\guerrilla_hud\\safehouses.txt").c_str(), L"r")) {
@@ -727,7 +727,7 @@ void StepReload() {
             return;
         }
         const std::string afterDeath = dead ? " (after his death, a respawn's save: keeps his weapons as he had them alive: " + KitText(g_respawnKit) + ")" : "";
-        rfa::Log("Reload at a spot: the save asked with the player put at %.1f %.1f %.1f%s", g_reloadPosition[0], g_reloadPosition[1],
+        rfa::LogDetail("Reload at a spot: the save asked with the player put at %.1f %.1f %.1f%s", g_reloadPosition[0], g_reloadPosition[1],
                  g_reloadPosition[2], afterDeath.c_str());
         SetReloadStage(ReloadStage::Saving);
         return;
@@ -750,7 +750,7 @@ void StepReload() {
             SetReloadStage(ReloadStage::None);
             return;
         }
-        rfa::Log("Reload at a spot: saved in memory (%d KB, %lu ms); the screen fades", Int(kSavedSize) / 1024, waited);
+        rfa::LogDetail("Reload at a spot: saved in memory (%d KB, %lu ms); the screen fades", Int(kSavedSize) / 1024, waited);
         SetReloadStage(ReloadStage::Fading);
         return;
     }
@@ -759,7 +759,7 @@ void StepReload() {
         if (!dark && waited <= kFadeLimitMs) return;
         SetReloadStage(ReloadStage::Opening);
         reinterpret_cast<AskReloadFn>(kAskReload)(World());
-        rfa::Log("Reload at a spot: the world opens again from that save%s", dark ? "" : " (the fade wasn't done after 3 s)");
+        rfa::LogDetail("Reload at a spot: the world opens again from that save%s", dark ? "" : " (the fade wasn't done after 3 s)");
         return;
     }
     if (stage == ReloadStage::Opening && waited > kReloadWaitLimitMs) {  // OpenWorld ends it; this only if the open never came
@@ -786,7 +786,7 @@ void RaiseGameOver() {
 // come, as before.
 void __cdecl GameOverStart() {
     if (InGuerrillaWorld() && CampaignThere() && GuerrillaCampaign_TakePlayerDeath()) {
-        rfa::Log("Death: the campaign's running activity takes it (its results screen, Guerrilla's); no game-over screen");
+        rfa::LogDetail("Death: the campaign's running activity takes it (its results screen, Guerrilla's); no game-over screen");
         return;
     }
     RaiseGameOver();
@@ -810,10 +810,10 @@ void FollowSoundAfterReload() {
     const bool gamePaused = reinterpret_cast<MissionActiveFn>(kGamePaused)();
     if ((a || b) && !gamePaused) {
         ResumeSound(true, true);
-        rfa::Log("Reload at a spot: the world runs again, but its sound was left paused (%d %d); resumed as the game's unpause does "
+        rfa::LogDetail("Reload at a spot: the world runs again, but its sound was left paused (%d %d); resumed as the game's unpause does "
                  "(now %d %d)", a, b, Byte(kSoundPausedA), Byte(kSoundPausedB));
     } else {
-        rfa::Log("Reload at a spot: the world runs again; its sound %s (%d %d), the game %s", a || b ? "paused" : "playing", a, b,
+        rfa::LogDetail("Reload at a spot: the world runs again; its sound %s (%d %d), the game %s", a || b ? "paused" : "playing", a, b,
                  gamePaused ? "paused" : "running");
     }
 }
@@ -861,10 +861,10 @@ void __cdecl GameplayStep() {
         if (CampaignThere()) {
             if (fresh) {
                 GuerrillaCampaign_LoadState(nullptr, 0);
-                rfa::Log("Campaign state: a fresh start (GuerrillaCampaign_LoadState(null, 0))");
+                rfa::LogDetail("Campaign state: a fresh start (GuerrillaCampaign_LoadState(null, 0))");
             } else {
                 GuerrillaCampaign_LoadState(block.data(), static_cast<int>(block.size()));
-                rfa::Log("Campaign state: the save's %u bytes given back (GuerrillaCampaign_LoadState)",
+                rfa::LogDetail("Campaign state: the save's %u bytes given back (GuerrillaCampaign_LoadState)",
                          static_cast<unsigned>(block.size()));
             }
         }
@@ -946,7 +946,7 @@ int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool f
             bool hasKit = false;
             Kit kit;
             const bool hasBlock = ReadSaveBlocks(world, block, hasKit, kit);
-            rfa::Log("Opening a save made in %s: opened by that name, so its zones get the Guerrilla world's size; %s%s",
+            rfa::LogDetail("Opening a save made in %s: opened by that name, so its zones get the Guerrilla world's size; %s%s",
                      g_savedLevel, hasBlock ? "it has the campaign's state" : "it has no campaign state",
                      hasKit ? (", and a respawn's weapons: " + KitText(kit)).c_str() : "");
             {
@@ -984,7 +984,7 @@ const char* SaveState() {
     } else if (Int(kSavedSize) <= 0) {
         rfa::Log("The world's save came out empty (it may not fit in its %d KB)", Int(kSavedRoom) / 1024);
     } else {
-        rfa::Log("Saved in memory: %d KB of %d KB, in %lu ms; the save screen opens", Int(kSavedSize) / 1024,
+        rfa::LogDetail("Saved in memory: %d KB of %d KB, in %lu ms; the save screen opens", Int(kSavedSize) / 1024,
                  Int(kSavedRoom) / 1024, waited);
         g_saveOutcome = "saved";
         g_waitingToSave = false;
@@ -1001,7 +1001,7 @@ const char* SaveState() {
 int __cdecl LuaCanSave(rfa::game::lua_State* L) {
     if (!InGuerrillaWorld()) return 0;
     const char* why = WhyNoSave();
-    if (why) RFA_LOG_FIRST(20, "SAVE GAME not offered: %s", why);
+    if (why) RFA_LOG_DETAIL_FIRST(20, "SAVE GAME not offered: %s", why);
     rfa::game::lua_pushboolean(L, why == nullptr);
     return 1;
 }
@@ -1018,7 +1018,7 @@ int __cdecl LuaSaveGame(rfa::game::lua_State* L) {
     g_saveStarted = false;
     g_askedAt = GetTickCount();
     reinterpret_cast<AskForSaveFn>(kAskForSave)(World(), false, false);
-    rfa::Log("SAVE GAME: asked the world for a save (flags 0x%02X 0x%02X)", Byte(kSaveFlags), Byte(kSaveFlags2));
+    rfa::LogDetail("SAVE GAME: asked the world for a save (flags 0x%02X 0x%02X)", Byte(kSaveFlags), Byte(kSaveFlags2));
     rfa::game::lua_pushboolean(L, 1);
     return 1;
 }
@@ -1051,7 +1051,7 @@ int __cdecl LuaRespawn(rfa::game::lua_State* L) {
     g_respawnPending = true;
     g_respawnAskedAt = GetTickCount();
     TakeRespawnKit();
-    rfa::Log("Respawn: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f; keeps his weapons as he had them alive: %s",
+    rfa::LogDetail("Respawn: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f; keeps his weapons as he had them alive: %s",
              at[0], at[1], at[2], spot->name.c_str(), why.c_str(), spot->position[0], spot->position[1], spot->position[2],
              KitText(g_respawnKit).c_str());
     rfa::game::lua_pushboolean(L, 1);
@@ -1095,13 +1095,13 @@ bool GuerrillaSave_ReloadAt(const float* position, const float* orientation) {
         return false;
     }
     if (CurrentReloadStage() != ReloadStage::None || g_respawnPending) {
-        rfa::Log("Reload at a spot: a %s already waits; not asked", g_respawnPending ? "respawn" : "reload");
+        rfa::LogDetail("Reload at a spot: a %s already waits; not asked", g_respawnPending ? "respawn" : "reload");
         return false;
     }
     memcpy(g_reloadPosition, position, sizeof(g_reloadPosition));
     memcpy(g_reloadOrientation, orientation, sizeof(g_reloadOrientation));
     SetReloadStage(ReloadStage::Asked);
-    rfa::Log("Reload at a spot: asked (%.1f %.1f %.1f); saved at the next gameplay step the world can take a save", position[0], position[1],
+    rfa::LogDetail("Reload at a spot: asked (%.1f %.1f %.1f); saved at the next gameplay step the world can take a save", position[0], position[1],
              position[2]);
     return true;
 }
@@ -1129,11 +1129,11 @@ bool GuerrillaSave_Respawn() {
     std::string why;
     const Spot* spot = ChooseSpot(at, why);
     if (spot && GuerrillaSave_ReloadAt(spot->position, spot->orientation)) {
-        rfa::Log("Respawn after an activity: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f", at[0], at[1], at[2], spot->name.c_str(),
+        rfa::LogDetail("Respawn after an activity: died at %.0f %.0f %.0f; wakes at %s (%s) %.0f %.0f %.0f", at[0], at[1], at[2], spot->name.c_str(),
                  why.c_str(), spot->position[0], spot->position[1], spot->position[2]);
         return true;
     }
-    rfa::Log("Respawn after an activity: %s; the game-over screen instead", spot ? "the reload couldn't be asked" : "nowhere to wake him");
+    rfa::LogDetail("Respawn after an activity: %s; the game-over screen instead", spot ? "the reload couldn't be asked" : "nowhere to wake him");
     RaiseGameOver();
     return false;
 }
@@ -1141,7 +1141,7 @@ bool GuerrillaSave_Respawn() {
 // For guerrilla_campaign, when its results screen over a dead player can't come up: Armageddon's game-over screen now.
 void GuerrillaSave_GameOver() {
     if (!guerrilla_save::Running()) return;
-    rfa::Log("Death: the campaign gives it back; the game-over screen");
+    rfa::LogDetail("Death: the campaign gives it back; the game-over screen");
     RaiseGameOver();
 }
 
@@ -1181,6 +1181,6 @@ void guerrilla_save::Init() {
     // The game-over screen's start, replaced whole (GameOverStart): its code as the game's, the campaign asked first.
     if (!Starts(kGameOverStart, {0x55, 0x8B, 0xEC, 0x51, 0xE8}) || !rfa::ReplaceFunction(kGameOverStart, reinterpret_cast<const void*>(&GameOverStart)))
         rfa::Log("The game-over screen's start isn't as expected; a death in an activity raises it as the game does");
-    rfa::Log("Saving in the Guerrilla worlds: SAVE GAME in the pause menu saves the moment you are in; saves stay in "
+    rfa::LogDetail("Saving in the Guerrilla worlds: SAVE GAME in the pause menu saves the moment you are in; saves stay in "
              "memory until you pick a slot (never written into the campaign's autosave slot)");
 }

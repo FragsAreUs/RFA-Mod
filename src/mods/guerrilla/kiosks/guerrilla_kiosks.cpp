@@ -55,7 +55,7 @@ void __cdecl FrameStep() {
     const bool ours = InOurWorld();
     if (static_cast<int>(ours) != g_inOurWorld) {
         g_inOurWorld = ours;
-        rfa::Log(ours ? "Guerrilla's kiosks run in %s" : "%s isn't one of Worlds=; Guerrilla's kiosks rest", WorldName());
+        rfa::LogDetail(ours ? "Guerrilla's kiosks run in %s" : "%s isn't one of Worlds=; Guerrilla's kiosks rest", WorldName());
         if (!ours) {
             screens::Forget();
             if (g_broadcast) broadcast::Forget();
@@ -117,7 +117,7 @@ BYTE* Player() { return g_player; }
 int AlertLevel() {
     if (!g_campaignLooked) {
         g_campaignLooked = true;
-        rfa::Log(guerrilla_campaign::Running() ? "The alert level comes from guerrilla_campaign (the alert picture at yellow and above)"
+        rfa::LogDetail(guerrilla_campaign::Running() ? "The alert level comes from guerrilla_campaign (the alert picture at yellow and above)"
                                                : "guerrilla_campaign isn't running: the alert level stays green for the kiosks");
     }
     const int level = GuerrillaCampaign_Alert(nullptr);
@@ -138,7 +138,7 @@ void guerrilla_kiosks::Init() {
         return;
     }
     if (rfa::IniInt(L"GuerrillaKiosks", L"Enabled", 1) == 0) {
-        rfa::Log("Off (Enabled=0 in [GuerrillaKiosks])");
+        rfa::LogDetail("Off (Enabled=0 in [GuerrillaKiosks])");
         return;
     }
     g_worlds = SplitList(rfa::IniString(L"GuerrillaKiosks", L"Worlds", L"rfg"));
@@ -146,14 +146,14 @@ void guerrilla_kiosks::Init() {
     if (!tables::Load()) return;  // says why
     g_broadcast = rfa::IniInt(L"GuerrillaKiosks", L"Broadcast", 1) != 0;
     if (g_broadcast) broadcast::Init();
-    else rfa::Log("Broadcast=0 in [GuerrillaKiosks]: the screens only, no broadcast");
+    else rfa::LogDetail("Broadcast=0 in [GuerrillaKiosks]: the screens only, no broadcast");
     if (memcmp(reinterpret_cast<const void*>(kFrameStep), kFrameStepOpening, sizeof(kFrameStepOpening)) == 0)
         g_frameStep = reinterpret_cast<FrameStepFn>(rfa::HookFunction(kFrameStep, kFrameStepPrologue, reinterpret_cast<void*>(&FrameStep)));
     if (!g_frameStep) {
         rfa::Log("Could not hook the game's frame step after its scripts (its code isn't as expected); the kiosks stay dark");
         return;
     }
-    rfa::Log("Guerrilla's kiosk code runs in the worlds named by Worlds= in [GuerrillaKiosks]");
+    rfa::LogDetail("Guerrilla's kiosk code runs in the worlds named by Worlds= in [GuerrillaKiosks]");
 }
 
 // ---- For the other mods

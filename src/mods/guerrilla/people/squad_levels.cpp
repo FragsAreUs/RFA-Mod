@@ -275,11 +275,11 @@ bool __fastcall FillMembers(BYTE* squad, void* unused, BYTE* spawn) {
 void StartSquadLevels() {
     ReadLevels();
     g_alertDespawn = rfa::IniInt(L"GuerrillaPeople", L"CiviliansAtAlert", 1) != 0 && !g_civilianSquads.empty();
-    rfa::Log(g_alertDespawn ? "Civilian squads: at orange and red alert %u civilian squads' people go once out of sight, as Guerrilla's"
+    rfa::LogDetail(g_alertDespawn ? "Civilian squads: at orange and red alert %u civilian squads' people go once out of sight, as Guerrilla's"
                             : "Civilian squads: they stay at every alert level (CiviliansAtAlert=0, or no civilian lines in squad_levels.txt)",
              static_cast<unsigned>(g_civilianSquads.size()));
     if (rfa::IniInt(L"GuerrillaPeople", L"SquadLevels", 1) == 0) {
-        rfa::Log("Squad levels: off ([GuerrillaPeople] SquadLevels=0): every squad keeps its level-1 weapons");
+        rfa::LogDetail("Squad levels: off ([GuerrillaPeople] SquadLevels=0): every squad keeps its level-1 weapons");
         return;
     }
     if (g_sets.empty() || g_squadSets.empty()) {
@@ -295,14 +295,14 @@ void StartSquadLevels() {
         rfa::Log("Squad levels: could not hook the squad's member list; every squad keeps its level-1 weapons");
         return;
     }
-    rfa::Log("Squad levels: %u squads follow %u of Guerrilla's progression sets: their members get their level's weapons as they're made",
+    rfa::LogDetail("Squad levels: %u squads follow %u of Guerrilla's progression sets: their members get their level's weapons as they're made",
              static_cast<unsigned>(g_squadSets.size()), static_cast<unsigned>(g_sets.size()));
 }
 
 void SquadLevelsFrame(bool ours) {
     if (ours && !g_ours) {  // a level of ours: the campaign's levels
         if (g_fillMembers && !guerrilla_campaign::Running())
-            RFA_LOG_FIRST(1, "Squad levels: guerrilla_campaign is off; every squad keeps its level-1 weapons");
+            RFA_LOG_DETAIL_FIRST(1, "Squad levels: guerrilla_campaign is off; every squad keeps its level-1 weapons");
     }
     if (!ours && g_ours) {
         std::lock_guard<std::mutex> hold(g_lock);

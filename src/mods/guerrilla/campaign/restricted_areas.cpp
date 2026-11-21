@@ -141,7 +141,7 @@ void Enter() {
     g_playerIn = -1;
     if (!g_said) {
         g_said = true;
-        if (!g_areas.empty()) rfa::Log("restricted_areas.txt: %u of Guerrilla's restricted areas (its EDF bases)", static_cast<unsigned>(g_areas.size()));
+        if (!g_areas.empty()) rfa::LogDetail("restricted_areas.txt: %u of Guerrilla's restricted areas (its EDF bases)", static_cast<unsigned>(g_areas.size()));
     }
 }
 
@@ -151,10 +151,10 @@ void Frame() {
     const int area = AreaAt(at.x, at.z, false);
     if (area == g_playerIn) return;
     if (area >= 0)
-        rfa::Log("The player is in the EDF's restricted area 0x%08X (%s), at (%.0f, %.0f, %.0f): the EDF who see him there take him for an enemy, and the alert level doesn't fall",
+        rfa::LogDetail("The player is in the EDF's restricted area 0x%08X (%s), at (%.0f, %.0f, %.0f): the EDF who see him there take him for an enemy, and the alert level doesn't fall",
                  g_areas[area].handle, g_areas[area].zone.c_str(), at.x, at.y, at.z);
     else
-        rfa::Log("The player left the EDF's restricted area 0x%08X (%s), at (%.0f, %.0f, %.0f)", g_areas[g_playerIn].handle, g_areas[g_playerIn].zone.c_str(), at.x, at.y,
+        rfa::LogDetail("The player left the EDF's restricted area 0x%08X (%s), at (%.0f, %.0f, %.0f)", g_areas[g_playerIn].handle, g_areas[g_playerIn].zone.c_str(), at.x, at.y,
                  at.z);
     g_playerIn = area;
 }

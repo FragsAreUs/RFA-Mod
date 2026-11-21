@@ -213,7 +213,7 @@ void ConvertForFight(BYTE* player) {
     if (joined == 1) messages::Minor("HM_GUERRILLA_ASSIST", nullptr);
     else messages::MinorCount("HM_GUERRILLAS_ASSIST", joined);
     messages::Tip("Guerrilla_Joined", kJoinedTipMs);
-    rfa::Log("Converts: %d joined (morale %.0f %%, %d may at this morale, %u now)", joined, liberation::EffectiveMoralePercent(-1) * 100.0f, kConverts[tenth],
+    rfa::LogDetail("Converts: %d joined (morale %.0f %%, %d may at this morale, %u now)", joined, liberation::EffectiveMoralePercent(-1) * 100.0f, kConverts[tenth],
              static_cast<unsigned>(g_converts.size()));
 }
 
@@ -234,7 +234,7 @@ void ReleaseAll(BYTE* player) {
     if (g_converts.empty()) return;
     const Vector from = player ? PositionOf(player) : Vector{};
     for (DWORD handle : g_converts) WalkAway(handle, from);
-    rfa::Log("Converts: the fight is over; %u guerrillas leave", static_cast<unsigned>(g_converts.size()));
+    rfa::LogDetail("Converts: the fight is over; %u guerrillas leave", static_cast<unsigned>(g_converts.size()));
     g_converts.clear();
 }
 
@@ -267,7 +267,7 @@ void TickLeaving(BYTE* player) {
 
 void Init() {
     g_on = rfa::IniInt(L"GuerrillaCampaign", L"Converts", 1) != 0;
-    rfa::Log(g_on ? "Converts: civilians join the guerrillas by morale during fights, and may rise when the EDF kill one of them"
+    rfa::LogDetail(g_on ? "Converts: civilians join the guerrillas by morale during fights, and may rise when the EDF kill one of them"
                   : "Converts: off (Converts=0 in [GuerrillaCampaign])");
 }
 
@@ -332,7 +332,7 @@ void HumanKilled(BYTE* victim, BYTE* killer) {
         risen.push_back(at);
     }
     if (!risen.empty())
-        rfa::Log("Converts: %u rose against the EDF after a killing (morale %.0f %%, %u around)", static_cast<unsigned>(risen.size()), morale * 100.0f,
+        rfa::LogDetail("Converts: %u rose against the EDF after a killing (morale %.0f %%, %u around)", static_cast<unsigned>(risen.size()), morale * 100.0f,
                  static_cast<unsigned>(nearby.size()));
 }
 

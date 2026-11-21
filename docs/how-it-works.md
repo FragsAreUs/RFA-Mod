@@ -165,7 +165,8 @@ containers, terrain), to see what a level loads. It also logs the Ruin map list 
 begins (`0x50F400`).
 
 **Lua bridge**: menu scripts can call `rfa_get_setting(section, key, default)`,
-`rfa_set_setting(section, key, value)` and `rfa_log(text)`. After a change the loader calls
+`rfa_set_setting(section, key, value)` and `rfa_log(text)` (written to `logs\rfa_mods.log` as a
+`[loader:log] lua:` line while `[Loader] Log=1` or `[GuerrillaHud] Log=1`). After a change the loader calls
 `RFAMod_SettingChanged(section, key)` in every mod that exports it. A mod can add Lua functions
 of its own for its interface scripts: the loader calls its `RFAMod_RegisterLua(lua_State*)`
 export, if it has one, right after adding its own (`rfa::game::lua_register` in `rfa_game.h`).
@@ -399,8 +400,9 @@ game's registry code never runs for these settings, and nothing in the mod calls
   `0x13130D0`) until shown for a while and emptied; the mod reads the new ones each frame and adds
   them, `[game]` too, errors red and warnings yellow. Neither shows in the notify lines.
 - *RFA-Mod's log* (`ModLog=1`): `logs\rfa_mods.log`, which the launcher starts afresh and the loader
-  and every mod append to, is read ten times a second as it grows; each new line is added without
-  its time, starting with the module's name (`[guerrilla_world] ...`), drawn teal.
+  and every mod append to, is read ten times a second as it grows; each new problem line is added
+  without its time, starting with the module's name (`[guerrilla_world] ...`), drawn teal. The
+  parts' start-up lines (`[module:info]`) and routine lines (`[module:log]`) stay in the file.
 - *Pasting*: Ctrl+V or Shift+Insert, taken out of the key queue like the scrolling keys. The
   clipboard's text (Unicode) is made into what the console can type: printable ASCII as it is, tabs
   and other spaces a space, typographic quotes, dashes and the ellipsis their ASCII forms, control
@@ -522,6 +524,13 @@ What a world ported from Red Faction: Guerrilla needs that Armageddon doesn't do
   compared with it over a square three texels across, each texel counted by how much of it the
   square covers, so the edge slides smoothly from texel to texel. The map's size is the game's `ShadowDetail` video setting (4096 across by default). The
   sky's light is added after the pass as before.
+- **The clouds' shadows** (`CloudShadows=`): Re-Mars-tered darkens the sun's light under its
+  clouds, and the mod does the same in the same step. The overhead clouds' first texture (512 texels
+  square) is laid flat over the world as if seen from straight above, two metres a texel (1,024 m
+  across, tiled), and slides with the clouds' drift. Each surface reads the texture's alpha (a cloud
+  layer's cover) where it stands, less a half, times 4.5, and loses that much of the sun on top of
+  the shadow map's shadow. It applies at every distance, as Re-Mars-tered's does. It needs the sun's
+  shadows (the surface's place comes from the same depth) and the clouds.
 - **The sun's shine**: a surface's shine comes from the light buffer's alpha, which only lamps
   write, so Guerrilla's specular maps showed nothing. The mod's sun writes it as Armageddon's
   lamps do: the sun reflected off the surface toward the eye, to the power of the surface's
@@ -2101,6 +2110,14 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() { /* install hooks *
 - `rfa_mod.h` provides `rfa::Log`, `rfa::IniInt`/`IniString`, `rfa::HookImport` (import table),
   `rfa::ReplaceFunction` (send a game function to a C++ function with the same signature) and
   `rfa::HookFunction` (the same, keeping a pointer to call the original).
+- Logging: `rfa::Log` is for problems only (a hook that failed, a file missing, code not as
+  expected); the in-game console shows those. `rfa::LogInfo` is for a mod's one start-up line, if it
+  needs one. Everything else goes through `rfa::LogDetail`, written only while the mod's own `Log=1`
+  is set (`rfa::ReadLogSwitch(L"Section")` in `RFAMod_Init`); with it off a detail line costs one
+  test, its arguments aren't even worked out.
+- `[Loader] Profile=1` samples the game's main and render threads and logs how much of each frame
+  every mod's code takes; the `.map` file build.cmd writes next to each DLL names the sampled
+  addresses.
 - `rfa_game.h` has `rfa::game::IsSupportedBuild()` (check it before touching game code) and the
   game's Lua API.
 - Write hooks in plain C++: match the game function's calling convention (`__cdecl`, or

@@ -194,7 +194,7 @@ void ReadNodes() {
             else g_nodes[std::stoul(f[1], nullptr, 16)] = n;
         }
     }
-    rfa::Log("Actions: %d of Guerrilla's squad nodes under action nodes and %d nodes the walkers use read (%d types, %d with a prop); their people go to them and "
+    rfa::LogDetail("Actions: %d of Guerrilla's squad nodes under action nodes and %d nodes the walkers use read (%d types, %d with a prop); their people go to them and "
              "do them, as Guerrilla's",
              static_cast<int>(g_nodes.size()), static_cast<int>(g_pedNodes.size()), static_cast<int>(g_types.size()), static_cast<int>(g_props.size()));
 }
@@ -327,7 +327,7 @@ void Step(BYTE* human, Actor& a, int now) {
                 const int result = ai ? GoTo(ai, nullptr, &n.spot.x, kWalk, kStanding, kLowPriority, kNone, kNone, false) : kNoPath;
                 if (result == kNoPath || result == kStartOffMesh || result == kDestinationOffMesh) {
                     ++g_noWay;
-                    RFA_LOG_FIRST(16, "Actions: NPC 0x%08X can't walk to its %s spot at (%.1f, %.1f, %.1f) (the go-to's %d)", HandleOf(human), t.name.c_str(), n.spot.x,
+                    RFA_LOG_DETAIL_FIRST(16, "Actions: NPC 0x%08X can't walk to its %s spot at (%.1f, %.1f, %.1f) (the go-to's %d)", HandleOf(human), t.name.c_str(), n.spot.x,
                                   n.spot.y, n.spot.z, result);
                     Release(human, a, now, kNoWayBack, "no way to its spot");
                 }

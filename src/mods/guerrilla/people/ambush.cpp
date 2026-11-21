@@ -215,7 +215,7 @@ void ReadRegions() {
         nodes += static_cast<int>(r.nodes.size()), off += r.enabled ? 0 : 1;
         for (bool rides : r.rides) riding += rides ? 1 : 0;
     }
-    rfa::Log("Ambushes: %d of Guerrilla's Marauder ambush regions read (%d switched off), %d squad nodes (%d of them riding) held until their region fires",
+    rfa::LogDetail("Ambushes: %d of Guerrilla's Marauder ambush regions read (%d switched off), %d squad nodes (%d of them riding) held until their region fires",
              static_cast<int>(g_regions.size()), off, nodes, riding);
 }
 

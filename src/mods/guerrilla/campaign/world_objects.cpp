@@ -62,7 +62,7 @@ bool Load() {
         return false;
     }
     for (const tables::Element* element : root.Children("object")) g_objects.push_back(FromElement(*element));
-    rfa::Log("%u campaign markers read", static_cast<unsigned>(g_objects.size()));
+    rfa::LogDetail("%u campaign markers read", static_cast<unsigned>(g_objects.size()));
     return true;
 }
 

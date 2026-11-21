@@ -82,10 +82,12 @@ rem Direct3D 11 and Win32 backends; a mod with menus is built with its core file
 rem its debug checks, which would stop the game with a dialog.
 set "IMGUI=%ROOT%src\third_party\imgui"
 set IMGUI_CORE="%IMGUI%\imgui.cpp" "%IMGUI%\imgui_draw.cpp" "%IMGUI%\imgui_tables.cpp" "%IMGUI%\imgui_widgets.cpp"
-cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\loader\loader.cpp" "%ROOT%src\loader\menus.cpp" %IMGUI_CORE% "%IMGUI%\backends\imgui_impl_dx11.cpp" "%IMGUI%\backends\imgui_impl_win32.cpp" /Fe"%OUT%\rfa_loader.dll" /link /IMPLIB:rfa_loader.lib user32.lib >> "%LOG%" 2>&1 || goto :fail
+rem Each DLL of ours gets a linker map next to it (rfa_loader.map, mods\*.map): the functions' addresses, which
+rem name the addresses the loader's profiler ([Loader] Profile=1) samples.
+cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\loader\loader.cpp" "%ROOT%src\loader\menus.cpp" "%ROOT%src\loader\profiler.cpp" %IMGUI_CORE% "%IMGUI%\backends\imgui_impl_dx11.cpp" "%IMGUI%\backends\imgui_impl_win32.cpp" /Fe"%OUT%\rfa_loader.dll" /link /IMPLIB:rfa_loader.lib /MAP:"%OUT%\rfa_loader.map" user32.lib >> "%LOG%" 2>&1 || goto :fail
 rem rfa_qol.dll: the quality-of-life mods (borderless, console, fov, video_settings, spawner), one
 rem source file each, in one DLL. The loader skips their old DLLs if an older build left them in bin\mods.
-cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\mods\rfa_qol\*.cpp" %IMGUI_CORE% /Fe"%OUT%\mods\rfa_qol.dll" /link /IMPLIB:rfa_qol.lib user32.lib psapi.lib dbghelp.lib >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /LD "%ROOT%src\mods\rfa_qol\*.cpp" %IMGUI_CORE% /Fe"%OUT%\mods\rfa_qol.dll" /link /IMPLIB:rfa_qol.lib /MAP:"%OUT%\mods\rfa_qol.map" user32.lib psapi.lib dbghelp.lib >> "%LOG%" 2>&1 || goto :fail
 rem live_analysis_mcp.exe: standalone MCP server for live analysis
 cl %CFLAGS% "%ROOT%src\mods\rfa_qol\live_analysis_mcp.cpp" /Fe"%OUT%\live_analysis_mcp.exe" >> "%LOG%" 2>&1 || goto :fail
 rem rfa_guerrilla.dll: the mods for Guerrilla's world and campaign, nine parts in one DLL (src\mods\guerrilla\:
@@ -107,7 +109,7 @@ for %%p in (gear hud) do (
 mkdir "%GOBJ%\main"
 cl %CFLAGS% /I"%GUERRILLA%" /c "%GUERRILLA%\rfa_guerrilla.cpp" /Fo"%GOBJ%\main\\" >> "%LOG%" 2>&1 || goto :fail
 cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /c %IMGUI_CORE% /Fo"%GOBJ%\main\\" >> "%LOG%" 2>&1 || goto :fail
-cl %CFLAGS% /LD "%GOBJ%\main\*.obj" "%GOBJ%\campaign\*.obj" "%GOBJ%\gear\*.obj" "%GOBJ%\hud\*.obj" "%GOBJ%\kiosks\*.obj" "%GOBJ%\people\*.obj" "%GOBJ%\save\*.obj" "%GOBJ%\vehicles\*.obj" "%GOBJ%\voices\*.obj" "%GOBJ%\world\*.obj" /Fe"%OUT%\mods\rfa_guerrilla.dll" /link /IMPLIB:rfa_guerrilla.lib user32.lib >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /LD "%GOBJ%\main\*.obj" "%GOBJ%\campaign\*.obj" "%GOBJ%\gear\*.obj" "%GOBJ%\hud\*.obj" "%GOBJ%\kiosks\*.obj" "%GOBJ%\people\*.obj" "%GOBJ%\save\*.obj" "%GOBJ%\vehicles\*.obj" "%GOBJ%\voices\*.obj" "%GOBJ%\world\*.obj" /Fe"%OUT%\mods\rfa_guerrilla.dll" /link /IMPLIB:rfa_guerrilla.lib /MAP:"%OUT%\mods\rfa_guerrilla.map" user32.lib >> "%LOG%" 2>&1 || goto :fail
 rem guerrilla_hud's scripts, which editor\GuerrillaBuilder.exe packs with Guerrilla's HUD documents (the part's
 rem data folder keeps its old name).
 xcopy /i /y /q "%GUERRILLA%\hud\*.lua" "%OUT%\mods\guerrilla_hud" >nul || goto :fail

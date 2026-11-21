@@ -72,7 +72,7 @@ bool Board(Crew& crew, BYTE* vehicle) {
     }
     if (crew.boardingSince < 0) crew.boardingSince = GameTime();
     if (GameTime() - crew.boardingSince > kBoardingTime) {  // the rest never streamed in: the vehicle goes with whom it has
-        RFA_LOG_FIRST(20, "Crews: %u of a crew couldn't be made (not streamed in); %s goes without them", static_cast<unsigned>(crew.waiting.size()),
+        RFA_LOG_DETAIL_FIRST(20, "Crews: %u of a crew couldn't be made (not streamed in); %s goes without them", static_cast<unsigned>(crew.waiting.size()),
                       crew.people.empty() ? "nobody aboard, it" : "the vehicle");
         crew.waiting.clear();
         return true;
@@ -327,7 +327,7 @@ void ChasesFrame() {
         const ChaseResult result = vehicle ? ChaseFrame(handed->crew, handed->chase, vehicle) : ChaseResult::Over;
         if (result == ChaseResult::Chasing) { ++handed; continue; }
         if (vehicle && result != ChaseResult::OnFoot) HandBack(handed->crew, vehicle);
-        RFA_LOG_FIRST(40, "Crews: a handed-over chase ended (%s)", result == ChaseResult::OnFoot ? "the crew got out to fight" : result == ChaseResult::Lost ? "the target is gone or far" : "the crew can't drive");
+        RFA_LOG_DETAIL_FIRST(40, "Crews: a handed-over chase ended (%s)", result == ChaseResult::OnFoot ? "the crew got out to fight" : result == ChaseResult::Lost ? "the target is gone or far" : "the crew can't drive");
         handed = g_handed.erase(handed);
     }
 }

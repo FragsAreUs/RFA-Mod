@@ -136,7 +136,7 @@ void ReadBombs() {
         if (sscanf_s(line + 5, "%d|%f|%f|%f", &bomb.pair, &bomb.at.x, &bomb.at.y, &bomb.at.z) == 4) g_bombs.push_back(bomb);
     }
     fclose(file);
-    rfa::Log("Car bomb: %u M.O.A.B. places", static_cast<unsigned>(g_bombs.size()));
+    rfa::LogDetail("Car bomb: %u M.O.A.B. places", static_cast<unsigned>(g_bombs.size()));
 }
 
 // create_bftp_bomb: the item at its place, its light on its tag.
@@ -225,13 +225,13 @@ protected:
     void FrameActive(float) override {
         BYTE* car = static_cast<BYTE*>(ObjectFromHandle(vehicle_));
         if (!car || car[kObjectType] != kVehicleType) {
-            rfa::Log("Car bomb: the car is gone; the M.O.A.B. is back at its place");
+            rfa::LogDetail("Car bomb: the car is gone; the M.O.A.B. is back at its place");
             End();
             return;
         }
         if (IsDead(car)) {
             // blast_from_the_past_bomb_destroyed: the bomb spent (the car's explosion was its Bomb_Explosion).
-            rfa::Log("Car bomb: the car blew up with the M.O.A.B.");
+            rfa::LogDetail("Car bomb: the car blew up with the M.O.A.B.");
             if (pair_ != kTestPair && pair_ >= 0) save::SetInt(kSection, Key(pair_).c_str(), 1);
             if (Bomb* bomb = BombOfPair(pair_)) bomb->inUse = false;
             pair_ = -1;
@@ -252,7 +252,7 @@ protected:
             if (BYTE* car = static_cast<BYTE*>(ObjectFromHandle(vehicle_)))
                 if (*reinterpret_cast<const int*>(car + kBombStatus) == kBombArmed) {
                     SetBombStatus(car, kBombNone);
-                    rfa::Log("Car bomb: stopped; the car disarmed and the M.O.A.B. back at its place");
+                    rfa::LogDetail("Car bomb: stopped; the car disarmed and the M.O.A.B. back at its place");
                 }
         PutBack();
         Activity::End();
@@ -289,7 +289,7 @@ void Touch(Bomb& bomb, BYTE* car) {
     bomb.inUse = true;
     TakeItemAway(bomb);
     messages::Tip("Blast", 0);
-    rfa::Log("Car bomb: the M.O.A.B. %d set on the car %08X", bomb.pair, HandleOf(car));
+    rfa::LogDetail("Car bomb: the M.O.A.B. %d set on the car %08X", bomb.pair, HandleOf(car));
 }
 
 // ---- The console: a M.O.A.B. to try (rfg_moab_here: one 8 m in front of the player, not one of Guerrilla's)

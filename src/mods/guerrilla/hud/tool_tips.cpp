@@ -155,7 +155,7 @@ void ReadFile() {
     }
     int played = 0;
     for (const Tip& t : g_tips) played += t.played > 0 ? 1 : 0;
-    rfa::Log("Tool tips: %u of Guerrilla's, %d played before; %s", static_cast<unsigned>(g_tips.size()), played,
+    rfa::LogDetail("Tool tips: %u of Guerrilla's, %d played before; %s", static_cast<unsigned>(g_tips.size()), played,
              rfa::IniInt(L"GuerrillaHud", L"ToolTips", 1) ? "on" : "off ([GuerrillaHud] ToolTips=0: only the always-shown ones)");
 }
 

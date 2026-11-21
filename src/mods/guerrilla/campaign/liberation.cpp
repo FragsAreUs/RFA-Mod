@@ -108,7 +108,7 @@ void LoadDistricts() {
                 g_districts.push_back(district);
             }
     }
-    rfa::Log("territories.xtbl: %u districts", static_cast<unsigned>(g_districts.size()));
+    rfa::LogDetail("territories.xtbl: %u districts", static_cast<unsigned>(g_districts.size()));
     std::vector<tables::Element> missions;
     if (tables::Load("missions", missions))
         for (const tables::Element& mission : missions) g_missions.push_back({mission.Text("Name"), mission.Text("district")});
@@ -163,7 +163,7 @@ void MaybeLiberate(DistrictState& district) {
     if (district.liberatedMarauder > g_marauderProgression) SetMarauderProgression(district.liberatedMarauder);
     if (district.liberatedTech > g_techLevel) SetTechLevel(district.liberatedTech);
     SaveDistrict(district);
-    rfa::Log("%s is liberated", district.name.c_str());
+    rfa::LogDetail("%s is liberated", district.name.c_str());
 }
 
 // ---- Morale
@@ -323,7 +323,7 @@ void EvaluateAlertLevel() {
         g_restartDecayWait = true;
         words::PostAlertLevelRaised(level);
     }
-    rfa::Log("Alert level %s (value %.0f); the player %s", LevelName(level), g_alertValue, restricted_areas::PlayerPlace().c_str());
+    rfa::LogDetail("Alert level %s (value %.0f); the player %s", LevelName(level), g_alertValue, restricted_areas::PlayerPlace().c_str());
 }
 
 // get_decay_delta: nothing until the wait since the last contact is over; then the level's rate,
@@ -523,7 +523,7 @@ void ChangeEdfControl(float delta, int which, const char* tag, const char* icon)
     SaveDistrict(district);
     words::PostEdfControlLowered(before, Percent(control, district.controlMax));
     if (control < kControlTipBelow) messages::Tip("EDF_Control", kControlTipMs);
-    rfa::Log("%s: EDF control %.0f -> %.0f / %.0f%s%s", district.name.c_str(), district.controlBefore, control, district.controlMax, tag ? ", " : "",
+    rfa::LogDetail("%s: EDF control %.0f -> %.0f / %.0f%s%s", district.name.c_str(), district.controlBefore, control, district.controlMax, tag ? ", " : "",
              tag ? tag : "");
     MaybeLiberate(district);
 }
@@ -550,7 +550,7 @@ void ChangeMorale(float delta, int which, const char* tag, const char* icon) {
     SaveDistrict(district);
     words::PostCivilianMoraleChange(before, Percent(morale, district.moraleMax));
     if (step > 0.0f) messages::Tip("Morale", kMoraleTipMs);
-    rfa::Log("%s: morale %.0f -> %.0f / %.0f (%+.0f%s%s)", district.name.c_str(), district.moraleBefore, morale, district.moraleMax, step, tag ? ", " : "",
+    rfa::LogDetail("%s: morale %.0f -> %.0f / %.0f (%+.0f%s%s)", district.name.c_str(), district.moraleBefore, morale, district.moraleMax, step, tag ? ", " : "",
              tag ? tag : "");
 }
 
@@ -565,7 +565,7 @@ void ReloadState() {
         ++district.changes;
     }
     LoadSaved();
-    rfa::Log("The campaign's districts read again from its save");
+    rfa::LogDetail("The campaign's districts read again from its save");
 }
 
 // A story mission recorded done (Guerrilla's mission cleanup; the mission work will call this): its district is
@@ -607,7 +607,7 @@ void SetEdfControl(float control, int which) {
     district.control = control < 0.0f ? 0.0f : control > district.controlMax ? district.controlMax : control;
     SaveDistrict(district);
     words::PostEdfControlLowered(before, Percent(district.control, district.controlMax));
-    rfa::Log("%s: EDF control set to %.0f / %.0f", district.name.c_str(), district.control, district.controlMax);
+    rfa::LogDetail("%s: EDF control set to %.0f / %.0f", district.name.c_str(), district.control, district.controlMax);
     MaybeLiberate(district);
 }
 
@@ -680,7 +680,7 @@ void Init() {
     LoadAlertValues();
     LoadAlertDifficulty();
     g_log = rfa::DetailLog();  // [GuerrillaCampaign] Log=, read as the mod starts
-    rfa::Log("Alert: yellow at %.0f, orange at %.0f, red at %.0f; %.0f a second for each of the EDF seeing the player in green; decay after %.0f s",
+    rfa::LogDetail("Alert: yellow at %.0f, orange at %.0f, red at %.0f; %.0f a second for each of the EDF seeing the player in green; decay after %.0f s",
              g_bands[handles::AlertYellow].min, g_bands[handles::AlertOrange].min, g_bands[handles::AlertRed].min, g_contactGrowth, g_decayDelay);
 }
 

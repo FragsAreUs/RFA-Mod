@@ -460,7 +460,7 @@ int AlertLevel() {
     static bool looked = false;
     if (!looked) {
         looked = true;
-        rfa::Log(guerrilla_campaign::Running() ? "Walkers: the alert level is guerrilla_campaign's"
+        rfa::LogDetail(guerrilla_campaign::Running() ? "Walkers: the alert level is guerrilla_campaign's"
                                                : "Walkers: guerrilla_campaign's alert level isn't there; the walkers' cap is green's");
     }
     const int level = GuerrillaCampaign_Alert(nullptr);
@@ -718,7 +718,7 @@ void Cower(Walker& w, BYTE* human, int now) {
     }
     w.cowerUntil = now + kCowerLeast + std::rand() % (kCowerMost - kCowerLeast + 1);
     ++g_cowered;
-    RFA_LOG_FIRST(16, "Walkers: NPC 0x%08X can't get away from the danger at (%.1f, %.1f, %.1f); it cowers, as Guerrilla's flee_action (%d so far)",
+    RFA_LOG_DETAIL_FIRST(16, "Walkers: NPC 0x%08X can't get away from the danger at (%.1f, %.1f, %.1f); it cowers, as Guerrilla's flee_action (%d so far)",
                   w.human, w.danger.x, w.danger.y, w.danger.z, g_cowered);
 }
 
@@ -1219,14 +1219,14 @@ void SpawnStep(const V3& at, const V3& forward, int now) {
 
 void StartAmbient() {
     if (rfa::IniInt(L"GuerrillaPeople", L"Walkers", 1) == 0) {
-        rfa::Log("Walkers: off ([GuerrillaPeople] Walkers=0)");
+        rfa::LogDetail("Walkers: off ([GuerrillaPeople] Walkers=0)");
         return;
     }
     ReadFiles();
     FindRotating();
     g_rotateOn = rfa::IniInt(L"GuerrillaPeople", L"RotateCivilians", 0) != 0;  // off unless set to 1 (the main session, 2026-11-18)
     if (!g_rotating.empty())
-        rfa::Log(g_rotateOn ? "Walkers: %u districts' civilians change in batches as the player goes about (their resources' versions; RotateCivilians=1: each "
+        rfa::LogDetail(g_rotateOn ? "Walkers: %u districts' civilians change in batches as the player goes about (their resources' versions; RotateCivilians=1: each "
                               "change reloads the district's people and vehicles)"
                             : "Walkers: %u districts have versions of their civilians; they don't change (RotateCivilians=0: Armageddon's change of spawn "
                               "resource reloads every person and vehicle)",
@@ -1238,7 +1238,7 @@ void StartAmbient() {
     size_t civilians = 0;
     for (const auto& [resource, people] : g_files.civilians) civilians += people.size();
     ReadSafehouseAreas();
-    rfa::Log("Walkers: Guerrilla's ped spawner: %u zones where people walk, %u resources' civilians (%u names) from crews.txt; %u safehouses' areas "
+    rfa::LogDetail("Walkers: Guerrilla's ped spawner: %u zones where people walk, %u resources' civilians (%u names) from crews.txt; %u safehouses' areas "
              "(mods\\guerrilla_vehicles\\safehouses.txt), where a walker keeps its character's own team; elsewhere it is a civilian",
              static_cast<unsigned>(g_files.zones.size()), static_cast<unsigned>(g_files.civilians.size()), static_cast<unsigned>(civilians),
              static_cast<unsigned>(g_safehouseAreas.size()));

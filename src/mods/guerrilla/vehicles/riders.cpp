@@ -250,7 +250,7 @@ void LogRiders(BYTE* user, BYTE* vehicle, bool usable, DWORD from, bool a, bool 
             if (usable)
                 rfa::LogDetail("Riders: %s offers the player %s (0x%08lX) with its riders in:", asked, VehicleName(vehicle), Handle(vehicle));
             else
-                rfa::Log("Riders: the player can't get into %s (0x%08lX; asked by %s with %d, %d):", VehicleName(vehicle), Handle(vehicle), asked, a, b);
+                rfa::LogDetail("Riders: the player can't get into %s (0x%08lX; asked by %s with %d, %d):", VehicleName(vehicle), Handle(vehicle), asked, a, b);
         }
         const Verdict v = Judge(rider, user);
         anyBlocks |= v.blocks;
@@ -756,7 +756,7 @@ void StartRiders() {
     g_changeSeats = rfa::IniInt(L"GuerrillaVehicles", L"ChangeSeatsAsGuerrilla", 1) != 0;
     g_carjack = rfa::IniInt(L"GuerrillaVehicles", L"CarjackAsGuerrilla", 1) != 0;
     g_log = rfa::ReadLogSwitch(L"GuerrillaVehicles", L"RiderLog");
-    rfa::Log(g_carjack ? "Carjack: in Guerrilla's world someone whose seat is taken gets out, as Guerrilla's ([GuerrillaVehicles] CarjackAsGuerrilla=1)"
+    rfa::LogDetail(g_carjack ? "Carjack: in Guerrilla's world someone whose seat is taken gets out, as Guerrilla's ([GuerrillaVehicles] CarjackAsGuerrilla=1)"
                        : "Carjack: someone whose seat is taken stays in it, as in Armageddon ([GuerrillaVehicles] CarjackAsGuerrilla=0)");
     // The human damage is wrapped either way: the campaign's activities hear of its hits through it (HumanDamage);
     // the rider rule inside it follows RiderDamageAsGuerrilla (RuleToSetAside).
@@ -766,13 +766,14 @@ void StartRiders() {
         g_copyHitInfo = Hook<CopyHitInfoFn>("the human damage's record copy", kCopyHitInfo, {0x55, 0x8B, 0xEC, 0x51, 0x89, 0x4D, 0xFC},
                                             reinterpret_cast<void*>(&CopyHitInfo));
     if (g_asGuerrilla) {
-        rfa::Log(g_humanDamage && g_copyHitInfo
-                     ? "Riders: in Guerrilla's world bullets hurt NPCs who sit in a vehicle, as in Guerrilla ([GuerrillaVehicles] RiderDamageAsGuerrilla=1)"
-                     : "Riders: the game's human damage isn't as expected; riders keep Armageddon's rule (only a vehicle's end kills them)");
+        if (g_humanDamage && g_copyHitInfo)
+            rfa::LogDetail("Riders: in Guerrilla's world bullets hurt NPCs who sit in a vehicle, as in Guerrilla ([GuerrillaVehicles] RiderDamageAsGuerrilla=1)");
+        else
+            rfa::Log("Riders: the game's human damage isn't as expected; riders keep Armageddon's rule (only a vehicle's end kills them)");
     } else {
-        rfa::Log("Riders: bullets don't hurt NPCs who sit in a vehicle, as in Armageddon ([GuerrillaVehicles] RiderDamageAsGuerrilla=0)");
+        rfa::LogDetail("Riders: bullets don't hurt NPCs who sit in a vehicle, as in Armageddon ([GuerrillaVehicles] RiderDamageAsGuerrilla=0)");
     }
-    rfa::Log(g_changeSeats ? "Change seat: in Guerrilla's world the change seat key moves the player between the driver's seat and the gun's "
+    rfa::LogDetail(g_changeSeats ? "Change seat: in Guerrilla's world the change seat key moves the player between the driver's seat and the gun's "
                              "([GuerrillaVehicles] ChangeSeatsAsGuerrilla=1)"
                            : "Change seat: off, as in Armageddon ([GuerrillaVehicles] ChangeSeatsAsGuerrilla=0)");
     if (g_log) {
@@ -788,7 +789,7 @@ void StartRiders() {
     g_bulletFilter = Hook<BulletFilterFn>("the bullet ray's filter", kBulletFilter, {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x1C}, reinterpret_cast<void*>(&BulletFilter));
     g_hitLocation = Hook<HitLocationFn>("human_get_hit_location", kHitLocation, {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0x58, 0x02, 0x00, 0x00},
                                         reinterpret_cast<void*>(&HitLocation));
-    rfa::Log("Riders: logging shots past seated people and getting into occupied vehicles in Guerrilla's world ([GuerrillaVehicles] RiderLog=1)%s",
+    rfa::LogDetail("Riders: logging shots past seated people and getting into occupied vehicles in Guerrilla's world ([GuerrillaVehicles] RiderLog=1)%s",
              g_usable && g_requestEnter && g_testBullet && g_bulletFilter && g_hitLocation && g_bulletHit ? "" : " (some parts missing, above)");
 }
 

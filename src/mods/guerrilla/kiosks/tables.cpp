@@ -183,7 +183,7 @@ bool Load() {
     const bool lines = LoadLines();
     unsigned radios = 0;
     for (const Kiosk& k : g_kiosks) radios += _stricmp(k.props.c_str(), "-") == 0 || k.gameplay.find("radio") != std::string::npos;
-    rfa::Log("%u kiosks read from mods\\guerrilla_kiosks\\kiosks.txt (%u of them radios); %u screens from kiosk_screens.xtbl (idle %s, "
+    rfa::LogDetail("%u kiosks read from mods\\guerrilla_kiosks\\kiosks.txt (%u of them radios); %u screens from kiosk_screens.xtbl (idle %s, "
              "broadcasting %s, alert %s); %u lines from kiosk_lines.xtbl%s",
              static_cast<unsigned>(g_kiosks.size()), radios, static_cast<unsigned>(g_screens.size()),
              g_defaults.idleScreen >= 0 ? g_screens[g_defaults.idleScreen].name.c_str() : "none",
@@ -213,7 +213,7 @@ void FindEffects() {
     }
     if (!said) {
         said = true;
-        rfa::Log("Screens: %u of the %u screen effects are in the game's effect table%s%s", found, wanted, missing.empty() ? "" : "; missing: ",
+        rfa::LogDetail("Screens: %u of the %u screen effects are in the game's effect table%s%s", found, wanted, missing.empty() ? "" : "; missing: ",
                  missing.c_str());
     }
 }

@@ -310,8 +310,9 @@ public static class GuerrillaCampaign
                 // A Transporter start node's two children (Guerrilla's zones; neither is a campaign marker): its car's
                 // vehicle spawn node (child_vehicle_spawn_node: its handle, place and spawn_set; the world build places it,
                 // so the game parks the car there) and the player_start a retry puts the player at (child_player_start:
-                // its op, place and turn).
-                if (className == "object_delivery_node" && childrenOf.TryGetValue(o.Handle, out var children))
+                // its op, place and turn). An activity's start object (object_activity_spawn: an area defense's) has a
+                // player_start too, where a retry starts the player.
+                if ((className == "object_delivery_node" || className == "object_activity_spawn") && childrenOf.TryGetValue(o.Handle, out var children))
                     foreach (var child in children)
                     {
                         if (child.ClassHash == vehicleSpawnClass)
@@ -351,6 +352,23 @@ public static class GuerrillaCampaign
                 worldRegions++;
             }
         }
+        // An activity layer's vehicle and turret spawn nodes (an area defense's given walker, tank or turret): the layer's
+        // own (the activity layers' build makes them, keeping Guerrilla's handles), listed here with their layer so the
+        // activity knows its given vehicle: its handle, place and spawn_set (turret_type for a turret).
+        uint turretSpawnClass = NameHashes.ClassHash("object_turret_spawn_node");
+        int layerSpawnNodes = 0;
+        void WriteLayerSpawnNode(GuerrillaZoneObject o, string layer, bool turret)
+        {
+            if (!written.Add(o.Handle)) return;
+            var at = PlaceOf(o);
+            string kind = turret ? "object_turret_spawn_node" : "object_vehicle_spawn_node";
+            xml.Append($"<object><class>{kind}</class><handle>{o.Handle:X8}</handle><parent>{o.Parent:X8}</parent><zone>-</zone>")
+               .Append($"<pos>{F(at.X)} {F(at.Y)} {F(at.Z)}</pos>\n")
+               .Append($"  <property><name>layer</name><value>{Escape(layer)}</value></property>\n")
+               .Append($"  <property><name>{(turret ? "turret_type" : "spawn_set")}</name><value>{Escape(o.Text(turret ? "turret_type" : "spawn_set")?.Trim() ?? "")}</value></property>\n")
+               .Append("</object>\n");
+            layerSpawnNodes++;
+        }
         if (File.Exists(Path.Combine(guerrillaCache, "activities.vpp_pc")))
         {
             var activities = Packfile.Open(Path.Combine(guerrillaCache, "activities.vpp_pc"));
@@ -359,10 +377,15 @@ public static class GuerrillaCampaign
                 string activity = Path.GetFileNameWithoutExtension(entry.Name);
                 var inner = activities.OpenContainer(entry);
                 foreach (var layer in inner.Entries.Where(e => e.Name.EndsWith(".layer_pc", StringComparison.OrdinalIgnoreCase)))
-                    foreach (var o in GuerrillaZones.LayerObjects(inner.Read(layer)).Where(o => o.ClassHash == spawnRegionClass))
+                    foreach (var o in GuerrillaZones.LayerObjects(inner.Read(layer)))
                     {
-                        WriteRegion(o, "-", activity);
-                        layerRegions++;
+                        if (o.ClassHash == spawnRegionClass)
+                        {
+                            WriteRegion(o, "-", activity);
+                            layerRegions++;
+                        }
+                        else if (GuerrillaActivityLayers.IsAreaDefense(activity) && (o.ClassHash == vehicleSpawnClass || o.ClassHash == turretSpawnClass))
+                            WriteLayerSpawnNode(o, activity, o.ClassHash == turretSpawnClass);
                     }
             }
         }
@@ -372,7 +395,7 @@ public static class GuerrillaCampaign
         File.WriteAllText(file, xml.ToString(), new System.Text.UTF8Encoding(false));
         return $"Campaign markers: {written.Count} in {CampaignObjectsFile} ({string.Join(", ", counts.Select(c => $"{c.Value} {c.Key}"))}; " +
                $"{demoMasterCentre.Count} demolitions master areas centred by their layer; spawn regions: {worldRegions} in the world's zones, " +
-               $"{layerRegions} in activities' layers)" +
+               $"{layerRegions} in activities' layers; {layerSpawnNodes} area defenses' given vehicle and turret spawn nodes)" +
                (unnamed > 0 ? $"; {unnamed} properties the schema doesn't name left out" : "");
     }
 

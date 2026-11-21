@@ -53,7 +53,7 @@ void __cdecl OnFootPermissions(BYTE* player) {
     DWORD& kinds = *reinterpret_cast<DWORD*>(player + kUseKinds);
     if (!(kinds & kUseThings) || (kinds & kEnterVehicle)) return;
     kinds |= kEnterVehicle;
-    RFA_LOG_FIRST(1, "Entering: on foot in Guerrilla's world the player may get into a vehicle (use kind 6), as Guerrilla's standing player");
+    RFA_LOG_DETAIL_FIRST(1, "Entering: on foot in Guerrilla's world the player may get into a vehicle (use kind 6), as Guerrilla's standing player");
 }
 
 // In a vehicle: the vehicle action gets him out, as Guerrilla's.
@@ -62,7 +62,7 @@ void LetOut(BYTE* player) {
     DWORD& kinds = *reinterpret_cast<DWORD*>(player + kUseKinds);
     if (kinds & kEnterVehicle) return;
     kinds |= kEnterVehicle;
-    RFA_LOG_FIRST(1, "Entering: in a vehicle in Guerrilla's world the vehicle action gets the player out, as Guerrilla's");
+    RFA_LOG_DETAIL_FIRST(1, "Entering: in a vehicle in Guerrilla's world the vehicle action gets the player out, as Guerrilla's");
 }
 void __cdecl InVehiclePermissions(BYTE* player) {
     g_inVehiclePermissions(player);
@@ -83,7 +83,7 @@ Fn Hook(DWORD address, size_t prologue, const BYTE* opening, size_t size, void* 
 
 void StartEntering() {
     if (!rfa::IniInt(L"GuerrillaVehicles", L"EnterVehicles", 1)) {
-        rfa::Log("Entering: the player gets into and out of a vehicle only as Armageddon's allows ([GuerrillaVehicles] EnterVehicles=0)");
+        rfa::LogDetail("Entering: the player gets into and out of a vehicle only as Armageddon's allows ([GuerrillaVehicles] EnterVehicles=0)");
         return;
     }
     const BYTE onFoot[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x20};
@@ -93,11 +93,14 @@ void StartEntering() {
     g_inVehiclePermissions = Hook<PermissionsFn>(kInVehiclePermissions, kInVehiclePrologue, inVehicle, sizeof(inVehicle), reinterpret_cast<void*>(&InVehiclePermissions));
     g_nearVehiclePermissions =
         Hook<PermissionsFn>(kNearVehiclePermissions, kNearVehiclePrologue, nearVehicle, sizeof(nearVehicle), reinterpret_cast<void*>(&NearVehiclePermissions));
-    rfa::Log(g_onFootPermissions ? "Entering: in Guerrilla's world the player may get into a vehicle on foot, as Guerrilla's"
-                                 : "Entering: the game's on-foot permissions aren't as expected; getting into a vehicle needs the console's Controls_use_vehicle_enabled");
-    rfa::Log(g_inVehiclePermissions && g_nearVehiclePermissions
-                 ? "Entering: in Guerrilla's world the vehicle action gets the player out, as Guerrilla's"
-                 : "Entering: the game's in-vehicle permissions aren't as expected; getting out may need the console's Controls_use_vehicle_enabled");
+    if (g_onFootPermissions)
+        rfa::LogDetail("Entering: in Guerrilla's world the player may get into a vehicle on foot, as Guerrilla's");
+    else
+        rfa::Log("Entering: the game's on-foot permissions aren't as expected; getting into a vehicle needs the console's Controls_use_vehicle_enabled");
+    if (g_inVehiclePermissions && g_nearVehiclePermissions)
+        rfa::LogDetail("Entering: in Guerrilla's world the vehicle action gets the player out, as Guerrilla's");
+    else
+        rfa::Log("Entering: the game's in-vehicle permissions aren't as expected; getting out may need the console's Controls_use_vehicle_enabled");
 }
 
 }  // namespace gv
