@@ -46,6 +46,19 @@ under the Microsoft Public License (below, after the MIT License):
   RFA-Mod's own licence carries an added permission for the editor to be combined with this library:
   see LICENSE-exception.txt.
 
+The editor's sound preview and the Guerrilla builder's sound check (editor\rfa_audio.dll, RFA-Mod's
+own sound engine) play sound through this library, a separate DLL loaded at run time, unchanged from
+its official Windows binaries. It is under the GNU Library General Public License, version 2 or
+later; the full text is editor\soft_oal-COPYING.txt:
+
+  OpenAL Soft (editor\soft_oal.dll, version 1.25.2)
+      Chris Robinson and the OpenAL Soft contributors
+      https://openal-soft.org/
+      Its source code: https://github.com/kcat/openal-soft/tree/1.25.2
+      It contains a modified PFFFT, under its own BSD-style licence: editor\soft_oal-LICENSE-pffft.txt.
+      editor\soft_oal-SOURCE.txt says where these binaries came from. Any other build of OpenAL Soft
+      can take its place.
+
 
 MIT License
 -----------

@@ -1,0 +1,106 @@
+<UserControl x:Class="RfaEditor.SoundPreview"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- A sound bank (.bnk_pc): its events, played on rfa_audio's engine (src\audio\) as the game's hybrid will play them -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="340" MinWidth="220" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- The bank's events -->
+        <DockPanel Grid.Column="0">
+            <TextBox x:Name="SearchBox" DockPanel.Dock="Top" Margin="0,0,0,6" TextChanged="OnSearch"
+                     ToolTip="Shows the events whose name (or id) has this in it" />
+            <TextBlock x:Name="CountText" DockPanel.Dock="Top" Foreground="{StaticResource DimTextBrush}" Margin="2,0,0,6" TextWrapping="Wrap" />
+            <ListBox x:Name="EventList" SelectionChanged="OnEventChosen" MouseDoubleClick="OnEventDoubleClick"
+                     VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" KeyDown="OnEventKey">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding Tags}" Foreground="{StaticResource DimTextBrush}" Margin="8,0,0,0" FontSize="11"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                        </DockPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </DockPanel>
+
+        <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="Transparent" />
+
+        <!-- Playing it -->
+        <Grid Grid.Column="2" Margin="4,0,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="140" MinHeight="60" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="60" />
+            </Grid.RowDefinitions>
+
+            <WrapPanel Grid.Row="0" Margin="0,0,0,4">
+                <Button x:Name="PlayButton" Content="Play" Click="OnPlay" Style="{StaticResource PrimaryButton}" Margin="0,0,6,6" MinWidth="70"
+                        ToolTip="Post the event on the sound's game object (Enter, or double-click it). A loop plays until stopped." />
+                <Button x:Name="StopButton" Content="Stop" Click="OnStop" Margin="0,0,6,6" MinWidth="70"
+                        ToolTip="Post its stop event, as the game would (a gun's burst ends in its release); with none, fade it out" />
+                <Button Content="Stop all" Click="OnStopAll" Margin="0,0,14,6" ToolTip="Stop every sound at once" />
+                <Button x:Name="OriginalButton" Content="Guerrilla's original" Click="OnPlayOriginal" Margin="0,0,6,6"
+                        ToolTip="Play the cue this event was made from, from your copy of Red Faction: Guerrilla (its XACT waves), to compare" />
+                <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="{StaticResource DimTextBrush}" TextWrapping="Wrap" Margin="4,0,0,6" />
+            </WrapPanel>
+
+            <!-- The pad (the listener at its middle, facing up) and the game parameters and switches -->
+            <WrapPanel Grid.Row="1">
+                <StackPanel Margin="0,0,16,8">
+                    <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Background="{StaticResource ViewportBrush}" CornerRadius="6"
+                            HorizontalAlignment="Left">
+                        <Canvas x:Name="Pad" Width="260" Height="260" ClipToBounds="True" Background="Transparent" Cursor="Cross"
+                                MouseLeftButtonDown="OnPadDown" MouseMove="OnPadMove" MouseLeftButtonUp="OnPadUp" MouseRightButtonDown="OnPadCentre"
+                                ToolTip="Drag the sound around the listener (in the middle, facing up: the game's forward). Right-click: back to the listener." />
+                    </Border>
+                    <DockPanel Margin="0,6,0,0" Width="262" HorizontalAlignment="Left">
+                        <ComboBox x:Name="RangeList" DockPanel.Dock="Right" Width="86" SelectionChanged="OnRangeChosen" ToolTip="How far the pad's edge is">
+                            <ComboBoxItem Content="10 m" Tag="10" />
+                            <ComboBoxItem Content="25 m" Tag="25" />
+                            <ComboBoxItem Content="50 m" Tag="50" />
+                            <ComboBoxItem Content="100 m" Tag="100" />
+                            <ComboBoxItem Content="200 m" Tag="200" />
+                            <ComboBoxItem Content="400 m" Tag="400" />
+                        </ComboBox>
+                        <TextBlock x:Name="PlaceText" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="{StaticResource DimTextBrush}" />
+                    </DockPanel>
+                </StackPanel>
+                <StackPanel MinWidth="260" MaxWidth="420">
+                    <TextBlock Text="GAME PARAMETERS" Style="{StaticResource SectionTitle}" Margin="0,0,0,6" />
+                    <StackPanel x:Name="ParameterPanel" />
+                    <TextBlock Text="SWITCHES" Style="{StaticResource SectionTitle}" />
+                    <StackPanel x:Name="SwitchPanel" />
+                </StackPanel>
+            </WrapPanel>
+
+            <TextBlock Grid.Row="2" Text="VOICES PLAYING" Style="{StaticResource SectionTitle}" Margin="0,4,0,4" />
+            <ListView x:Name="VoiceList" Grid.Row="3" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="What" Width="230" DisplayMemberBinding="{Binding What}" />
+                        <GridViewColumn Header="Codec" Width="70" DisplayMemberBinding="{Binding Codec}" />
+                        <GridViewColumn Header="Format" Width="90" DisplayMemberBinding="{Binding Format}" />
+                        <GridViewColumn Header="Loop" Width="44" DisplayMemberBinding="{Binding Loop}" />
+                        <GridViewColumn Header="Level" Width="70" DisplayMemberBinding="{Binding Level}" />
+                        <GridViewColumn Header="Distance" Width="70" DisplayMemberBinding="{Binding Distance}" />
+                        <GridViewColumn Header="Time" Width="90" DisplayMemberBinding="{Binding Time}" />
+                        <GridViewColumn Header="State" Width="120" DisplayMemberBinding="{Binding State}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+
+            <GridSplitter Grid.Row="4" Height="6" HorizontalAlignment="Stretch" Background="Transparent" />
+            <TextBox x:Name="DetailsBox" Grid.Row="5" IsReadOnly="True" FontFamily="Consolas" FontSize="12" TextWrapping="NoWrap"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+        </Grid>
+    </Grid>
+</UserControl>

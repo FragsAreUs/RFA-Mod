@@ -63,6 +63,10 @@ set "VSCMD_SKIP_SENDTELEMETRY=1"
 set "ENVFILE=%LOGDIR%\vcvars-env.txt"
 cmd /d /c ""%VCVARS%" x86 > "%LOGDIR%\vcvars.log" 2>&1 && set > "%ENVFILE%""
 type "%LOGDIR%\vcvars.log" >> "%LOG%" 2>nul
+rem And vcvarsall amd64 the same way, from the same clean settings, for the 64-bit sound engine below.
+set "ENV64=%LOGDIR%\vcvars64-env.txt"
+cmd /d /c ""%VCVARS%" amd64 > "%LOGDIR%\vcvars64.log" 2>&1 && set > "%ENV64%""
+type "%LOGDIR%\vcvars64.log" >> "%LOG%" 2>nul
 if not exist "%ENVFILE%" (echo vcvarsall failed >> "%LOG%" & goto :fail_unmapped)
 for /f "usebackq tokens=1* delims==" %%a in ("%ENVFILE%") do set "%%a=%%b"
 del "%ENVFILE%" >nul 2>&1
@@ -124,6 +128,27 @@ rem have and your bin\rfa_mods.ini and bin\console.ini lack, keeping your values
 if not exist "%OUT%\defaults" mkdir "%OUT%\defaults"
 copy /y "%ROOT%config\rfa_mods.ini" "%OUT%\defaults\rfa_mods.ini" >nul || goto :fail_unpopped
 copy /y "%ROOT%config\console.ini" "%OUT%\defaults\console.ini" >nul || goto :fail_unpopped
+
+rem rfa_audio.dll (src\audio\): our own sound engine on OpenAL Soft, 64-bit, for the editor's sound preview and the
+rem Guerrilla builder's sound check, with OpenAL Soft's 64-bit soft_oal.dll (src\third_party\openal-soft, LGPL) and
+rem its licence beside it. vcvarsall amd64's settings (made in a cmd of its own, above) are taken between setlocal
+rem and endlocal, so the 32-bit ones come back after it.
+if not exist "%OUT%\editor" mkdir "%OUT%\editor"
+if not exist "%OBJ%\audio64" mkdir "%OBJ%\audio64"
+if not exist "%ENV64%" (echo vcvarsall amd64 failed >> "%LOG%" & goto :fail_unpopped)
+setlocal
+for /f "usebackq tokens=1* delims==" %%a in ("%ENV64%") do set "%%a=%%b"
+del "%ENV64%" >nul 2>&1
+echo Building the sound engine (64-bit) ...
+pushd "%OBJ%\audio64"
+cl %CFLAGS% /DNDEBUG /I"%ROOT%src\third_party\openal-soft\include" /LD "%ROOT%src\audio\*.cpp" /Fe"%OUT%\editor\rfa_audio.dll" /link /IMPLIB:rfa_audio.lib user32.lib >> "%LOG%" 2>&1
+set "AUDIOBUILT=%ERRORLEVEL%"
+popd
+endlocal & set "AUDIOBUILT=%AUDIOBUILT%"
+if not "%AUDIOBUILT%"=="0" goto :fail_unpopped
+copy /y "%ROOT%src\third_party\openal-soft\Win64\soft_oal.dll" "%OUT%\editor\soft_oal.dll" >nul || goto :fail_unpopped
+copy /y "%ROOT%src\third_party\openal-soft\COPYING" "%OUT%\editor\soft_oal-COPYING.txt" >nul || goto :fail_unpopped
+copy /y "%ROOT%src\third_party\openal-soft\SOURCE.txt" "%OUT%\editor\soft_oal-SOURCE.txt" >nul || goto :fail_unpopped
 
 rem The editor is C# and needs the .NET 10 SDK. Its build leftovers go to build\editor, made afresh
 rem each time (they keep the path they were made through, and the drive letter can change). The

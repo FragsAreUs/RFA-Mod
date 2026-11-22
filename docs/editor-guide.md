@@ -83,6 +83,12 @@ You can put the panels where you like:
   are made again when you come back to the editor's window.
 - Pick a file to preview it: text files (`.xtbl`, `.lua`, ...) as text, everything else as a hex
   dump.
+- Pick one of the Guerrilla world's sound banks (a `.bnk_pc` the Guerrilla builder wrote) to hear
+  it: its events are listed, and **Play** and **Stop** post them as the game would. Drag the sound
+  around you on the pad to hear its distance and side, set its game parameters (an engine's RPM,
+  ...) and switches, and see the voices playing. **Guerrilla's original** plays the sound it was made from, out of your
+  copy of Red Faction: Guerrilla, to compare. Armageddon's own banks list their events but don't
+  play yet.
 - **Extract** saves a file, and **Extract all** every file of an archive or container, into a
   folder.
 - **Copy to overrides** puts a copy at the right place in `overrides\`, where the game uses it

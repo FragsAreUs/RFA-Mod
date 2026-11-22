@@ -128,7 +128,9 @@ static class TableCheck
         bool cloth = ClothCheck.Run(setup, log);
         // And the hinges, each joining two movers of its zone (ConstraintCheck).
         bool constraints = ConstraintCheck.Run(setup, log);
-        return bad == 0 && solid && ladders && cloth && constraints;
+        // And our sound banks, every event played without speakers on rfa_audio's engine (SoundCheck).
+        bool sounds = SoundCheck.Run(setup, log);
+        return bad == 0 && solid && ladders && cloth && constraints && sounds;
     }
 
     /// <summary>

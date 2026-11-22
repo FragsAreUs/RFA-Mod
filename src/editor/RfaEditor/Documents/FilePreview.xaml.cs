@@ -95,6 +95,7 @@ public partial class FilePreview : UserControl, IEditorDocument
         model = null;
         StopAnimation();
         AnimationList.Visibility = CastList.Visibility = Visibility.Collapsed;
+        HideSoundPreview();
         modelViewer.Clear();
         SetButtons(extract: false, extractAll: false, copy: false, showOverride: false);
     }
@@ -174,6 +175,8 @@ public partial class FilePreview : UserControl, IEditorDocument
                 ShowRig(file);
             else if (file.Entry.Extension == "anim_pc")
                 ShowAnimationFile(file);
+            else if (file.Entry.Extension == "bnk_pc")
+                ShowSoundBank(file);  // FilePreview.Sound.cs
             else
                 PreviewText.Text = Preview.Of(ReadAsGameSeesIt(file));
         });

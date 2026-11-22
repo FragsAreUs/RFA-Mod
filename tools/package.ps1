@@ -79,6 +79,11 @@ if (-not $NoEditor) {
     }
     # The libraries the editor ships with ask that their licence travels with them.
     $parts += @{ From = "docs\third-party-notices.txt"; To = "editor\third-party-notices.txt" }
+    # OpenAL Soft (soft_oal.dll, beside the sound engine): its licence, PFFFT's (a part of it), and where its
+    # binaries and source come from.
+    $parts += @{ From = "src\third_party\openal-soft\COPYING"; To = "editor\soft_oal-COPYING.txt" }
+    $parts += @{ From = "src\third_party\openal-soft\LICENSE-pffft"; To = "editor\soft_oal-LICENSE-pffft.txt" }
+    $parts += @{ From = "src\third_party\openal-soft\SOURCE.txt"; To = "editor\soft_oal-SOURCE.txt" }
 }
 foreach ($part in $parts) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $part.From))) { throw "Missing $($part.From): build first (or pass -Build)." }
