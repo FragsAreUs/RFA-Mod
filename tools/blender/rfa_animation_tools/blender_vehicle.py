@@ -343,11 +343,15 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
 # ---------------------------------------------------------------- writing
 
 
-def _kit_objects(root):
+def _kit_objects(root, people=False):
+    """The kit's objects; with people, also the places people stand and sit (Vehicle Animation's
+    waypoints) and the person animated there, which are left out of the vehicle itself."""
     out = []
     stack = list(root.children)
     while stack:
         o = stack.pop()
+        if not people and ("rfa_waypoint" in o or o.get("rfa_vehicle_person")):
+            continue
         out.append(o)
         stack += list(o.children)
     return out
@@ -903,20 +907,19 @@ def install(game_folder, mod_folder, files, name, kind, display_name):
     _write(asm_path, rv.write_asm(entries))
     written.append(asm_path)
 
+    # vehicles.xtbl is read while the game starts, from its own copy of its tables, which RFA-Mod answers
+    # from mods\tables\ (or the Guerrilla world's copy): see blender_vehicle_anim.read_table.
+    from . import blender_vehicle_anim as bva
+    text = add_table_entry(bva.read_table(game_folder, mod_folder, "vehicles.xtbl"), kind, name, display_name)
+    written.append(bva.write_table(mod_folder, "vehicles.xtbl", text))
+    # Overrides of the table archives' copy an earlier version wrote (the game doesn't read those at start).
     for archive in TABLE_ARCHIVES:
-        try:
-            data, tpath = _read_override_or_game(mod_folder, game_folder, archive, "vehicles.xtbl")
-        except ValueError:
-            continue
-        text = add_table_entry(data.decode("utf-8", "replace"), kind, name, display_name)
-        _write(tpath, text.encode("utf-8"))
-        written.append(tpath)
-    gw = os.path.join(mod_folder, "mods", "guerrilla_world", "vehicles.xtbl")
-    if os.path.isfile(gw):
-        with open(gw, "rb") as f:
-            text = add_table_entry(f.read().decode("utf-8", "replace"), kind, name, display_name)
-        _write(gw, text.encode("utf-8"))
-        written.append(gw)
+        tpath = os.path.join(mod_folder, "overrides", *archive.split("\\"), "vehicles.xtbl")
+        if os.path.isfile(tpath):
+            with open(tpath, "rb") as f:
+                old = f.read().decode("latin-1")
+            _write(tpath, add_table_entry(old, kind, name, display_name).encode("latin-1"))
+            written.append(tpath)
     return written
 
 
@@ -936,13 +939,14 @@ def uninstall(game_folder, mod_folder, name):
             removed.append(asm_path)
     tables = [os.path.join(mod_folder, "overrides", *a.split("\\"), "vehicles.xtbl") for a in TABLE_ARCHIVES]
     tables.append(os.path.join(mod_folder, "mods", "guerrilla_world", "vehicles.xtbl"))
+    tables.append(os.path.join(mod_folder, "mods", "tables", "vehicles.xtbl"))
     for t in tables:
         if os.path.isfile(t):
             with open(t, "rb") as f:
-                text = f.read().decode("utf-8", "replace")
+                text = f.read().decode("latin-1")
             new = remove_table_entry(text, name)
             if new != text:
-                _write(t, new.encode("utf-8"))
+                _write(t, new.encode("latin-1"))
                 removed.append(t)
     return removed
 

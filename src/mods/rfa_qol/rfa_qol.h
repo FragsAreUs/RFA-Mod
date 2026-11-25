@@ -56,6 +56,11 @@ namespace animations {
 void Init();
 }
 
+// Tables from mods\tables, in place of the game's start-up tables or new (tables.cpp). No settings.
+namespace tables {
+void Init();
+}
+
 // Enemies that fight in Ruin levels ([Ruin] HostileAI=; ruin_ai.cpp).
 namespace ruin_ai {
 void Init();

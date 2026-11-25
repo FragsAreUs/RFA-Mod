@@ -12,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
@@ -30,13 +30,14 @@ import sys
 
 # Blender reloads only this file when the add-on is installed again or re-enabled; the other files stay
 # as first loaded unless reloaded here (in dependency order), so a new version would run old code.
-for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "blender_io", "blender_vehicle"):
+for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "blender_io", "blender_vehicle", "blender_vehicle_anim"):
     _module = sys.modules.get(f"{__name__}.{_name}")
     if _module is not None:
         importlib.reload(_module)
 
 from . import blender_io as bio
 from . import blender_vehicle as bv
+from . import blender_vehicle_anim as bva
 from . import rfa_formats as rf
 
 DEFAULT_GAME = r"D:\Steam\steamapps\common\red faction armageddon"
@@ -725,6 +726,222 @@ class RFA_PT_vehicle(bpy.types.Panel):
         box.operator(RFA_OT_vehicle_remove.bl_idname, icon="TRASH")
 
 
+# ---------------------------------------------------------------- the player's vehicle animations
+
+
+def _vehicle_items(self, context):
+    folder, mods = game_folder(context), mod_folder(context)
+    key = ("vehicle names", folder.lower(), mods.lower())
+    if key not in _lists:
+        try:
+            names = bva.vehicle_names(folder, mods)
+        except Exception as ex:
+            names = []
+            print(f"RFA Animation Tools: {ex}")
+        _lists[key] = [(n, n, f"Animate getting in, driving and getting out of {n}") for n in sorted(names, key=str.lower)] or \
+                      [("", "(no vehicles found: check the game folder in the add-on's preferences)", "")]
+    return _lists[key]
+
+
+def people_root(context):
+    """The vehicle being animated: the one the active object belongs to, else the scene's first."""
+    obj = context.active_object
+    while obj is not None:
+        if obj.get("rfa_people_vehicle"):
+            return obj
+        if obj.get("rfa_vehicle_person") and obj.parent is not None:
+            obj = obj.parent
+            continue
+        obj = obj.parent
+    return next((o for o in context.scene.objects if o.get("rfa_people_vehicle")), None)
+
+
+def _people(self, context):
+    root, arm = people_root(context), bva.person(context)
+    if root is None or arm is None:
+        self.report({"ERROR"}, "Set up a vehicle's animations first (Animate Getting In)")
+        return None, None
+    return root, arm
+
+
+class RFA_OT_people_setup(bpy.types.Operator):
+    """Animate the player getting into, driving and getting out of one of the game's vehicles: its
+    kit, the places people stand and sit (as arrows: green the way they face), the player, and a clip
+    for each step (the vehicle's own animations, or the LAV's)"""
+    bl_idname = "rfa.people_setup"
+    bl_label = "Animate Getting In"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_property = "vehicle"
+    vehicle: EnumProperty(name="Vehicle", items=_vehicle_items)
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.vehicle:
+            self.report({"ERROR"}, "No vehicles found: set the game folder in the add-on's preferences")
+            return {"CANCELLED"}
+        try:
+            root = bva.setup(context, game_folder(context), mod_folder(context), self.vehicle, self.report)
+        except Exception as ex:
+            self.report({"ERROR"}, f"{self.vehicle}: {ex}")
+            return {"CANCELLED"}
+        clips = bva.clip_actions(self.vehicle)
+        self.report({"INFO"}, f"{self.vehicle}: {', '.join(bva.CLIP_LABELS[c] for c in bva.CLIPS if c in clips)} "
+                              "ready to animate; Export Vehicle Animations puts them in the game")
+        context.view_layer.objects.active = bva.person(context)
+        return {"FINISHED"}
+
+
+class RFA_OT_people_clip(bpy.types.Operator):
+    """Show this clip: its action on the player, at the place it starts, its triggers on the timeline"""
+    bl_idname = "rfa.people_clip"
+    bl_label = "Show Clip"
+    bl_options = {"REGISTER", "UNDO"}
+    clip: EnumProperty(name="Clip", items=[(c, bva.CLIP_LABELS[c], "") for c in bva.CLIPS])
+
+    def execute(self, context):
+        root, arm = _people(self, context)
+        if root is None:
+            return {"CANCELLED"}
+        try:
+            bva.show_clip(context, root, arm, self.clip)
+        except ValueError as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class RFA_OT_people_trigger(bpy.types.Operator):
+    """Mark this frame for the game: a door opening or closing, the camera handing over, a footstep"""
+    bl_idname = "rfa.people_trigger"
+    bl_label = "Add Trigger"
+    bl_options = {"REGISTER", "UNDO"}
+    trigger: EnumProperty(name="Trigger", items=[(t, t, "") for t in bva.TRIGGERS])
+
+    def execute(self, context):
+        context.scene.timeline_markers.new(self.trigger, frame=context.scene.frame_current)
+        return {"FINISHED"}
+
+
+class RFA_OT_people_snap_end(bpy.types.Operator):
+    """Key the player so this clip's last frame is at the place it goes to (the seat, or where they get out)"""
+    bl_idname = "rfa.people_snap_end"
+    bl_label = "End at the Next Place"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root, arm = _people(self, context)
+        if root is None:
+            return {"CANCELLED"}
+        try:
+            bva.snap_end(context, root, arm)
+        except ValueError as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class RFA_OT_people_seat_at_end(bpy.types.Operator):
+    """Move the place this clip goes to (the seat, or where they get out) to where its last frame leaves the player"""
+    bl_idname = "rfa.people_seat_at_end"
+    bl_label = "Move the Next Place to the End"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root, arm = _people(self, context)
+        if root is None:
+            return {"CANCELLED"}
+        try:
+            name = bva.seat_at_end(context, root, arm)
+        except ValueError as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{name} moved to where the clip ends")
+        return {"FINISHED"}
+
+
+class RFA_OT_people_export(bpy.types.Operator):
+    """Put the clips into the game: the animations, the vehicle's own anim set, and its places and steps
+    (from the game's next start)"""
+    bl_idname = "rfa.people_export"
+    bl_label = "Export Vehicle Animations to Game"
+
+    def execute(self, context):
+        root, arm = _people(self, context)
+        if root is None:
+            return {"CANCELLED"}
+        if not os.path.isdir(mod_folder(context)):
+            self.report({"ERROR"}, f"No folder {mod_folder(context)}: set the mod folder (or the game folder) in the add-on's preferences")
+            return {"CANCELLED"}
+        try:
+            written = bva.export(context, game_folder(context), mod_folder(context), root, arm, self.report)
+        except Exception as ex:
+            self.report({"ERROR"}, f"{root['rfa_people_vehicle']}: {ex}")
+            return {"CANCELLED"}
+        for p in written:
+            print("RFA Animation Tools: wrote", p)
+        self.report({"INFO"}, f"{root['rfa_people_vehicle']}: {len(written)} files written; the game plays them from its next start")
+        return {"FINISHED"}
+
+
+class RFA_OT_people_remove(bpy.types.Operator):
+    """Take this vehicle's animations out of the game again (it gets in as it did before)"""
+    bl_idname = "rfa.people_remove"
+    bl_label = "Remove Vehicle Animations from Game"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        root = people_root(context)
+        if root is None:
+            self.report({"ERROR"}, "Select the vehicle whose animations to remove")
+            return {"CANCELLED"}
+        removed = bva.remove(game_folder(context), mod_folder(context), root["rfa_people_vehicle"])
+        self.report({"INFO"}, f"{root['rfa_people_vehicle']}: {len(removed)} files removed or changed")
+        return {"FINISHED"}
+
+
+class RFA_PT_people(bpy.types.Panel):
+    bl_label = "RFA Vehicle Animation"
+    bl_idname = "RFA_PT_people"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "RFA Anim"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(RFA_OT_people_setup.bl_idname, icon="AUTO")
+        root = people_root(context)
+        if root is None:
+            layout.label(text="Pick a vehicle to animate its driver", icon="INFO")
+            return
+        vehicle = root["rfa_people_vehicle"]
+        clips = bva.clip_actions(vehicle)
+        box = layout.box()
+        box.label(text=vehicle, icon="AUTO")
+        row = box.row(align=True)
+        shown = root.get("rfa_people_clip", "")
+        for c in bva.CLIPS:
+            sub = row.row(align=True)
+            sub.enabled = c in clips
+            sub.operator(RFA_OT_people_clip.bl_idname, text=bva.CLIP_LABELS[c], depress=(c == shown)).clip = c
+        if shown in clips:
+            a = clips[shown]
+            box.label(text=f"From {a.get('rfa_from_waypoint', '?')}" +
+                           (f" to {a.get('rfa_to_waypoint')}" if a.get('rfa_to_waypoint') != a.get('rfa_from_waypoint') else " (loops)"))
+            box.label(text=f"Started from {a.get('rfa_source', '?')}; frames {context.scene.frame_start}-{context.scene.frame_end}")
+        col = box.column(align=True)
+        col.operator_menu_enum(RFA_OT_people_trigger.bl_idname, "trigger", text="Add Trigger Here", icon="MARKER_HLT")
+        if shown in ("enter", "exit"):
+            col.operator(RFA_OT_people_snap_end.bl_idname, icon="KEYFRAME")
+            col.operator(RFA_OT_people_seat_at_end.bl_idname, icon="EMPTY_ARROWS")
+        box.operator(RFA_OT_people_export.bl_idname, icon="EXPORT")
+        box.operator(RFA_OT_people_remove.bl_idname, icon="TRASH")
+
+
 # ---------------------------------------------------------------- the panel
 
 
@@ -790,8 +1007,16 @@ classes = (
     RFA_OT_vehicle_remove,
     RFA_OT_restore_anim,
     RFA_OT_refresh,
+    RFA_OT_people_setup,
+    RFA_OT_people_clip,
+    RFA_OT_people_trigger,
+    RFA_OT_people_snap_end,
+    RFA_OT_people_seat_at_end,
+    RFA_OT_people_export,
+    RFA_OT_people_remove,
     RFA_PT_panel,
     RFA_PT_vehicle,
+    RFA_PT_people,
 )
 
 
