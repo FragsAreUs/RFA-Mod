@@ -172,6 +172,34 @@ def _hulls(shape):
     return out
 
 
+def _game_material(m):
+    """A VehicleModel material (dict) as an rf.Material, with its constants and shader."""
+    return rf.Material([(s, n) for s, n in m["textures"]], rf.block_constants(m["block"]), m["flags"],
+                       rv.struct.unpack_from("<I", m["block"], 4)[0])
+
+
+def refresh_materials(root, game_folder):
+    """The kit's materials' nodes made again (see blender_io.build_material), with the kind's
+    constants and textures: for kits made before the materials showed the game's look, or after
+    changing them too far. Returns how many."""
+    container, model = open_kind(game_folder, root["rfa_vehicle"])
+    kind = root["rfa_vehicle"][: -len(".ccar_pc.str2_pc")]
+    tex = bio.Textures(game_folder, container)
+    done = 0
+    mats = {m for o in _kit_objects(root) if o.type == "MESH" for m in o.data.materials if m is not None}
+    for mat in mats:
+        k = mat.get("rfa_template_material")
+        if isinstance(k, int) and 0 <= k < len(model.materials) and mat.get("rfa_template_kind", kind) == kind:
+            game = _game_material(model.materials[k])
+            bio.store_material(mat, game)
+            bio.build_material(mat, game, tex)
+            done += 1
+        elif bio.stored_material(mat) is not None:
+            bio.build_material(mat, bio.stored_material(mat), tex)
+            done += 1
+    return done
+
+
 def make_kit(context, game_folder, container_name, new_name, textures=True):
     """The kit for a vehicle: see the module's description. Returns its root empty."""
     container, model = open_kind(game_folder, container_name)
@@ -187,7 +215,7 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
     tex = bio.Textures(game_folder, container) if textures else None
     materials = []
     for k, m in enumerate(model.materials):
-        mat_obj = rf.Material([(s, n) for s, n in m["textures"]], {}, m["flags"])
+        mat_obj = _game_material(m)
         mat = bio.make_material(mat_obj, k, tex)
         if mat.get("rfa_template_kind", kind) != kind or mat.get("rfa_template_material", k) != k:
             mat = mat.copy()  # another kit's material of the same name: this kit gets its own
@@ -299,7 +327,7 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
         for k, t in enumerate(tags):
             obj = _empty(tagc, t.name, f @ game_matrix(t.rotation, t.position), "ARROWS", 0.25)
             obj["rfa_tag"] = t.at
-            obj["rfa_tag_hash"] = t.hash
+            obj["rfa_tag_hash"] = f"{t.hash:08X}"  # (a Blender int property is 32-bit signed)
             _parent(obj, owner)
 
     tag_objects(model.chassis_tags, root, Matrix(), "chassis")
@@ -361,14 +389,18 @@ class _Materials:
 
     def _make(self, mat):
         base = self._base(mat)
-        out = {"block": base["block"], "flags": base["flags"], "textures": [list(t) for t in base["textures"]]}
+        block = bytearray(base["block"])
+        if mat is not None:
+            for h, v in bio.material_constants(mat).items():
+                rf.set_block_constant(block, h, v)
+        out = {"block": bytes(block), "flags": base["flags"], "textures": [list(t) for t in base["textures"]]}
         images = _material_images(mat) if mat is not None else {}
         label = re.sub(r"[^a-z0-9_]+", "_", (mat.name if mat else "default").lower()).strip("_") or "m"
         for t in out["textures"]:
             slot, name = t
-            img = images.get(slot)
-            if img is not None:
-                t[1] = self._image(img, f"{self.name}_{label}", slot)
+            found = images.get(slot)
+            if found is not None:
+                t[1] = self._image(found[0], f"{self.name}_{label}", slot, flip_green=slot == rf.NORMAL_MAP and not found[1])
             elif not self._keep(name):
                 t[1] = self._fallback(slot)
         return out
@@ -395,16 +427,18 @@ class _Materials:
             return "missing-white.tga"
         return "missing.tga"
 
-    def _image(self, img, stem, slot):
+    def _image(self, img, stem, slot, flip_green=False):
         suffix = {rf.DIFFUSE_MAP: "di", rf.NORMAL_MAP: "nm", rf.SPECULAR_MAP: "sp", GLOW_MAP: "gl", MASK_MAP: "mk"}.get(slot, "tx")
         name = f"{stem}_{suffix}.tga"
         if name.lower() in self.added:
             return name
         # An image of the kind's own textures, unchanged: copied as it is.
-        if self.peg is not None and not img.is_dirty and self.peg.find(img.name) is not None:
+        if self.peg is not None and not img.is_dirty and not flip_green and self.peg.find(img.name) is not None:
             self._keep(img.name)
             return self.peg.find(img.name).name
         rgba = image_pixels(img)
+        if flip_green:  # a Blender (OpenGL) normal map: the game's are DirectX
+            rgba[..., 1] = 255 - rgba[..., 1]
         self.textures.add(name, rgba, data_map=slot in (rf.NORMAL_MAP, MASK_MAP))
         self.added.add(name.lower())
         return name
@@ -414,37 +448,54 @@ GLOW_MAP = 0xDBEA623E
 MASK_MAP = 0x03B65AF7
 
 
+def _upstream_image(socket):
+    """The image feeding a socket, through the nodes the game look puts between (mixes by their first
+    colour, separate / combine, normal map, to-grey). With it, whether a green flip was passed
+    (a Math node taking 1 minus a value: the normal map's DirectX green)."""
+    flipped = False
+    seen = 0
+    while socket is not None and socket.is_linked and seen < 32:
+        seen += 1
+        node = socket.links[0].from_node
+        if node.type == "TEX_IMAGE":
+            return node.image, flipped
+        if node.type == "MIX":
+            socket = node.inputs[6]
+        elif node.type == "MIX_RGB":
+            socket = node.inputs["Color1"]
+        elif node.type in ("NORMAL_MAP",):
+            socket = node.inputs["Color"]
+        elif node.type in ("RGBTOBW", "SEPARATE_COLOR", "SEPRGB", "GAMMA", "CURVE_RGB", "HUE_SAT", "BRIGHTCONTRAST", "INVERT"):
+            socket = node.inputs[-1] if node.type == "INVERT" else node.inputs[0]
+        elif node.type in ("COMBINE_COLOR", "COMBRGB"):
+            g = node.inputs[1]
+            if g.is_linked and g.links[0].from_node.type == "MATH" and g.links[0].from_node.operation == "SUBTRACT":
+                flipped = True
+            socket = node.inputs[0]
+        else:
+            return None, flipped
+    return None, flipped
+
+
 def _material_images(mat):
-    """{slot hash: image} from a material's Principled BSDF."""
+    """{slot hash: (image, green already flipped)} from a material's Principled BSDF."""
     out = {}
     if not mat.use_nodes or mat.node_tree is None:
         return out
     bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
     if bsdf is None:
         return out
-
-    def image_into(socket_names):
-        for sn in socket_names:
-            sock = bsdf.inputs.get(sn)
-            if sock is None or not sock.is_linked:
-                continue
-            node = sock.links[0].from_node
-            if node.type == "NORMAL_MAP":
-                col = node.inputs.get("Color")
-                if col is not None and col.is_linked:
-                    node = col.links[0].from_node
-            if node.type == "TEX_IMAGE" and node.image is not None:
-                return node.image
-        return None
-
     for slot, sockets in ((rf.DIFFUSE_MAP, ("Base Color",)), (rf.NORMAL_MAP, ("Normal",)),
                           (rf.SPECULAR_MAP, ("Specular IOR Level", "Specular")), (GLOW_MAP, ("Emission Color", "Emission"))):
-        img = image_into(sockets)
-        if img is not None:
-            out[slot] = img
-    for node in mat.node_tree.nodes:  # a mask, if one is marked (an image node labelled "Mask")
+        for sn in sockets:
+            sock = bsdf.inputs.get(sn)
+            img, flipped = _upstream_image(sock)
+            if img is not None:
+                out[slot] = (img, flipped)
+                break
+    for node in mat.node_tree.nodes:  # the mask (an image node labelled "Mask")
         if node.type == "TEX_IMAGE" and node.image is not None and node.label.lower() == "mask":
-            out[MASK_MAP] = node.image
+            out[MASK_MAP] = (node.image, False)
     return out
 
 

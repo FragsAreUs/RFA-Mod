@@ -537,6 +537,39 @@ class RFA_OT_vehicle_hull(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class RFA_OT_refresh_materials(bpy.types.Operator):
+    """Make the selected objects' game materials again with the game's look (colour x Diffuse_Color,
+    dust, shine, normal map, glow): for things brought in by an earlier version, or to start over"""
+    bl_idname = "rfa.refresh_materials"
+    bl_label = "Game Look for Materials"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        done = 0
+        roots = {bv.kit_root(o) for o in context.selected_objects + [context.active_object] if o is not None} - {None}
+        try:
+            for root in roots:
+                done += bv.refresh_materials(root, game_folder(context))
+        except Exception as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        seen = set()
+        for o in context.selected_objects:
+            if o.type != "MESH" or bv.kit_root(o) is not None:
+                continue
+            for mat in o.data.materials:
+                if mat is None or mat in seen:
+                    continue
+                seen.add(mat)
+                game = bio.stored_material(mat)
+                if game is not None:
+                    bio.build_material(mat, game, bio.ImagesByName())
+                    done += 1
+        self.report({"INFO"} if done else {"WARNING"}, f"{done} material(s) made again" if done else
+                    "No game materials among the selected objects")
+        return {"FINISHED"} if done else {"CANCELLED"}
+
+
 class RFA_OT_vehicle_export(bpy.types.Operator):
     """Write the vehicle into the game: its model, textures, collision and container, the asset list
     entry and its vehicles.xtbl entry (the kind's handling, seats and entering), from the game's next start"""
@@ -614,6 +647,7 @@ class RFA_PT_vehicle(bpy.types.Panel):
         box = layout.box()
         box.label(text=f"{root.get('rfa_vehicle_name', root.name)} (from {root['rfa_vehicle'][: -len('.ccar_pc.str2_pc')]})", icon="AUTO")
         box.operator(RFA_OT_vehicle_hull.bl_idname, icon="MESH_ICOSPHERE")
+        box.operator(RFA_OT_refresh_materials.bl_idname, icon="MATERIAL")
         box.operator(RFA_OT_vehicle_export.bl_idname, icon="EXPORT")
         box.operator(RFA_OT_vehicle_remove.bl_idname, icon="TRASH")
 
@@ -676,6 +710,7 @@ classes = (
     RFA_OT_export_anim_override,
     RFA_OT_vehicle_new,
     RFA_OT_vehicle_hull,
+    RFA_OT_refresh_materials,
     RFA_OT_vehicle_export,
     RFA_OT_vehicle_remove,
     RFA_OT_restore_anim,

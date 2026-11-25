@@ -98,6 +98,15 @@ table entry in the editor's table editor to change handling, hit points or the d
 - The list of the game's animations is made the first time it's opened (a few seconds: every
   archive's asset lists are read) and kept in a cache file in the system's temporary folder, read
   again only for archives that changed. **Read the Game's Files Again** makes it anew.
+- Materials look as the game's shaders colour them (decompiled from `ir_carwalker`, `ir_cardefault`,
+  `ir_carglass`: the colour map x `Diffuse_Color`, brown dust laid over where the mask's green x
+  `Dust_Amount` says, shine from the specular map x `Specular_Color` (none under dust),
+  `Specular_Power` as roughness, the DirectX normal map's green flipped, glow x `Glow_Color` x
+  `Self_Illumination`, glass as see-through as it is dark). The game's own lighting is the only
+  difference left. The constants are labelled nodes: changing them changes the exported vehicle's
+  material. **Game Look for Materials** makes the selected objects' materials again (for things
+  brought in by an earlier version). Normal maps you plug straight into a Normal Map node are taken
+  as Blender's (OpenGL) and flipped for the game on export.
 - Textures are the game's own pixels (DXT), saved as DDS files in the temporary folder and packed
   into the .blend. A material is named after its colour texture; importing again reuses a material
   of that name as it is, so changes to it are kept. Materials the game draws blended or cut out

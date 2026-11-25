@@ -838,9 +838,43 @@ def name_hash(name):
     return crc
 
 
+def block_constants(b):
+    """A material block's constants: {name hash: (x, y, z, w)} (the names after the textures, the
+    values from the next multiple of 16)."""
+    b = bytes(b)
+    if len(b) < 0x24:
+        return {}
+    textures, n = _u16(b, 16), b[18]
+    names_at = 0x24 + 12 * textures
+    values_at = _align(names_at + 4 * n, 16)
+    out = {}
+    for c in range(n):
+        v = values_at + 16 * c
+        if v + 16 > len(b):
+            break
+        out[_u32(b, names_at + 4 * c)] = struct.unpack_from("<4f", b, v)
+    return out
+
+
+def set_block_constant(b, name_hash_, value):
+    """Sets a constant a material block has (a bytearray); False if it hasn't that one."""
+    textures, n = _u16(b, 16), b[18]
+    names_at = 0x24 + 12 * textures
+    values_at = _align(names_at + 4 * n, 16)
+    for c in range(n):
+        if _u32(b, names_at + 4 * c) == name_hash_:
+            v = list(value) + [0.0] * (4 - len(value))
+            struct.pack_into("<4f", b, values_at + 16 * c, *v[:4])
+            return True
+    return False
+
+
 DIFFUSE_MAP = name_hash("Diffuse_Map")
 NORMAL_MAP = name_hash("Normal_Map")
 SPECULAR_MAP = name_hash("Specular_Map")
+PATTERN_MAP = name_hash("Pattern_Map")     # vehicles' mask: green the dust, blue where they reflect
+GLOW_MAP = name_hash("Glow_Map")
+SHADER_CAR_GLASS = name_hash("ir_carglass")
 
 
 class Material:
@@ -852,10 +886,19 @@ class Material:
     (a float4 each). Characters list their materials' offsets in the header (0x10 the list, 0x14
     how many); the name list is where every name offset lands on a ".tga" name."""
 
-    def __init__(self, textures, constants, flags):
+    def __init__(self, textures, constants, flags, shader=0):
         self.textures = textures    # [(slot hash, file name "x.tga")]
         self.constants = constants  # {name hash: (x, y, z, w)}
         self.flags = flags
+        self.shader = shader        # the shader's name hash (+4: ir_carwalker 0x78743C24, ...)
+
+    @classmethod
+    def from_block(cls, block, names):
+        """A material from its block; names(offset) gives a texture's name from its name offset."""
+        b = bytes(block)
+        count = _u16(b, 16)
+        textures = [(_u32(b, 0x24 + 12 * t + 4), names(_u32(b, 0x24 + 12 * t))) for t in range(count)]
+        return cls(textures, block_constants(b), _u32(b, 12), _u32(b, 4))
 
     @property
     def blended(self):
@@ -930,7 +973,7 @@ class Material:
                         break
                     constants[_u32(h, names_at + 4 * c)] = struct.unpack_from("<4f", h, v)
             flags = _u32(h, at + 12) if 0 <= at and at + 16 <= len(h) else 0x40
-            out.append(cls(textures, constants, flags))
+            out.append(cls(textures, constants, flags, _u32(h, at + 4) if 0 <= at and at + 8 <= len(h) else 0))
         return out
 
 

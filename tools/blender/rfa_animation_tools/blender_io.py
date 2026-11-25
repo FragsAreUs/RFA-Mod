@@ -318,60 +318,244 @@ class Textures:
 
 
 def make_material(material, number, textures):
-    """A Blender material for one of the game's: Principled BSDF with its colour texture (and its
-    alpha, for materials drawn blended or cut out), normal map and specular map, where they're
-    found; named after the colour texture (or rfa_material_<n>). An existing one of that name is
-    used as it is, so changes made to it are kept."""
+    """A Blender material for one of the game's, named after its colour texture (or
+    rfa_material_<n>); see build_material. An existing one of that name is used as it is, so
+    changes made to it are kept."""
     diffuse = material.texture(rf.DIFFUSE_MAP) if material else None
     mat_name = os.path.splitext(diffuse)[0] if diffuse and not diffuse.lower().startswith("missing") else f"rfa_material_{number}"
     mat = bpy.data.materials.get(mat_name)
     if mat is not None:
+        if material is not None and textures is not None and "rfa_textures" in mat and "rfa_constants" not in mat:
+            store_material(mat, material)  # made by an earlier version: given the game's look now
+            build_material(mat, material, textures)
         return mat
     mat = bpy.data.materials.new(mat_name)
-    if material is None or textures is None:
+    if material is None:
         return mat
+    store_material(mat, material)
+    if textures is not None:
+        build_material(mat, material, textures)
+    return mat
+
+
+def store_material(mat, material):
     mat["rfa_textures"] = json.dumps({f"{slot:08X}": tex for slot, tex in material.textures})
+    mat["rfa_constants"] = json.dumps({f"{h:08X}": list(v) for h, v in material.constants.items()})
     mat["rfa_flags"] = material.flags
+    mat["rfa_shader"] = f"{material.shader:08X}"
+
+
+def stored_material(mat):
+    """The game's material a Blender one was made from (store_material), or None."""
+    if "rfa_textures" not in mat:
+        return None
+    textures = [(int(k, 16), v) for k, v in json.loads(mat["rfa_textures"]).items()]
+    constants = {int(k, 16): tuple(v) for k, v in json.loads(mat.get("rfa_constants", "{}")).items()}
+    return rf.Material(textures, constants, int(mat.get("rfa_flags", 0x40)), int(mat.get("rfa_shader", "0"), 16))
+
+
+# The constants the game's shaders take that the Blender material shows, as nodes labelled by name
+# (changing them changes the exported vehicle's material).
+CONSTANT_NODES = ("Diffuse_Color", "Dust_Color", "Dust_Amount", "Specular_Color", "Specular_Power",
+                  "Normal_Height", "Glow_Color", "Self_Illumination", "Main_Opacity")
+_COLOURS = {"Diffuse_Color", "Dust_Color", "Specular_Color", "Glow_Color"}
+
+
+def build_material(mat, material, textures):
+    """The material's nodes, as the game's vehicle and character shaders (ir_carwalker, ir_cardefault,
+    ir_carglass, ...) colour a surface, lighting aside:
+      colour   the colour map x Diffuse_Color, laid over with Dust_Color where the mask's green x
+               Dust_Amount says (the dust)
+      shine    the specular map x Specular_Color, none under the dust; Specular_Power as roughness
+      normal   the normal map (DirectX: green flipped for Blender) x Normal_Height
+      glow     the glow map x Glow_Color x Self_Illumination
+      alpha    the colour map's alpha x Main_Opacity (blended or cut-out materials); glass: how
+               bright its colour is x Main_Opacity
+    The constants are value and colour nodes labelled by name."""
     mat.use_nodes = True
     nt = mat.node_tree
-    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
-    if bsdf is None:
-        return mat
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (500, 0)
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (150, 0)
+    nt.links.new(bsdf.outputs[0], out.inputs["Surface"])
+    link = nt.links.new
+    k = material.constants
 
-    def tex_node(img, x, y):
-        node = nt.nodes.new("ShaderNodeTexImage")
-        node.image = img
-        node.location = (x, y)
-        return node
+    def const(name, default):
+        return k.get(rf.name_hash(name), default)
 
-    img = textures.image(diffuse)
-    if img is not None:
-        node = tex_node(img, -600, 300)
-        nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
-        if material.blended or material.cut_out:
-            nt.links.new(node.outputs["Alpha"], bsdf.inputs["Alpha"])
-            method = "BLENDED" if material.blended else "DITHERED"
-            if hasattr(mat, "surface_render_method"):
-                mat.surface_render_method = method
-            if hasattr(mat, "blend_method"):
-                try:
-                    mat.blend_method = "BLEND" if material.blended else "CLIP"
-                except TypeError:
-                    pass
-    img = textures.image(material.texture(rf.NORMAL_MAP))
-    if img is not None:
-        node = tex_node(img, -600, -300)
+    def value_node(name, value, x, y):
+        n = nt.nodes.new("ShaderNodeValue")
+        n.label = n.name = name
+        n.outputs[0].default_value = float(value[0] if isinstance(value, (tuple, list)) else value)
+        n.location = (x, y)
+        return n.outputs[0]
+
+    def colour_node(name, value, x, y):
+        n = nt.nodes.new("ShaderNodeRGB")
+        n.label = n.name = name
+        n.outputs[0].default_value = (value[0], value[1], value[2], 1.0)
+        n.location = (x, y)
+        return n.outputs[0]
+
+    def mix(fac, a, b, blend, x, y):
+        n = nt.nodes.new("ShaderNodeMix")
+        n.data_type = "RGBA"
+        n.blend_type = blend
+        n.location = (x, y)
+        if isinstance(fac, float):
+            n.inputs[0].default_value = fac
+        else:
+            link(fac, n.inputs[0])
+        for sock, v in ((n.inputs[6], a), (n.inputs[7], b)):
+            if isinstance(v, tuple):
+                sock.default_value = v
+            else:
+                link(v, sock)
+        return n.outputs[2]
+
+    def math(op, a, b, x, y, clamp=False):
+        n = nt.nodes.new("ShaderNodeMath")
+        n.operation = op
+        n.use_clamp = clamp
+        n.location = (x, y)
+        for sock, v in ((n.inputs[0], a), (n.inputs[1], b)):
+            if isinstance(v, (int, float)):
+                sock.default_value = float(v)
+            else:
+                link(v, sock)
+        return n.outputs[0]
+
+    def image(slot, x, y, data=False):
+        name = material.texture(slot)
+        img = textures.image(name) if name else None
+        if img is None:
+            return None
+        n = nt.nodes.new("ShaderNodeTexImage")
+        n.image = img
+        n.location = (x, y)
+        if data:
+            n.label = "Mask" if slot == rf.PATTERN_MAP else n.label
+        return n
+
+    def socket(*names):
+        for nm in names:
+            if nm in bsdf.inputs:
+                return bsdf.inputs[nm]
+        return None
+
+    glass = material.shader == rf.SHADER_CAR_GLASS
+    # Colour.
+    di = image(rf.DIFFUSE_MAP, -1100, 400)
+    base = None
+    if di is not None:
+        base = mix(1.0, di.outputs["Color"], colour_node("Diffuse_Color", const("Diffuse_Color", (1, 1, 1)), -1100, 150), "MULTIPLY", -800, 350)
+    dust = None
+    mk = image(rf.PATTERN_MAP, -1400, -100, data=True)
+    if mk is not None and rf.name_hash("Dust_Amount") in k:
+        sep = nt.nodes.new("ShaderNodeSeparateColor")
+        sep.location = (-1100, -100)
+        link(mk.outputs["Color"], sep.inputs[0])
+        dust = math("MULTIPLY", sep.outputs[1], value_node("Dust_Amount", const("Dust_Amount", (0,)), -1100, -250), -850, -100, clamp=True)
+        if base is not None:
+            base = mix(dust, base, colour_node("Dust_Color", const("Dust_Color", (0.5, 0.36, 0.15)), -850, 150), "MIX", -550, 300)
+    if base is not None:
+        link(base, socket("Base Color"))
+    # Shine.
+    sp = image(rf.SPECULAR_MAP, -1100, -450)
+    spec_in = socket("Specular IOR Level", "Specular")
+    if sp is not None and spec_in is not None:
+        shine = mix(1.0, sp.outputs["Color"], colour_node("Specular_Color", const("Specular_Color", (1, 1, 1)), -1100, -700), "MULTIPLY", -800, -500)
+        if dust is not None:
+            shine = mix(dust, shine, (0.0, 0.0, 0.0, 1.0), "MIX", -550, -500)
+        bw = nt.nodes.new("ShaderNodeRGBToBW")
+        bw.location = (-300, -500)
+        link(shine, bw.inputs[0])
+        link(bw.outputs[0], spec_in)
+    rough = socket("Roughness")
+    if rough is not None and rf.name_hash("Specular_Power") in k:
+        p = value_node("Specular_Power", const("Specular_Power", (10,)), -800, -800)
+        r = math("ADD", p, 2.0, -550, -800)
+        r = math("DIVIDE", 2.0, r, -400, -800)
+        r = math("SQRT", r, 0.0, -250, -800, clamp=True)
+        link(r, rough)
+    # Normal.
+    nm = image(rf.NORMAL_MAP, -1100, -1000)
+    if nm is not None and not glass:
+        sep = nt.nodes.new("ShaderNodeSeparateColor")
+        sep.location = (-800, -1000)
+        link(nm.outputs["Color"], sep.inputs[0])
+        g = math("SUBTRACT", 1.0, sep.outputs[1], -600, -1050)
+        comb = nt.nodes.new("ShaderNodeCombineColor")
+        comb.location = (-400, -1000)
+        link(sep.outputs[0], comb.inputs[0])
+        link(g, comb.inputs[1])
+        link(sep.outputs[2], comb.inputs[2])
         nmap = nt.nodes.new("ShaderNodeNormalMap")
-        nmap.location = (-250, -300)
-        nt.links.new(node.outputs["Color"], nmap.inputs["Color"])
-        nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
-    img = textures.image(material.texture(rf.SPECULAR_MAP))
-    if img is not None:
-        node = tex_node(img, -600, 0)
-        spec = bsdf.inputs.get("Specular IOR Level") or bsdf.inputs.get("Specular")
-        if spec is not None:
-            nt.links.new(node.outputs["Color"], spec)
+        nmap.location = (-200, -1000)
+        link(comb.outputs[0], nmap.inputs["Color"])
+        link(value_node("Normal_Height", const("Normal_Height", (1,)), -400, -1200), nmap.inputs["Strength"])
+        link(nmap.outputs["Normal"], socket("Normal"))
+    # Glow.
+    gl = image(rf.GLOW_MAP, -1100, -1400)
+    emission = socket("Emission Color", "Emission")
+    if gl is not None and emission is not None and const("Self_Illumination", (0,))[0] > 0:
+        glow = mix(1.0, gl.outputs["Color"], colour_node("Glow_Color", const("Glow_Color", (1, 1, 1)), -1100, -1650), "MULTIPLY", -800, -1450)
+        link(glow, emission)
+        strength = socket("Emission Strength")
+        if strength is not None:
+            link(value_node("Self_Illumination", const("Self_Illumination", (1,)), -800, -1650), strength)
+    # Alpha.
+    if di is not None and (material.blended or material.cut_out or glass):
+        if glass:
+            bw = nt.nodes.new("ShaderNodeRGBToBW")
+            bw.location = (-300, 100)
+            link(base, bw.inputs[0])
+            alpha = bw.outputs[0]
+        else:
+            alpha = di.outputs["Alpha"]
+        if rf.name_hash("Main_Opacity") in k:
+            alpha = math("MULTIPLY", alpha, value_node("Main_Opacity", const("Main_Opacity", (1,)), -300, -100), -100, 100, clamp=True)
+        link(alpha, socket("Alpha"))
+        blended = material.blended or glass
+        if hasattr(mat, "surface_render_method"):
+            mat.surface_render_method = "BLENDED" if blended else "DITHERED"
+        if hasattr(mat, "blend_method"):
+            try:
+                mat.blend_method = "BLEND" if blended else "CLIP"
+            except TypeError:
+                pass
     return mat
+
+
+def material_constants(mat):
+    """{name hash: value} of the constant nodes a material shows (see build_material)."""
+    out = {}
+    if not mat.use_nodes or mat.node_tree is None:
+        return out
+    for n in mat.node_tree.nodes:
+        name = n.label or n.name
+        if name not in CONSTANT_NODES:
+            continue
+        if n.type == "RGB":
+            c = n.outputs[0].default_value
+            out[rf.name_hash(name)] = (c[0], c[1], c[2], 1.0)
+        elif n.type == "VALUE":
+            out[rf.name_hash(name)] = (n.outputs[0].default_value, 0.0, 0.0, 0.0)
+    return out
+
+
+class ImagesByName:
+    """Textures already in Blender, by name (for rebuilding materials without the game's files)."""
+
+    missing = set()
+
+    def image(self, name):
+        if not name:
+            return None
+        return bpy.data.images.get(os.path.splitext(name)[0])
 
 
 # ---------------------------------------------------------------- animations in
