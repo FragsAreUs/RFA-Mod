@@ -360,7 +360,11 @@ class Tag:
 
 
 class Part:
-    __slots__ = ("index", "name", "type", "flags", "parent", "rotation", "position", "shape", "submesh", "tags", "at")
+    """A part. Its placement is from its parent part's, except a suspension piston's (a part with
+    piston segments, +0x80): the LAVs' pistons name the wheel hub they push on as their parent, but
+    sit where they are in the vehicle's own space (the game stretches them between the two)."""
+    __slots__ = ("index", "name", "type", "flags", "parent", "rotation", "position", "shape", "submesh", "tags", "at",
+                 "vehicle_space")
 
 
 class Submesh:
@@ -401,6 +405,7 @@ class VehicleModel:
             pt.shape = _i(h, r + 0x74)
             pt.submesh = _i(h, r + 0xCC)
             pt.tags = self._tags(_i(h, r + 0x78))
+            pt.vehicle_space = _i(h, r + 0x80) > 0
             self.parts.append(pt)
         self.chassis_tags = self._tags(_i(h, 0xD4))
         self.materials = self._materials()

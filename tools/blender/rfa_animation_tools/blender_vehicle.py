@@ -241,7 +241,8 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
             return frames[i]
         p = model.parts[i]
         local = game_matrix(p.rotation, p.position)
-        f = (frame_of(p.parent) if 0 <= p.parent < len(model.parts) else Matrix()) @ local
+        has_parent = 0 <= p.parent < len(model.parts) and not p.vehicle_space
+        f = (frame_of(p.parent) if has_parent else Matrix()) @ local
         frames[i] = f
         return f
 
@@ -670,7 +671,7 @@ def build(context, root, game_folder, report):
     for p in model.parts:
         if p.index not in world:
             continue
-        parent = world.get(p.parent, Matrix()) if p.parent >= 0 else Matrix()
+        parent = world.get(p.parent, Matrix()) if p.parent >= 0 and not p.vehicle_space else Matrix()
         p.rotation, p.position = placement(parent.inverted() @ world[p.index])
 
     # The meshes.
