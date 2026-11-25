@@ -12,10 +12,10 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
-    "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc)",
+    "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
     "category": "Import-Export",
 }
 
@@ -26,6 +26,7 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import blender_io as bio
+from . import blender_vehicle as bv
 from . import rfa_formats as rf
 
 DEFAULT_GAME = r"D:\Steam\steamapps\common\red faction armageddon"
@@ -460,6 +461,163 @@ class RFA_OT_refresh(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ---------------------------------------------------------------- vehicles
+
+
+def _kind_items(self, context):
+    folder = game_folder(context)
+    key = ("vehicle kinds", folder.lower())
+    if key not in _lists:
+        try:
+            found = bv.kinds(folder)
+        except Exception as ex:
+            found = []
+            print(f"RFA Animation Tools: {ex}")
+        _lists[key] = [(c, n, f"Built from {n}: its parts, seats, handling and entering") for c, n in found] or \
+                      [("", "(no vehicles found: check the game folder in the add-on's preferences)", "")]
+    return _lists[key]
+
+
+def _vehicle_name_ok(name):
+    return bool(name) and len(name) <= 40 and all(c.isalnum() or c in "_-" for c in name)
+
+
+class RFA_OT_vehicle_new(bpy.types.Operator):
+    """Start a new vehicle from one of the game's: a kit of its parts (body, wheels, doors, turrets...),
+    collision, seats and points, to model anew"""
+    bl_idname = "rfa.vehicle_new"
+    bl_label = "New Vehicle"
+    bl_options = {"REGISTER", "UNDO"}
+    kind: EnumProperty(name="Kind", items=_kind_items, description="The game's vehicle whose working parts it has")
+    name: StringProperty(name="Name", default="my_vehicle", description="The new vehicle's name (letters, digits, _ and -)")
+    textures: BoolProperty(name="Textures", default=True, description="Bring in the kind's textures (to see it as the game has it)")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def execute(self, context):
+        if not self.kind:
+            self.report({"ERROR"}, "No vehicles found: set the game folder in the add-on's preferences")
+            return {"CANCELLED"}
+        if not _vehicle_name_ok(self.name):
+            self.report({"ERROR"}, "Name the vehicle with letters, digits, _ and - (up to 40)")
+            return {"CANCELLED"}
+        try:
+            root, missing = bv.make_kit(context, game_folder(context), self.kind, self.name, self.textures)
+        except Exception as ex:
+            self.report({"ERROR"}, f"{self.kind}: {ex}")
+            return {"CANCELLED"}
+        for o in context.selected_objects:
+            o.select_set(False)
+        root.select_set(True)
+        context.view_layer.objects.active = root
+        if missing:
+            self.report({"WARNING"}, f"Textures not found: {', '.join(sorted(missing))}")
+        self.report({"INFO"}, f"{self.name}: a kit from {self.kind[: -len('.ccar_pc.str2_pc')]}: model each part in place of its mesh, keeping the names")
+        return {"FINISHED"}
+
+
+class RFA_OT_vehicle_hull(bpy.types.Operator):
+    """Add a collision hull round the active mesh's vertices, for the part it belongs to"""
+    bl_idname = "rfa.vehicle_hull"
+    bl_label = "Collision Hull from Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "Select a mesh of a vehicle kit")
+            return {"CANCELLED"}
+        try:
+            hull = bv.add_hull(context, obj, self.report)
+        except Exception as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{hull.name}: {len(hull.data.vertices)} corners")
+        return {"FINISHED"}
+
+
+class RFA_OT_vehicle_export(bpy.types.Operator):
+    """Write the vehicle into the game: its model, textures, collision and container, the asset list
+    entry and its vehicles.xtbl entry (the kind's handling, seats and entering), from the game's next start"""
+    bl_idname = "rfa.vehicle_export"
+    bl_label = "Export Vehicle to Game"
+    name: StringProperty(name="Name", description="The vehicle's name (its table entry and model)")
+    display_name: StringProperty(name="Display name", description="The name the game shows")
+
+    def invoke(self, context, event):
+        root = bv.kit_root(context.active_object)
+        if root is None:
+            self.report({"ERROR"}, "Select a vehicle kit (or any object in one)")
+            return {"CANCELLED"}
+        self.name = root.get("rfa_vehicle_name", root.name)
+        self.display_name = root.get("rfa_display_name", self.name.replace("_", " ").title())
+        return context.window_manager.invoke_props_dialog(self, width=380)
+
+    def execute(self, context):
+        root = bv.kit_root(context.active_object)
+        if root is None:
+            self.report({"ERROR"}, "Select a vehicle kit (or any object in one)")
+            return {"CANCELLED"}
+        if not _vehicle_name_ok(self.name):
+            self.report({"ERROR"}, "Name the vehicle with letters, digits, _ and - (up to 40)")
+            return {"CANCELLED"}
+        if self.name.lower() + ".ccar_pc.str2_pc" in {c.lower() for c, _ in bv.kinds(game_folder(context))}:
+            self.report({"ERROR"}, f"The game has a vehicle model named {self.name}: give yours another name")
+            return {"CANCELLED"}
+        root["rfa_vehicle_name"] = self.name
+        root["rfa_display_name"] = self.display_name
+        try:
+            files, name, kind = bv.build(context, root, game_folder(context), self.report)
+            written = bv.install(game_folder(context), mod_folder(context), files, name, kind, self.display_name or name)
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            self.report({"ERROR"}, f"{self.name}: {ex}")
+            return {"CANCELLED"}
+        size = sum(len(d) for _, d in files)
+        self.report({"INFO"}, f"{name}: {len(files)} files ({size:,} bytes) into the game, {len(written)} files written; "
+                              f"spawn it as {name} from the game's next start")
+        return {"FINISHED"}
+
+
+class RFA_OT_vehicle_remove(bpy.types.Operator):
+    """Take the vehicle out of the game again (its container, asset list entry and table entries)"""
+    bl_idname = "rfa.vehicle_remove"
+    bl_label = "Remove Vehicle from Game"
+
+    def execute(self, context):
+        root = bv.kit_root(context.active_object)
+        if root is None:
+            self.report({"ERROR"}, "Select a vehicle kit (or any object in one)")
+            return {"CANCELLED"}
+        name = root.get("rfa_vehicle_name", root.name)
+        removed = bv.uninstall(game_folder(context), mod_folder(context), name)
+        self.report({"INFO"}, f"{name}: " + (f"taken out ({len(removed)} files changed)" if removed else "isn't in the game"))
+        return {"FINISHED"}
+
+
+class RFA_PT_vehicle(bpy.types.Panel):
+    bl_label = "RFA Vehicle"
+    bl_idname = "RFA_PT_vehicle"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "RFA Anim"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(RFA_OT_vehicle_new.bl_idname, icon="AUTO")
+        root = bv.kit_root(context.active_object)
+        if root is None:
+            layout.label(text="Select a vehicle kit to export it", icon="INFO")
+            return
+        box = layout.box()
+        box.label(text=f"{root.get('rfa_vehicle_name', root.name)} (from {root['rfa_vehicle'][: -len('.ccar_pc.str2_pc')]})", icon="AUTO")
+        box.operator(RFA_OT_vehicle_hull.bl_idname, icon="MESH_ICOSPHERE")
+        box.operator(RFA_OT_vehicle_export.bl_idname, icon="EXPORT")
+        box.operator(RFA_OT_vehicle_remove.bl_idname, icon="TRASH")
+
+
 # ---------------------------------------------------------------- the panel
 
 
@@ -516,9 +674,14 @@ classes = (
     RFA_OT_import_anim_game,
     RFA_OT_export_anim_file,
     RFA_OT_export_anim_override,
+    RFA_OT_vehicle_new,
+    RFA_OT_vehicle_hull,
+    RFA_OT_vehicle_export,
+    RFA_OT_vehicle_remove,
     RFA_OT_restore_anim,
     RFA_OT_refresh,
     RFA_PT_panel,
+    RFA_PT_vehicle,
 )
 
 

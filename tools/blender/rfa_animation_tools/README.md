@@ -47,6 +47,37 @@ only the keys the others can't be worked out from within the tolerances (0.1° a
 default; or a key every frame). Bones the action has no keys for are left out of the file, so the
 game keeps them in their rest pose (or **All bones**).
 
+## Vehicles
+
+The **RFA Vehicle** panel (same sidebar tab) builds new vehicles.
+
+1. **New Vehicle**: pick a kind (any of the game's vehicles: the LAV, the ambulance, the tank,
+   the combug, the flyers, the bomber, the walkers...) and a name. A kit comes in: one object a
+   working part, named as the game names it (`body`, `wheel_fl1`, `steering_joint_fr1`, `door_l`,
+   `turret`, `barrel_main`, ...), parented as the parts hang from each other; the lights' meshes;
+   the collision (wire hulls, in the "collision" collection); the points (driver and passenger
+   seats, engine, gas tank, turrets, cameras: empties in the "points" collection).
+2. Model the vehicle: replace each part's mesh with your own (edit it, or parent your own meshes
+   under the part's object: everything under a part, down to the next part, is that part), move
+   the parts where your model needs them (a wheel where your wheel is), move the seats and points.
+   Materials are ordinary Blender ones: the Principled BSDF's **Base Color**, **Normal** (through a
+   Normal Map node), **Specular** and **Emission Color** images become the game's colour, normal,
+   specular and glow maps (any size: scaled to powers of two, up to 2048). The kind's own materials
+   and textures can be kept as they are.
+3. Collision: each wire hull is one convex shape round its vertices, for the part it's parented to
+   (the body's for the chassis). Reshape them, delete them, or select one of your meshes and press
+   **Collision Hull from Mesh**. Keep hulls simple (up to a few dozen corners each).
+4. **Export Vehicle to Game**: writes the model, its textures and the kind's effects and animations
+   into `overrides\build\pc\cache\<name>.ccar_pc.str2_pc`, adds it to the vehicles' asset list
+   and adds a `vehicles.xtbl` entry: the kind's (handling, seats, entering, camera, sounds), under
+   your name and display name (also in the Guerrilla world's table, when it's built). From the
+   game's next start the spawner lists it. **Remove Vehicle from Game** takes it all out again.
+
+What the kind decides: what each part does (a wheel steers, a door opens on its hinge, a turret
+turns), the handling and the seats' animations, a walker's skeleton and animations (moving a
+walker's legs elsewhere than the kind's skeleton has them doesn't move the skeleton). Edit the
+table entry in the editor's table editor to change handling, hit points or the display name.
+
 ## How the game's files map to Blender
 
 - The game is Y up and left-handed; Blender Z up and right-handed. A game point (x, y, z) is
@@ -80,5 +111,10 @@ game keeps them in their rest pose (or **All bones**).
 - `rfa_formats.py`: the game's files in plain Python (packfiles, asset lists, skeletons, animations,
   character meshes and their materials, texture files), ported from the editor's readers and writers in `src/editor/RfaFormats`. It runs without
   Blender: `python -c "import rfa_formats"`.
+- `rfa_vehicle.py`: vehicle models (`.ccar_pc` + `.gcar_pc`, version 30: parts, tags, lights,
+  meshes, materials, collision as Havok 2010 convex shapes), containers and asset lists; reads and
+  writes every one of the game's 17 vehicles back byte for byte. Runs without Blender.
+- `rfa_textures.py`: DXT1 / DXT5 encoding (numpy) and texture files (`.cpeg_pc` + `.gpeg_pc`).
 - `blender_io.py`: the conversions to and from Blender.
+- `blender_vehicle.py`: the vehicle kits and their export.
 - `__init__.py`: the operators, panel and preferences.
