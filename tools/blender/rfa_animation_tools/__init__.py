@@ -25,6 +25,16 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
+import importlib
+import sys
+
+# Blender reloads only this file when the add-on is installed again or re-enabled; the other files stay
+# as first loaded unless reloaded here (in dependency order), so a new version would run old code.
+for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "blender_io", "blender_vehicle"):
+    _module = sys.modules.get(f"{__name__}.{_name}")
+    if _module is not None:
+        importlib.reload(_module)
+
 from . import blender_io as bio
 from . import blender_vehicle as bv
 from . import rfa_formats as rf
