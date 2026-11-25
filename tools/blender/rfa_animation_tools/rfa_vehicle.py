@@ -877,3 +877,215 @@ def asm_entry(template, name, container_info, files):
         prims.append(base)
     return {"name": name, "type": template["type"], "flags": template["flags"], "data_offset": data_offset,
             "compressed_size": compressed, "sizes": [len(d) for _, d in files], "primitives": prims}
+
+
+# ---------------------------------------------------------------- vehicles made from nothing
+
+SCRATCH_DONOR = "mar_combug_1"  # a buggy: wheels and plain pieces, no doors, no pistons, no treads
+ROLE_FRONT_WHEEL = 0x0A48F662   # the part types (hashes) the game knows wheels by: the first axle's
+ROLE_REAR_WHEEL = 0x6A42CA04    # (front, steering) and the second's
+ROLE_PIECE = 0x6CA328EE         # a plain piece of the vehicle
+
+
+class ScratchPart:
+    """A part of a vehicle made from nothing: role ("front wheel", "rear wheel" or "piece"), its name,
+    its parent (an index into the list, or -1), its placement (rotation rows, position: from the
+    parent's), its submesh (Submesh or None), its collision (a Convex, a ShapeList or None) and its
+    points ([(name hash, rotation rows, position)])."""
+
+    def __init__(self, role, name, parent=-1, rotation=(1, 0, 0, 0, 1, 0, 0, 0, 1), position=(0, 0, 0),
+                 submesh=None, shape=None, tags=()):
+        self.role, self.name, self.parent = role, name, parent
+        self.rotation, self.position = tuple(rotation), tuple(position)
+        self.submesh, self.shape, self.tags = submesh, shape, list(tags)
+
+
+def _role_record(donor, role):
+    """The donor's part record a part of that role is made from."""
+    want = {"front wheel": ROLE_FRONT_WHEEL, "rear wheel": ROLE_REAR_WHEEL, "piece": ROLE_PIECE}[role]
+    best = None
+    for p in donor.parts:
+        if p.type != want:
+            continue
+        # a plain one: no parent, not pieces of the chassis, no children
+        if p.parent < 0 and not p.flags & 0x20 and _i(donor.c, p.at + 0x14) == 0:
+            return bytes(donor.c[p.at:p.at + PART])
+        best = best or bytes(donor.c[p.at:p.at + PART])
+    if best is None:
+        raise ValueError(f"the donor has no {role}")
+    return best
+
+
+def compose(donor, body, chassis_shapes, chassis_tags, parts, materials, seats=1):
+    """A vehicle model (c-file, g-file) made from nothing but the donor's settings: the header's
+    physics, the records of its parts by role and its tag deformation records are the donor's; the
+    rest is these: body (Submesh: submesh 0), chassis_shapes (the chassis's convex shapes),
+    chassis_tags ([(name hash, rotation rows, position)]), parts (ScratchPart), materials (as
+    VehicleModel.materials), seats (each without a door). No lights, doors, pistons or treads."""
+    d = bytes(donor.c)
+    if not parts:
+        raise ValueError("a vehicle needs at least one part (its wheels)")
+    n = len(parts)
+    out = bytearray(d[:HEADER])
+
+    def put(a, fmt, *v):
+        struct.pack_into(fmt, out, a, *v)
+
+    # The parts' records, then their (and the chassis's) points.
+    for k, p in enumerate(parts):
+        rec = bytearray(_role_record(donor, p.role))
+        struct.pack_into("<i", rec, 0x0C, _i(rec, 0x0C) & ~0x20)
+        struct.pack_into("<i", rec, 0x10, p.parent)
+        struct.pack_into("<i", rec, 0x14, 0)
+        struct.pack_into("<9f", rec, 0x1C, *p.rotation)
+        struct.pack_into("<3f", rec, 0x40, *p.position)
+        rec[0x4C:0x74] = p.name.encode("latin-1")[:39].ljust(40, b"\0")
+        struct.pack_into("<i", rec, 0x74, k + 1)  # its collision shape: 0 is the chassis's
+        struct.pack_into("<2i", rec, 0x80, 0, 0)
+        struct.pack_into("<2i", rec, 0x88, 0, -1)
+        struct.pack_into("<4i", rec, 0x90, 0, -1, 0, -1)
+        struct.pack_into("<i", rec, 0xA0, -1)
+        struct.pack_into("<i", rec, 0xC0, -1)
+        struct.pack_into("<2i", rec, 0xC4, 0, 0)
+        out += rec
+    tags_at = {}
+
+    def tag_list(key, tags):
+        tags_at[key] = len(out)
+        out.extend(struct.pack("<i", len(tags)))
+        for h, rot, pos in tags:
+            out.extend(struct.pack("<I9f3f", h, *rot, *pos))
+
+    tag_list("chassis", chassis_tags)
+    for k, p in enumerate(parts):
+        tag_list(k, p.tags)
+    lights_at = len(out)
+    while len(out) % 128:
+        out.append(0)
+    for k in range(n):
+        put(HEADER + k * PART + 0x78, "<i", tags_at[k])
+    put(0xD4, "<i", tags_at["chassis"])
+    put(0x11C, "<2i", 0, lights_at)
+
+    # The meshes: 0 the body, then each part's that has one.
+    submeshes = [body]
+    for k, p in enumerate(parts):
+        s = -1
+        if p.submesh is not None and p.submesh.positions:
+            s = len(submeshes)
+            submeshes.append(p.submesh)
+        put(HEADER + k * PART + 0xCC, "<2i", s, s)
+    mesh_at = len(out)
+    block, gfile, _ = build_mesh(submeshes)
+    out += block
+    while len(out) % 16:
+        out.append(0)
+
+    # Materials (their run-time map, offsets, blocks) and texture names.
+    mm_at = len(out)
+    out += struct.pack("<2i", 0, len(materials)) + bytes(4 * len(materials))
+    while len(out) % 16:
+        out.append(0)
+    ml_at = len(out)
+    out += bytes(4 * len(materials))
+    while len(out) % 16:
+        out.append(0)
+    names_blob, name_at = bytearray(), {}
+
+    def name_offset(nm):
+        if nm.lower() not in name_at:
+            name_at[nm.lower()] = len(names_blob)
+            names_blob.extend(nm.encode("latin-1") + b"\0\0")
+            if len(names_blob) % 2:
+                names_blob.append(0)
+        return name_at[nm.lower()]
+
+    for k, m in enumerate(materials):
+        b = bytearray(m["block"])
+        for t, (slot, tex) in enumerate(m["textures"]):
+            struct.pack_into("<Ii", b, 0x24 + 12 * t + 4, slot, 0)
+            struct.pack_into("<i", b, 0x24 + 12 * t, name_offset(tex))
+        struct.pack_into("<i", b, 12, m["flags"])
+        struct.pack_into("<i", out, ml_at + 4 * k, len(out))
+        out += b
+    while len(out) % 16:
+        out.append(0)
+    names_at = len(out)
+    out += names_blob
+    while len(out) % 16:
+        out.append(0)
+
+    # The rest: children lists, the seats' doors (none), the tag deformation records (the donor's).
+    rest_at = len(out)
+    children = {}
+    for k, p in enumerate(parts):
+        if p.parent >= 0:
+            children.setdefault(p.parent, []).append(k)
+    for k in range(n):
+        kids = children.get(k, [])
+        put(HEADER + k * PART + 0x14, "<2i", len(kids), len(out))
+        out += struct.pack(f"<{len(kids)}i", *kids)
+    while len(out) % 16:
+        out.append(0)
+    seats = max(1, min(int(seats), 16))
+    seats_at = len(out)
+    out += struct.pack(f"<i{seats}i", seats, *([-1] * seats))
+    while len(out) % 16:
+        out.append(0)
+    tagdef_count, tagdef_at = _i(d, 0x08), _i(d, 0x0C)
+    tagdef_new = len(out)
+    out += d[tagdef_at:tagdef_at + 28 * tagdef_count]
+    while len(out) % 16:
+        out.append(0)
+
+    # The collision and its (empty) MOPP table, then the bounding box record.
+    shapes = [ShapeList(list(chassis_shapes)) if chassis_shapes else None]
+    for p in parts:
+        shapes.append(p.shape)
+    fallback = Convex([(x, y, z) for x in (-0.1, 0.1) for y in (-0.1, 0.1) for z in (-0.1, 0.1)],
+                      [(1, 0, 0, -0.1), (-1, 0, 0, -0.1), (0, 1, 0, -0.1), (0, -1, 0, -0.1), (0, 0, 1, -0.1), (0, 0, -1, -0.1)])
+    shapes = [s if s is not None else fallback for s in shapes]
+    collision_at = len(out)
+    out += write_collision(shapes)
+    while len(out) % 16:
+        out.append(0)
+    mopp_at = len(out)
+    out += struct.pack(f"<{len(shapes)}i", *([-1] * len(shapes)))
+    while len(out) % 16:
+        out.append(0)
+    box_at = len(out)
+    lo = [min((p[a] for p in body.positions), default=-1.0) for a in range(3)]
+    hi = [max((p[a] for p in body.positions), default=1.0) for a in range(3)]
+    half = [(hi[a] - lo[a]) / 2 for a in range(3)]
+    centre = [(hi[a] + lo[a]) / 2 for a in range(3)]
+    donor_box = d[_i(d, 0x128):_i(d, 0x128) + 56] if _i(d, 0x124) > 0 else bytes(56)
+    box = bytearray(donor_box)
+    struct.pack_into("<6f", box, 0, -half[0], -half[1], -half[2], half[0], half[1], half[2])
+    struct.pack_into("<3f", box, 36, *centre)
+    out += box
+
+    # The header.
+    put(0x04, "<i", seats_at)
+    put(0x08, "<2i", tagdef_count, tagdef_new)
+    put(0x10, "<3i", collision_at, len(shapes), mopp_at)
+    put(0x1C, "<2i", 0, 0)
+    put(0x24, "<4i", mesh_at, mm_at, ml_at, len(materials))
+    put(0x34, "<2i", names_at, 0)
+    put(0x3C, "<2i", 0, 0)
+    put(0x88, "<i", 0)
+    for a in range(0x8C, 0xD4, 4):
+        put(a, "<i", 0)
+    # Mass properties: the donor's per volume, for the body's box; centre of mass the box's.
+    dv = max(1e-6, 8 * abs(struct.unpack_from("<f", donor_box, 0)[0] * struct.unpack_from("<f", donor_box, 4)[0]
+                           * struct.unpack_from("<f", donor_box, 8)[0])) if _i(d, 0x124) > 0 else 1.0
+    vol = max(1e-6, 8 * half[0] * half[1] * half[2])
+    put(0xE4, "<f", struct.unpack_from("<f", d, 0xE4)[0] * vol / dv)
+    put(0xE8, "<3f", *centre)
+    w, h, l = 2 * half[0], 2 * half[1], 2 * half[2]
+    put(0xF4, "<9f", (h * h + l * l) / 12, 0, 0, 0, (w * w + l * l) / 12, 0, 0, 0, (w * w + h * h) / 12)
+    put(0x118, "<i", -1)
+    put(0x124, "<2i", 1, box_at)
+    put(0x12C, "<2i", 0, -1)
+    put(0x134, "<3i", 0, 0, -1)
+    put(0x144, "<i", n)
+    return bytes(out), gfile

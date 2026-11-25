@@ -391,20 +391,54 @@ class _Materials:
     def _make(self, mat):
         base = self._base(mat)
         block = bytearray(base["block"])
+        images = _material_images(mat) if mat is not None else {}
+        label = re.sub(r"[^a-z0-9_]+", "_", (mat.name if mat else "default").lower()).strip("_") or "m"
+        # A material of the user's own (not one of the kind's): nothing of the kind's shows through it.
+        own = mat is not None and not isinstance(mat.get("rfa_template_material"), int)
+        if own:
+            rf.set_block_constant(block, rf.name_hash("Diffuse_Color"), (1.0, 1.0, 1.0, 1.0))
+            rf.set_block_constant(block, rf.name_hash("Dust_Amount"), (0.0, 0.0, 0.0, 0.0))
+            rf.set_block_constant(block, rf.name_hash("Self_Illumination"), (1.0 if GLOW_MAP in images else 0.0, 0.0, 0.0, 0.0))
+            rf.set_block_constant(block, rf.name_hash("Specular_Color"), (1.0, 1.0, 1.0, 1.0))
         if mat is not None:
             for h, v in bio.material_constants(mat).items():
                 rf.set_block_constant(block, h, v)
         out = {"block": bytes(block), "flags": base["flags"], "textures": [list(t) for t in base["textures"]]}
-        images = _material_images(mat) if mat is not None else {}
-        label = re.sub(r"[^a-z0-9_]+", "_", (mat.name if mat else "default").lower()).strip("_") or "m"
         for t in out["textures"]:
             slot, name = t
             found = images.get(slot)
             if found is not None:
                 t[1] = self._image(found[0], f"{self.name}_{label}", slot, flip_green=slot == rf.NORMAL_MAP and not found[1])
+            elif own and slot in (rf.DIFFUSE_MAP, rf.SPECULAR_MAP):
+                t[1] = self._solid(mat, slot, f"{self.name}_{label}")
+            elif own and slot == rf.NORMAL_MAP:
+                t[1] = "flat-normalmap_n.tga"
+            elif own and slot in (MASK_MAP, GLOW_MAP):
+                t[1] = "missing.tga"
             elif not self._keep(name):
                 t[1] = self._fallback(slot)
         return out
+
+    def _solid(self, mat, slot, stem):
+        """A 4 x 4 texture of the material's plain colour (Base Color) or shine (Specular), for a
+        material without an image there."""
+        bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None) if mat.use_nodes and mat.node_tree else None
+        if slot == rf.DIFFUSE_MAP:
+            c = list(bsdf.inputs["Base Color"].default_value) if bsdf else list(mat.diffuse_color)
+            c = [_to_srgb(x) for x in c[:3]] + [c[3] if len(c) > 3 else 1.0]
+            suffix = "di"
+        else:
+            sock = (bsdf.inputs.get("Specular IOR Level") or bsdf.inputs.get("Specular")) if bsdf else None
+            v = float(sock.default_value) if sock is not None else 0.5
+            c = [v, v, v, 1.0]
+            suffix = "sp"
+        name = f"{stem}_{suffix}.tga"
+        if name.lower() not in self.added:
+            px = np.zeros((4, 4, 4), np.uint8)
+            px[...] = [int(max(0.0, min(1.0, x)) * 255 + 0.5) for x in c]
+            self.textures.add(name, px)
+            self.added.add(name.lower())
+        return name
 
     def _keep(self, name):
         """A texture of the kind's own file is copied into the new one; the game's built-ins stay as named."""
@@ -443,6 +477,11 @@ class _Materials:
         self.textures.add(name, rgba, data_map=slot in (rf.NORMAL_MAP, MASK_MAP))
         self.added.add(name.lower())
         return name
+
+
+def _to_srgb(x):
+    x = max(0.0, min(1.0, float(x)))
+    return x * 12.92 if x <= 0.0031308 else 1.055 * x ** (1 / 2.4) - 0.055
 
 
 GLOW_MAP = 0xDBEA623E
@@ -914,6 +953,9 @@ def add_hull(context, source, report):
     if owner is None:
         owner = next((o for o in _kit_objects(root) if o.get("rfa_part") == -1), root)
     shape = int(owner.get("rfa_part_shape", 0))
+    scratch = bool(root.get("rfa_scratch"))
+    if scratch:
+        owner = source if source.get("rfa_role") in PART_ROLES else _owner(source, root)
     eo, me = _evaluated_mesh(context, source)
     try:
         pts = [source.matrix_world @ v.co for v in me.vertices]
@@ -937,6 +979,256 @@ def add_hull(context, source, report):
     obj.matrix_parent_inverse = owner.matrix_world.inverted()
     obj.display_type = "WIRE"
     obj.hide_render = True
-    obj["rfa_shape"] = shape
+    if scratch:
+        obj["rfa_hull"] = 1
+    else:
+        obj["rfa_shape"] = shape
     obj["rfa_radius"] = 0.05
     return obj
+
+
+# ---------------------------------------------------------------- vehicles made from nothing
+#
+# A kit with no game vehicle's parts: the root empty (rfa_vehicle: the donor, whose physics settings,
+# table entry and part records are used; rfa_scratch), `body` (rfa_role "body": the chassis's mesh,
+# and every plain mesh under it), parts (rfa_role "front wheel", "rear wheel" or "piece"; a part's
+# mesh is it and the plain meshes under it), collision hulls (rfa_hull: one convex shape each, for the
+# part they're under, or the chassis's under the root or the body) and points (rfa_point: empties
+# named as the game's points: driver, passenger_<n>, engine, gas_tank, exhaust...). A part without a
+# hull gets one round its mesh; the chassis too.
+
+SCRATCH_DONOR = rv.SCRATCH_DONOR + ".ccar_pc.str2_pc"
+PART_ROLES = ("front wheel", "rear wheel", "piece")
+
+
+def _cube_mesh(name, half, centre=(0, 0, 0)):
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=2.0)
+    for v in bm.verts:
+        v.co = Vector((centre[0] + v.co.x * half[0], centre[1] + v.co.y * half[1], centre[2] + v.co.z * half[2]))
+    bm.to_mesh(me)
+    bm.free()
+    return me
+
+
+def _wheel_mesh(name, radius, width, segments=16):
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=segments, radius1=radius, radius2=radius, depth=width,
+                          matrix=Matrix.Rotation(1.5707963, 4, "Y"))
+    bm.to_mesh(me)
+    bm.free()
+    return me
+
+
+def _new_object(coll, name, data, parent=None, location=(0, 0, 0)):
+    obj = bpy.data.objects.new(name, data)
+    coll.objects.link(obj)
+    obj.location = location
+    if parent is not None:
+        obj.parent = parent
+    return obj
+
+
+def make_scratch_kit(context, game_folder, name, wheels=4, seats=1):
+    """A kit to build a vehicle from nothing: a box for a body and wheels to replace (see above)."""
+    open_kind(game_folder, SCRATCH_DONOR)  # the donor has to be there
+    coll = bpy.data.collections.new(name)
+    context.scene.collection.children.link(coll)
+    col = bpy.data.collections.new(f"{name} collision")
+    coll.children.link(col)
+    pts = bpy.data.collections.new(f"{name} points")
+    coll.children.link(pts)
+    root = _new_object(coll, name, None)
+    root.empty_display_type = "ARROWS"
+    root["rfa_vehicle"] = SCRATCH_DONOR
+    root["rfa_vehicle_name"] = name
+    root["rfa_scratch"] = 1
+
+    mat = bpy.data.materials.new(f"{name} paint")
+    mat.use_nodes = True
+    bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (0.35, 0.33, 0.3, 1.0)
+
+    # Blender's axes: x across, y forward, z up.
+    body = _new_object(coll, "body", _cube_mesh("body", (1.0, 2.2, 0.55)), root, (0, 0, 0.35))
+    body["rfa_role"] = "body"
+    body.data.materials.append(mat)
+    hull = _new_object(col, "collision body", _cube_mesh("collision body", (1.0, 2.2, 0.55)), root, (0, 0, 0.35))
+    hull["rfa_hull"] = 1
+    hull.display_type = "WIRE"
+    hull.hide_render = True
+
+    rows = {4: [("f", 1.5), ("b", -1.5)], 6: [("f", 1.6), ("c", 0.0), ("b", -1.6)], 8: [("f", 1.8), ("g", 0.6), ("c", -0.6), ("b", -1.8)]}
+    for k, (axle, y) in enumerate(rows.get(int(wheels), rows[4])):
+        for side, x in (("l", -1.05), ("r", 1.05)):
+            wname = f"wheel_{axle}{side}"
+            w = _new_object(coll, wname, _wheel_mesh(wname, 0.45, 0.3), root, (x, y, -0.35))
+            w["rfa_role"] = "front wheel" if k == 0 else "rear wheel"
+            w.data.materials.append(mat)
+            wh = _new_object(col, f"collision {wname}", _wheel_mesh(f"collision {wname}", 0.45, 0.3, 8), w)
+            wh["rfa_hull"] = 1
+            wh.display_type = "WIRE"
+            wh.hide_render = True
+
+    points = [("driver", (-0.4, 0.3, 0.45))] + [(f"passenger_{n}", (0.4 if n % 2 else -0.4, 0.3 - 0.9 * ((n + 1) // 2), 0.45))
+                                               for n in range(1, max(1, int(seats)))]
+    points += [("engine", (0, 1.6, 0.3)), ("gas_tank", (0.3, -1.6, 0.0)), ("exhaust", (0.6, -2.2, -0.1))]
+    for pname, loc in points:
+        e = _new_object(pts, pname, None, root, loc)
+        e.empty_display_type = "ARROWS"
+        e.empty_display_size = 0.3
+        e["rfa_point"] = 1
+    context.view_layer.objects.active = root
+    return root
+
+
+def _owner(obj, root):
+    """The kit object an object belongs to: the nearest part above it, else the root (the chassis)."""
+    o = obj.parent
+    while o is not None and o is not root:
+        if o.get("rfa_role") in PART_ROLES:
+            return o
+        o = o.parent
+    return root
+
+
+def _auto_hull(context, objs, frame, name):
+    """A convex shape round the meshes' vertices (for a part or chassis given no hull)."""
+    pts = []
+    for o in objs:
+        eo, me = _evaluated_mesh(context, o)
+        try:
+            m = frame.inverted() @ o.matrix_world
+            pts += [m @ v.co for v in me.vertices]
+        finally:
+            eo.to_mesh_clear()
+    if len(pts) < 4:
+        return None
+    bm = bmesh.new()
+    try:
+        for p in pts:
+            bm.verts.new(p)
+        bmesh.ops.convex_hull(bm, input=bm.verts)
+        for v in [v for v in bm.verts if not v.link_faces]:
+            bm.verts.remove(v)
+        if len(bm.verts) > 128:  # simpler: a box round it
+            lo = Vector([min(v.co[a] for v in bm.verts) for a in range(3)])
+            hi = Vector([max(v.co[a] for v in bm.verts) for a in range(3)])
+            bm.clear()
+            for x in (lo.x, hi.x):
+                for y in (lo.y, hi.y):
+                    for z in (lo.z, hi.z):
+                        bm.verts.new((x, y, z))
+            bmesh.ops.convex_hull(bm, input=bm.verts)
+        bm.verts.index_update()
+        points = [bio.from_blender(v.co) for v in bm.verts]
+        faces = [[v.index for v in reversed(f.verts)] for f in bm.faces]
+    finally:
+        bm.free()
+    try:
+        return rv.convex_from_faces(points, faces)
+    except ValueError:
+        return None
+
+
+def build_scratch(context, root, game_folder, report):
+    """The files of a vehicle made from nothing (see make_scratch_kit)."""
+    name = re.sub(r"[^A-Za-z0-9_\-]+", "_", root.get("rfa_vehicle_name", root.name)).strip("_")
+    if not name:
+        raise ValueError("give the vehicle a name")
+    container, donor = open_kind(game_folder, root["rfa_vehicle"])
+    kind = root["rfa_vehicle"][: -len(".ccar_pc.str2_pc")]
+    peg = None
+    cpeg = next((n for n in container.names() if n.lower() == kind.lower() + ".cpeg_pc"), None)
+    if cpeg:
+        peg = rf.PegFile(container.read(cpeg), container.read(rf.peg_data_name(cpeg)))
+    objs = _kit_objects(root)
+    body = next((o for o in objs if o.get("rfa_role") == "body"), None)
+    if body is None:
+        raise ValueError("the kit has no body (an object with rfa_role \"body\")")
+    order = {"front wheel": 0, "rear wheel": 1, "piece": 2}
+    part_objs = sorted((o for o in objs if o.get("rfa_role") in PART_ROLES), key=lambda o: (order[o["rfa_role"]], o.name))
+    if not any(o["rfa_role"] in ("front wheel", "rear wheel") for o in part_objs):
+        raise ValueError("the vehicle has no wheels (objects with rfa_role \"front wheel\" or \"rear wheel\")")
+    index = {o: k for k, o in enumerate(part_objs)}
+    root_inv = root.matrix_world.inverted()
+
+    def unscaled(m):
+        loc, rot, _ = m.decompose()
+        return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+
+    W = {o: unscaled(root_inv @ o.matrix_world) for o in part_objs}
+    materials = _Materials(donor, peg, name, report)
+    body_sm = _submesh(context, _owned(body), root.matrix_world, materials)
+
+    hulls = {}
+    for o in objs:
+        if o.get("rfa_hull") and o.type == "MESH":
+            hulls.setdefault(_owner(o, root), []).append(o)
+    points = {}
+    for o in objs:
+        if o.get("rfa_point"):
+            points.setdefault(_owner(o, root), []).append(o)
+
+    def point_list(owner, frame):
+        out = []
+        for e in sorted(points.get(owner, []), key=lambda e: e.name):
+            rows, pos = placement(frame.inverted() @ unscaled(root_inv @ e.matrix_world))
+            out.append((rv.tag_hash(e.name.split(".")[0]), rows, pos))
+        return out
+
+    chassis_frame = Matrix()
+    chassis_shapes = [_hull(context, o, root.matrix_world) for o in hulls.get(root, [])]
+    if not chassis_shapes:
+        auto = _auto_hull(context, _owned(body), root.matrix_world, "body")
+        chassis_shapes = [auto] if auto else []
+    parts = []
+    for o in part_objs:
+        parent = _owner(o, root)
+        pk = index.get(parent, -1)
+        local = (W[parent].inverted() if pk >= 0 else Matrix()) @ W[o]
+        rows, pos = placement(local)
+        frame = root.matrix_world @ W[o]
+        geometry = _owned(o)
+        sm = _submesh(context, geometry, frame, materials) if geometry else None
+        hs = [_hull(context, h, frame) for h in hulls.get(o, [])]
+        if not hs and geometry:
+            auto = _auto_hull(context, geometry, frame, o.name)
+            hs = [auto] if auto else []
+        shape = None if not hs else (hs[0] if len(hs) == 1 else rv.ShapeList(hs))
+        parts.append(rv.ScratchPart(o["rfa_role"], o.name.split(".")[0], pk, rows, pos, sm, shape, point_list(o, W[o])))
+    seats = sum(1 for e in points.get(root, []) if e.name.split(".")[0].lower() == "driver" or e.name.lower().startswith("passenger_"))
+    c, g = rv.compose(donor, body_sm, chassis_shapes, point_list(root, chassis_frame), parts, materials.list or donor.materials[:1], seats)
+    vertices = len(body_sm.positions) + sum(len(p.submesh.positions) for p in parts if p.submesh)
+    if vertices > 0xFFFF:
+        report({"WARNING"}, f"{vertices:,} vertices: more than 65,535 needs 32-bit indices; fewer is safer")
+    cpeg_data, gpeg_data = materials.textures.files()
+    files = [(name + ".ccar_pc", c), (name + ".gcar_pc", g), (name + ".cpeg_pc", cpeg_data), (name + ".gpeg_pc", gpeg_data)]
+    skip = {kind.lower() + e for e in (".ccar_pc", ".gcar_pc", ".cpeg_pc", ".gpeg_pc")}
+    for n in container.names():
+        if n.lower() not in skip and not n.lower().endswith(".anim_pc"):
+            files.append((n, container.read(n)))
+    return files, name, kind
+
+
+def set_role(obj, role):
+    """Makes a mesh of a from-nothing kit a part (a wheel or a piece) or back into the body's."""
+    root = kit_root(obj)
+    if root is None or not root.get("rfa_scratch"):
+        raise ValueError("select a mesh of a vehicle made from nothing (New Vehicle from Nothing)")
+    for k in ("rfa_hull", "rfa_point"):
+        if k in obj:
+            del obj[k]
+    if role == "body":
+        if "rfa_role" in obj:
+            del obj["rfa_role"]
+        body = next((o for o in _kit_objects(root) if o.get("rfa_role") == "body"), None)
+        if body is not None and obj is not body:
+            world = obj.matrix_world.copy()
+            obj.parent = body
+            obj.matrix_world = world
+    else:
+        obj["rfa_role"] = role

@@ -22,7 +22,7 @@ bl_info = {
 import os
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from . import blender_io as bio
@@ -517,6 +517,62 @@ class RFA_OT_vehicle_new(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class RFA_OT_vehicle_scratch(bpy.types.Operator):
+    """Start a vehicle from nothing: a box for a body, wheels, seats and points to model over. It drives
+    with a buggy's settings (the Marauder combug's handling, which the table editor can change)"""
+    bl_idname = "rfa.vehicle_scratch"
+    bl_label = "New Vehicle from Nothing"
+    bl_options = {"REGISTER", "UNDO"}
+    name: StringProperty(name="Name", default="my_vehicle", description="The new vehicle's name (letters, digits, _ and -)")
+    wheels: EnumProperty(name="Wheels", items=[("4", "4", "Two axles"), ("6", "6", "Three axles"), ("8", "8", "Four axles")], default="4")
+    seats: IntProperty(name="Seats", default=1, min=1, max=8, description="The driver and passengers")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=340)
+
+    def execute(self, context):
+        if not _vehicle_name_ok(self.name):
+            self.report({"ERROR"}, "Name the vehicle with letters, digits, _ and - (up to 40)")
+            return {"CANCELLED"}
+        try:
+            root = bv.make_scratch_kit(context, game_folder(context), self.name, int(self.wheels), self.seats)
+        except Exception as ex:
+            self.report({"ERROR"}, str(ex))
+            return {"CANCELLED"}
+        for o in context.selected_objects:
+            o.select_set(False)
+        root.select_set(True)
+        context.view_layer.objects.active = root
+        self.report({"INFO"}, f"{self.name}: model over the body and wheels; Make Part turns any mesh into a wheel or a piece")
+        return {"FINISHED"}
+
+
+class RFA_OT_vehicle_role(bpy.types.Operator):
+    """Make the selected meshes of a from-nothing vehicle wheels (the front pair steers), separate
+    pieces, or part of the body"""
+    bl_idname = "rfa.vehicle_role"
+    bl_label = "Make Part"
+    bl_options = {"REGISTER", "UNDO"}
+    role: EnumProperty(name="Part", items=[("front wheel", "Front wheel", "On the first axle: steers"),
+                                           ("rear wheel", "Rear wheel", "On the other axles"),
+                                           ("piece", "Piece", "A separate piece (moves with its parent part)"),
+                                           ("body", "Body", "Part of the body")], default="piece")
+
+    def execute(self, context):
+        done = 0
+        for o in context.selected_objects:
+            if o.type != "MESH":
+                continue
+            try:
+                bv.set_role(o, self.role)
+                done += 1
+            except ValueError as ex:
+                self.report({"ERROR"}, str(ex))
+                return {"CANCELLED"}
+        self.report({"INFO"}, f"{done} mesh(es): {self.role}")
+        return {"FINISHED"} if done else {"CANCELLED"}
+
+
 class RFA_OT_vehicle_hull(bpy.types.Operator):
     """Add a collision hull round the active mesh's vertices, for the part it belongs to"""
     bl_idname = "rfa.vehicle_hull"
@@ -601,7 +657,8 @@ class RFA_OT_vehicle_export(bpy.types.Operator):
         root["rfa_vehicle_name"] = self.name
         root["rfa_display_name"] = self.display_name
         try:
-            files, name, kind = bv.build(context, root, game_folder(context), self.report)
+            builder = bv.build_scratch if root.get("rfa_scratch") else bv.build
+            files, name, kind = builder(context, root, game_folder(context), self.report)
             written = bv.install(game_folder(context), mod_folder(context), files, name, kind, self.display_name or name)
         except Exception as ex:
             import traceback
@@ -640,12 +697,18 @@ class RFA_PT_vehicle(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator(RFA_OT_vehicle_new.bl_idname, icon="AUTO")
+        layout.operator(RFA_OT_vehicle_scratch.bl_idname, icon="MESH_CUBE")
         root = bv.kit_root(context.active_object)
         if root is None:
             layout.label(text="Select a vehicle kit to export it", icon="INFO")
             return
         box = layout.box()
-        box.label(text=f"{root.get('rfa_vehicle_name', root.name)} (from {root['rfa_vehicle'][: -len('.ccar_pc.str2_pc')]})", icon="AUTO")
+        origin = "from nothing" if root.get("rfa_scratch") else f"from {root['rfa_vehicle'][: -len('.ccar_pc.str2_pc')]}"
+        box.label(text=f"{root.get('rfa_vehicle_name', root.name)} ({origin})", icon="AUTO")
+        if root.get("rfa_scratch"):
+            row = box.row(align=True)
+            for role, label in (("front wheel", "Front Wheel"), ("rear wheel", "Rear Wheel"), ("piece", "Piece"), ("body", "Body")):
+                row.operator(RFA_OT_vehicle_role.bl_idname, text=label).role = role
         box.operator(RFA_OT_vehicle_hull.bl_idname, icon="MESH_ICOSPHERE")
         box.operator(RFA_OT_refresh_materials.bl_idname, icon="MATERIAL")
         box.operator(RFA_OT_vehicle_export.bl_idname, icon="EXPORT")
@@ -709,6 +772,8 @@ classes = (
     RFA_OT_export_anim_file,
     RFA_OT_export_anim_override,
     RFA_OT_vehicle_new,
+    RFA_OT_vehicle_scratch,
+    RFA_OT_vehicle_role,
     RFA_OT_vehicle_hull,
     RFA_OT_refresh_materials,
     RFA_OT_vehicle_export,

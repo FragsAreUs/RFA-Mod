@@ -73,6 +73,16 @@ The **RFA Vehicle** panel (same sidebar tab) builds new vehicles.
    your name and display name (also in the Guerrilla world's table, when it's built). From the
    game's next start the spawner lists it. **Remove Vehicle from Game** takes it all out again.
 
+**New Vehicle from Nothing** starts without a game vehicle's parts: a box for a body, 4, 6 or 8
+wheels and the seats (driver, passengers) and points (engine, gas tank, exhaust) as empties. Model
+over them; **Make Part** (the row of buttons in the panel) turns any selected mesh into a front wheel
+(the first axle, which steers), a rear wheel, a separate piece, or back into the body. Everything
+else under the body is the body. Collision: wire hulls under a part (or under the vehicle for the
+chassis); a part without one gets a hull round its mesh. Materials of your own use your colours and
+images only (a plain colour where there's no image). It drives with the Marauder combug's settings
+(its handling table entry, under your name), which the table editor can change; no lights, doors
+or turrets.
+
 What the kind decides: what each part does (a wheel steers, a door opens on its hinge, a turret
 turns), the handling and the seats' animations, a walker's skeleton and animations (moving a
 walker's legs elsewhere than the kind's skeleton has them doesn't move the skeleton). Edit the
