@@ -27,7 +27,7 @@ VehicleParts.cs describe, checked on all 17 of the game's vehicles:
                   and the two arrays.
   g-file          the checksum and 12 zeros, the indices (16-bit, triangle strips), the vertices on
                   16 (format 2: position, normal and tangent as bytes, two UV sets, 1024 = 1.0, v
-                  negated), the checksum.
+                  down from the texture's top), the checksum.
 
 A model is written by keeping everything up to the mesh block where it is (the parts, tags and
 lights edited in place) and rebuilding the mesh, materials, texture names, collision and MOPP table,
@@ -375,7 +375,7 @@ class Submesh:
         self.positions = []
         self.normals = []
         self.tangents = []   # (x, y, z, w) raw bytes' meaning: -1..1, w kept as a byte
-        self.uvs = []        # first set, as the file has it (v negated)
+        self.uvs = []        # first set, as the file has it (v down from the texture's top)
         self.uvs2 = []
 
 

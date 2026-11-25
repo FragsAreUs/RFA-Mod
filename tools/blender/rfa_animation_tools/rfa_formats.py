@@ -693,8 +693,8 @@ class CharacterMesh:
     topology (0 strips), +0x4A render block count, +0x4C the bone palettes' size, +0x54 their
     count, from +0x5C the palettes (a skeleton bone per mesh bone number), then 2 bytes each (size,
     start). Vertices (format 3): position, normal (4 bytes), tangent, at +20 four weights, at +24
-    four palette numbers, the UVs last (16-bit, 1024 = 1.0; v negated: 0 at the texture's top, -1 at its
-    bottom, as checked against the textures).
+    four palette numbers, the UVs last (16-bit, 1024 = 1.0; v measured down from the texture's top,
+    as Direct3D's, repeating past 0 and 1: checked against the textures).
     """
 
     def __init__(self):

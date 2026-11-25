@@ -102,7 +102,7 @@ def _mesh_object(context, collection, name, sm, materials, frame):
         for poly in me.polygons:
             for li in poly.loop_indices:
                 u, v = sm.uvs[me.loops[li].vertex_index]
-                loop_uvs += (u, 1.0 + v)
+                loop_uvs += (u, -v)  # v down from the top in the files, up from the bottom in Blender
         uv.data.foreach_set("uv", loop_uvs)
         try:
             if hasattr(me, "use_auto_smooth"):
@@ -210,6 +210,7 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
     root = _empty(coll, new_name, Matrix(), "ARROWS", 1.0)
     root["rfa_vehicle"] = container_name
     root["rfa_vehicle_name"] = new_name
+    root["rfa_uv"] = 2  # UVs as Blender's (kits from before had them upside down: see _UV_OLD)
 
     # Materials: the model's, with their textures.
     tex = bio.Textures(game_folder, container) if textures else None
@@ -584,6 +585,9 @@ def _submesh(context, objs, frame, materials):
     return sm
 
 
+_UV_OLD = False  # set while writing a kit made before version 1.2's fix (its UVs read as (u, 1 + v))
+
+
 def _add_geometry(context, obj, frame, materials, sm, blocks):
     eo, me = _evaluated_mesh(context, obj)
     try:
@@ -625,8 +629,9 @@ def _add_geometry(context, obj, frame, materials, sm, blocks):
                     sm.normals.append(bio.from_blender(nn))
                     tw = 255 if getattr(loop, "bitangent_sign", 1) >= 0 else 0
                     sm.tangents.append(bio.from_blender(t) + (tw,))
-                    sm.uvs.append((u, w - 1.0))
-                    sm.uvs2.append((u, w - 1.0))
+                    v = (w - 1.0) if _UV_OLD else -w
+                    sm.uvs.append((u, v))
+                    sm.uvs2.append((u, v))
                 ids.append(k)
             a, b, c = ids
             tri_game = (a, b, c) if flip else (a, c, b)
@@ -669,6 +674,15 @@ def _hull(context, obj, frame):
 
 def build(context, root, game_folder, report):
     """The new vehicle's files from a kit: (container files [(name, bytes)], the model's name, the kind's container)."""
+    global _UV_OLD
+    _UV_OLD = int(root.get("rfa_uv", 1)) < 2
+    try:
+        return _build(context, root, game_folder, report)
+    finally:
+        _UV_OLD = False
+
+
+def _build(context, root, game_folder, report):
     kind_container = root["rfa_vehicle"]
     name = re.sub(r"[^A-Za-z0-9_\-]+", "_", root.get("rfa_vehicle_name", root.name)).strip("_")
     if not name:
@@ -1045,6 +1059,7 @@ def make_scratch_kit(context, game_folder, name, wheels=4, seats=1):
     root["rfa_vehicle"] = SCRATCH_DONOR
     root["rfa_vehicle_name"] = name
     root["rfa_scratch"] = 1
+    root["rfa_uv"] = 2
 
     mat = bpy.data.materials.new(f"{name} paint")
     mat.use_nodes = True

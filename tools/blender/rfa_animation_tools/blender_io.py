@@ -204,7 +204,7 @@ def make_mesh(context, mesh, name, arm_obj, textures=None):
     for poly in me.polygons:
         for li in poly.loop_indices:
             u, v = mesh.uvs[me.loops[li].vertex_index]
-            loop_uvs += (u, 1.0 + v)  # the files keep v negated (0 to -1 down the texture)
+            loop_uvs += (u, -v)  # the files measure v down from the texture's top (repeating past 0 and 1); Blender up from its bottom
     uv.data.foreach_set("uv", loop_uvs)
     try:
         if hasattr(me, "use_auto_smooth"):
