@@ -11,13 +11,15 @@
 //   graphics        Graphics in the in-game menus: the ported world's     [GuerrillaWorld]
 //                   picture settings, saved as you change them
 //   streaming       a fix for a race in the game's zone stream-out         (no settings)
-//   ruin_ai         enemies that fight in Ruin levels (editor-made ones)  [Ruin]
 //                   (two worker threads; a crash when zones stream out)
+//   animations      the .anim_pc files of mods\animations, in place of    (no settings)
+//                   the game's animations of their names, or new ones
+//   ruin_ai         enemies that fight in Ruin levels (editor-made ones)  [Ruin]
 //   live analysis   a pipe for the MCP servers (live_analysis_mcp.exe):    [Mcp]
 //                   only when [Mcp] Enabled=1 (off by default; Options > Experimentals
 //                   > MCP servers turns it on and off while the game runs)
 // Each works as it did when it was a DLL of its own: its settings section in rfa_mods.ini, its own
-// switch under [Mods] (borderless=, console=, fov=, video_settings=, spawner=, limits=, graphics=, streaming=; 0 = off, on when missing) and
+// switch under [Mods] (borderless=, console=, fov=, video_settings=, spawner=, limits=, graphics=, streaming=, animations=; 0 = off, on when missing) and
 // its own name in the log. They start in the order they loaded as separate DLLs.
 //
 // Those old DLLs (borderless.dll, console.dll, fov.dll, video_settings.dll) may still be in mods\
@@ -88,6 +90,7 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     g_limitsRunning = StartPart(L"limits", limits::Init);
     g_graphicsRunning = StartPart(L"graphics", graphics::Init);
     StartPart(L"streaming", streaming::Init);
+    StartPart(L"animations", animations::Init);
     g_ruinAiRunning = StartPart(L"ruin_ai", ruin_ai::Init);
     // The live analysis pipe lets a program on this PC read and change the running game, for the MCP
     // servers. It is opened only when the player turns the MCP servers on ([Mcp] Enabled=1, or Options >

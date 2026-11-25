@@ -11,7 +11,10 @@ and z negated; that is undone on reading and redone on writing). blender_io.py c
   Animation  an animation (.anim_pc, version 10): keys per bone, and the root track (the
              character's own movement)
   write_animation  an Animation back to bytes
-  CharacterMesh    a character's mesh (.ccmesh_pc + .gcmesh_pc): its most detailed level, skinned
+  CharacterMesh    a character's mesh (.ccmesh_pc + .gcmesh_pc): its most detailed level, skinned,
+                   and its materials (Material: the textures by slot, how it's drawn)
+  PegFile    a texture file pair (.cpeg_pc + .gpeg_pc), and dds() to save one texture as a DDS
+  asm_animations   the animations an asset list (.asm_pc) says each container holds
 """
 
 import math
@@ -270,6 +273,7 @@ class Animation:
         self.tracks = tracks
         self.root = root
         self.header = bytes(header) if header else None  # the first 0x30 bytes, when read from a file
+        self.guerrilla = False  # read in Guerrilla's layout (written back in Armageddon's)
 
     @property
     def movement(self):
@@ -280,8 +284,22 @@ class Animation:
         return struct.unpack_from("<4f", self.header, 0x0C) if self.header else (0.0, 0.0, 0.0, 1.0)
 
     @classmethod
-    def read(cls, data, guerrilla=False):
-        """An animation; with guerrilla, one of Red Faction: Guerrilla's (5-byte rotation runs, 4-byte keys)."""
+    def read(cls, data, guerrilla=None):
+        """An animation; with guerrilla, one of Red Faction: Guerrilla's (5-byte rotation runs, 4-byte keys).
+        Left out, Armageddon's layout is tried first, then Guerrilla's (a few of the game's own files,
+        such as the heavy walker's plyr_wklr_dr_enter, were left in Guerrilla's)."""
+        if guerrilla is None:
+            try:
+                return cls._read(data, False)
+            except (ValueError, struct.error, IndexError) as first:
+                try:
+                    return cls._read(data, True)
+                except (ValueError, struct.error, IndexError):
+                    raise ValueError(str(first)) from None
+        return cls._read(data, guerrilla)
+
+    @classmethod
+    def _read(cls, data, guerrilla):
         if len(data) < 0x30 or data[:4] != b"ANIM":
             raise ValueError('not an animation (no "ANIM" at the start)')
         if data[4] != 10:
@@ -303,7 +321,9 @@ class Animation:
         root = r.block(-1, r.weights(1)[0])
         if r.at != len(data):
             raise ValueError(f"the root track ends at 0x{r.at:X}, not at the end of the file (0x{len(data):X})")
-        return cls(frames, skeleton, tracks, root, data[:0x30])
+        anim = cls(frames, skeleton, tracks, root, data[:0x30])
+        anim.guerrilla = guerrilla
+        return anim
 
 
 class _Reader:
@@ -673,7 +693,8 @@ class CharacterMesh:
     topology (0 strips), +0x4A render block count, +0x4C the bone palettes' size, +0x54 their
     count, from +0x5C the palettes (a skeleton bone per mesh bone number), then 2 bytes each (size,
     start). Vertices (format 3): position, normal (4 bytes), tangent, at +20 four weights, at +24
-    four palette numbers, the UVs last (16-bit, 1024 = 1.0).
+    four palette numbers, the UVs last (16-bit, 1024 = 1.0; v negated: 0 at the texture's top, -1 at its
+    bottom, as checked against the textures).
     """
 
     def __init__(self):
@@ -683,6 +704,7 @@ class CharacterMesh:
         self.triangles = []   # (a, b, c, material)
         self.bones = []       # per vertex, 4 skeleton bone numbers
         self.weights = []     # per vertex, 4 weights (adding up to 1)
+        self.materials = []   # Material, by the number the triangles give
 
     @classmethod
     def read(cls, header, data, rig=None):
@@ -753,6 +775,10 @@ class CharacterMesh:
             if sum(len(p) for p in palettes) != palette_size:
                 palettes = [list(header[palettes_at:list_at])]
             m.bones = _skin_bones(m, parts, numbers, palettes, rig)
+        try:
+            m.materials = Material.read_listed(header)
+        except (struct.error, IndexError, ValueError):
+            m.materials = []
         return m
 
 
@@ -796,3 +822,243 @@ def _skin_bones(m, parts, numbers, palettes, rig):
 def mesh_data_name(name):
     """x.ccmesh_pc -> x.gcmesh_pc"""
     return name[:-len("ccmesh_pc")] + "gcmesh_pc" if name.lower().endswith("ccmesh_pc") else name
+
+
+# ---------------------------------------------------------------- materials
+
+
+def name_hash(name):
+    """The game's hash of a shader's slot and constant names: CRC-32 of the lower-cased name, with
+    no inversion before or after (Diffuse_Map 0x69B48F91, Normal_Map 0x2808EB90)."""
+    crc = 0
+    for c in name.lower().encode("latin-1"):
+        crc ^= c
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xEDB88320 if crc & 1 else crc >> 1
+    return crc
+
+
+DIFFUSE_MAP = name_hash("Diffuse_Map")
+NORMAL_MAP = name_hash("Normal_Map")
+SPECULAR_MAP = name_hash("Specular_Map")
+
+
+class Material:
+    """A model's material (as the editor's ModelMaterial): its block starts with its size, two
+    checksums, flags (+12: the low two bits 0 solid, 1 blended over what's behind it, 2 cut out by
+    the colour texture's alpha), the texture count (+16, u16) and the constant count (+18); from
+    +0x24, 12 bytes a texture: where its name is in the texture name list, the slot's hash, its
+    number (u16); then the constants' name hashes and, from the next multiple of 16, their values
+    (a float4 each). Characters list their materials' offsets in the header (0x10 the list, 0x14
+    how many); the name list is where every name offset lands on a ".tga" name."""
+
+    def __init__(self, textures, constants, flags):
+        self.textures = textures    # [(slot hash, file name "x.tga")]
+        self.constants = constants  # {name hash: (x, y, z, w)}
+        self.flags = flags
+
+    @property
+    def blended(self):
+        return self.flags & 3 == 1
+
+    @property
+    def cut_out(self):
+        return self.flags & 3 == 2
+
+    def texture(self, slot):
+        for h, name in self.textures:
+            if h == slot and name:
+                return name
+        return None
+
+    def constant(self, name):
+        return self.constants.get(name_hash(name))
+
+    @staticmethod
+    def _slots(h, at):
+        if at < 0 or at + 0x30 > len(h):
+            return None
+        size, count = _u32(h, at), _u16(h, at + 16)
+        if size < 0x40 or size > 0x4000 or at + size > len(h) or not 1 <= count <= 16 or h[at + 18] > h[at + 19] \
+                or at + 0x24 + count * 12 > len(h):
+            return None
+        slots = []
+        for t in range(count):
+            d = at + 0x24 + t * 12
+            if _u16(h, d + 8) != t:
+                return None
+            slots.append((_u32(h, d + 4), _u32(h, d)))
+        return slots
+
+    @staticmethod
+    def _names_at(h, offsets):
+        if not offsets:
+            return -1
+        at = h.find(b".tga")
+        while at >= 0:
+            start = at
+            while start > 0 and 0x20 <= h[start - 1] < 0x7F:
+                start -= 1
+            if all(start + o < len(h) and _cstr(h, start + o).lower().endswith(".tga") for o in offsets):
+                return start
+            at = h.find(b".tga", at + 4)
+        return -1
+
+    @classmethod
+    def read_listed(cls, header):
+        """A character's or static mesh's materials, in the order its triangles number them."""
+        h = bytes(header)
+        list_at, count = _u32(h, 0x10), _u32(h, 0x14)
+        if count >= 1024 or list_at + 4 * count > len(h):
+            return []
+        found = []
+        for i in range(count):
+            at = _u32(h, list_at + 4 * i)
+            found.append((at, cls._slots(h, at) or []))
+        names = cls._names_at(h, sorted({o for _, slots in found for _, o in slots}))
+        out = []
+        for at, slots in found:
+            textures = [(slot, _cstr(h, names + o) if names >= 0 else "") for slot, o in slots]
+            constants = {}
+            if 0 <= at and at + 0x24 <= len(h):
+                n = h[at + 18]
+                names_at = at + 0x24 + len(slots) * 12
+                values_at = _align(names_at + 4 * n, 16)
+                for c in range(n):
+                    v = values_at + 16 * c
+                    if v + 16 > len(h):
+                        break
+                    constants[_u32(h, names_at + 4 * c)] = struct.unpack_from("<4f", h, v)
+            flags = _u32(h, at + 12) if 0 <= at and at + 16 <= len(h) else 0x40
+            out.append(cls(textures, constants, flags))
+        return out
+
+
+# ---------------------------------------------------------------- textures
+
+
+DXT1, DXT3, DXT5, RGB565, ARGB1555, ARGB4444, RGB888, ARGB8888, A8 = 400, 401, 402, 403, 404, 405, 406, 407, 410
+
+
+def level_size(fmt, w, h):
+    w, h = max(1, w), max(1, h)
+    blocks = (w + 3) // 4 * ((h + 3) // 4)
+    if fmt == DXT1:
+        return blocks * 8
+    if fmt in (DXT3, DXT5):
+        return blocks * 16
+    per = {RGB565: 2, ARGB1555: 2, ARGB4444: 2, RGB888: 3, ARGB8888: 4, A8: 1}.get(fmt)
+    if per is None:
+        raise ValueError(f"texture format {fmt} is unknown")
+    return w * h * per
+
+
+class PegTexture:
+    __slots__ = ("name", "width", "height", "format", "flags", "mips", "offset", "size")
+
+    def __init__(self, name, width, height, fmt, flags, mips, offset, size):
+        self.name, self.width, self.height, self.format = name, width, height, fmt
+        self.flags, self.mips, self.offset, self.size = flags, mips, offset, size
+
+
+class PegFile:
+    """A texture file pair (as the editor's PegFile): the header file (.cpeg_pc / .cvbm_pc, "GEKV"
+    version 10: at 0x10 the texture count; from 0x18, 48 bytes a texture: data offset, width,
+    height, format (u16 each from +4), flags (+18), mip levels (+27), data size (+28); then the
+    names) and the data file (.gpeg_pc / .gvbm_pc: each texture's mip levels, largest first)."""
+
+    MAGIC = b"GEKV"
+
+    def __init__(self, header, data):
+        if len(header) < 0x18 or header[:4] != self.MAGIC:
+            raise ValueError("not a texture header file (GEKV)")
+        if _u16(header, 4) != 10:
+            raise ValueError(f"texture format version {_u16(header, 4)}; only version 10 is known")
+        self.data = data
+        count = _u16(header, 0x10)
+        name_at = 0x18 + 48 * count
+        self.textures = []
+        for i in range(count):
+            at = 0x18 + 48 * i
+            name = _cstr(header, name_at)
+            name_at += len(name) + 1
+            self.textures.append(PegTexture(name, _u16(header, at + 4), _u16(header, at + 6), _u16(header, at + 8),
+                                            _u16(header, at + 18), header[at + 27], _u32(header, at), _u32(header, at + 28)))
+        self._by_name = {t.name.lower(): t for t in self.textures}
+
+    def find(self, name):
+        """A texture by name, with or without its ".tga"."""
+        key = name.lower()
+        return self._by_name.get(key) or self._by_name.get(key[:-4] if key.endswith(".tga") else key + ".tga")
+
+    def dds(self, texture):
+        """One texture as a DDS file, its mip levels as they are (Blender and image editors read them)."""
+        fmt, w, h = texture.format, texture.width, texture.height
+        mips, total = 0, 0
+        for level in range(max(1, texture.mips)):
+            n = level_size(fmt, w >> level, h >> level)
+            if texture.offset + total + n > len(self.data):
+                break
+            total += n
+            mips += 1
+        if not mips:
+            raise ValueError(f"{texture.name}: the data file is shorter than its header says")
+        pixels = self.data[texture.offset:texture.offset + total]
+        compressed = fmt in (DXT1, DXT3, DXT5)
+        flags = 0x1 | 0x2 | 0x4 | 0x1000 | (0x20000 if mips > 1 else 0) | (0x80000 if compressed else 0x8)
+        pitch = level_size(fmt, w, h) if compressed else level_size(fmt, w, 1)
+        out = bytearray(b"DDS ")
+        out += struct.pack("<7I", 124, flags, h, w, pitch, 0, mips) + bytes(44)
+        pf = {
+            DXT1: (0x4, b"DXT1", 0, 0, 0, 0, 0), DXT3: (0x4, b"DXT3", 0, 0, 0, 0, 0), DXT5: (0x4, b"DXT5", 0, 0, 0, 0, 0),
+            ARGB8888: (0x41, b"\0\0\0\0", 32, 0xFF0000, 0xFF00, 0xFF, 0xFF000000),
+            RGB888: (0x40, b"\0\0\0\0", 24, 0xFF0000, 0xFF00, 0xFF, 0),
+            RGB565: (0x40, b"\0\0\0\0", 16, 0xF800, 0x07E0, 0x001F, 0),
+            ARGB1555: (0x41, b"\0\0\0\0", 16, 0x7C00, 0x03E0, 0x001F, 0x8000),
+            ARGB4444: (0x41, b"\0\0\0\0", 16, 0x0F00, 0x00F0, 0x000F, 0xF000),
+            A8: (0x2, b"\0\0\0\0", 8, 0, 0, 0, 0xFF),
+        }[fmt]
+        out += struct.pack("<2I", 32, pf[0]) + pf[1] + struct.pack("<5I", *pf[2:])
+        out += struct.pack("<5I", 0x1000 | (0x400008 if mips > 1 else 0), 0, 0, 0, 0)
+        out += pixels
+        return bytes(out)
+
+
+def peg_data_name(name):
+    """x.cpeg_pc -> x.gpeg_pc, x.cvbm_pc -> x.gvbm_pc"""
+    low = name.lower()
+    for c, g in ((".cpeg_pc", ".gpeg_pc"), (".cvbm_pc", ".gvbm_pc")):
+        if low.endswith(c):
+            return name[:-len(c)] + g
+    return None
+
+
+# ---------------------------------------------------------------- asset lists
+
+
+def asm_animations(data):
+    """{container file name (x.str2_pc): [animation file names]} from an asset list (.asm_pc,
+    version 5: 0xBEEFFEED, version (u16), container count (u16); a container: name (u16 length +
+    name, without .str2_pc), type (u8), flags (u16), primitive count (u16), data offset, size count,
+    compressed size, the sizes (i32 each); a primitive: name, type, allocator, flags, split index
+    (u8 each), its two sizes (i32 each))."""
+    if len(data) < 8 or _u32(data, 0) != 0xBEEFFEED or _u16(data, 4) != 5:
+        return {}
+    out = {}
+    at = 8
+    for _ in range(_u16(data, 6)):
+        n = _u16(data, at)
+        name = data[at + 2:at + 2 + n].decode("latin-1")
+        at += 2 + n
+        primitives, sizes = _u16(data, at + 3), _u32(data, at + 9)
+        at += 17 + 4 * sizes
+        anims = []
+        for _ in range(primitives):
+            n = _u16(data, at)
+            p = data[at + 2:at + 2 + n].decode("latin-1")
+            at += 2 + n + 12
+            if p.lower().endswith(".anim_pc"):
+                anims.append(p)
+        if anims:
+            out[name + ".str2_pc"] = anims
+    return out

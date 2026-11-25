@@ -11,26 +11,36 @@ archives itself.
 1. Zip the `rfa_animation_tools` folder (or use `rfa_animation_tools.zip` from a release).
 2. Blender: **Edit > Preferences > Add-ons > Install...**, pick the zip, tick **RFA Animation Tools**.
 3. In the add-on's preferences, set **Game folder** to the game's folder (the one holding
-   `build\pc\cache`). **Mod folder** is where `overrides\` goes; leave it empty when RFA-Mod is
-   installed into the game folder (as `RFAModLauncher.exe` does).
+   `build\pc\cache`). **Mod folder** is where RFA-Mod is installed (the folder holding
+   `rfa_mods.ini` and `mods\`); leave it empty when RFA-Mod is installed into the game folder (as
+   `RFAModLauncher.exe` does).
 
 The tools are in the 3D view's sidebar (**N**), tab **RFA Anim**, and under **File > Import / Export**.
 
 ## Working
 
 1. **Character from the Game**: search the game's characters (`humans.vpp_pc`). Its skeleton comes
-   in as an armature (from `misc.vpp_pc`, by the mesh's name) and its meshes skinned to it. With an
-   RFA armature selected, the meshes go on that one instead. **Skeleton from the Game** brings in a
+   in as an armature (from `misc.vpp_pc`, by the mesh's name) and its meshes skinned to it, with
+   their materials' textures (colour, normal and specular maps, from the character's own texture
+   files and those the game always has loaded for characters), packed into the .blend. With an RFA
+   armature selected, the meshes go on that one instead. **Skeleton from the Game** brings in a
    skeleton alone (weapons, rigs, monoliths...).
-2. **Animation from the Game**: search the game's animations (`anims.vpp_pc` and the DLC's) and
+2. **Animation from the Game**: search all the game's animations (`anims.vpp_pc`, `missions.vpp_pc`
+   and the DLC's, and those inside containers: the walkers' and vehicles', a level's monsters') and
    put one on the selected armature, as a new action (scene set to 60 fps, from frame 0). Start from
    one of the game's animations to keep what it holds that Blender has no place for (see below).
 3. Animate. Pose bones' rotations and locations are the game's keys; the armature object's own
    location and rotation are the root track (the character's movement over the clip). Constraints,
    IK and drivers are fine: export takes the pose as seen on each frame.
-4. **Export to Game (Override)**: writes the action as `overrides\<archive>\<name>.anim_pc`, in place
-   of the game's animation of that name, which the game uses from its next start. **Restore the
-   Game's Own** removes it. **Export to File...** writes an `.anim_pc` anywhere.
+4. **Export to Game**: writes the action as `mods\animations\<name>.anim_pc`. RFA-Mod loads every file
+   there at the game's start (`[Mods] animations=1`, on by default): in place of the game's
+   animation of that name, wherever the game keeps it (an archive or a container), or as a new
+   animation. **Restore the Game's Own** removes it. **Export to File...** writes an `.anim_pc`
+   anywhere.
+
+   A new name plays where the game is told to play it: an anim set's state or action naming
+   `<name>.animx` (the Skeleton_Set tables, in the editor's table editor). The export's window says
+   whether the name is the game's or new.
 
 Export samples every frame from the scene's start to its end (or the action's range), then keeps
 only the keys the others can't be worked out from within the tolerances (0.1° and 0.5 mm by
@@ -52,19 +62,23 @@ game keeps them in their rest pose (or **All bones**).
   The movement over the clip is worked out again from the root track.
 - Tags (where weapons and the camera attach) come in as empties on their bones.
 
-## What it can't do yet
+## Good to know
 
-- Animations inside containers (`.str2_pc`, such as some vehicles' and the walkers' own) can't be
-  replaced one file at a time: export those to a file.
-- A new animation (a new name) needs the game's tables to use it (`anim_files.xtbl`, and the action
-  or state that plays it, in `anim_actions.xtbl` / `anim_states.xtbl`). The override export only
-  replaces animations the game has.
-- Character materials come in as placeholders (named by their number), without textures.
+- The list of the game's animations is made the first time it's opened (a few seconds: every
+  archive's asset lists are read) and kept in a cache file in the system's temporary folder, read
+  again only for archives that changed. **Read the Game's Files Again** makes it anew.
+- Textures are the game's own pixels (DXT), saved as DDS files in the temporary folder and packed
+  into the .blend. A material is named after its colour texture; importing again reuses a material
+  of that name as it is, so changes to it are kept. Materials the game draws blended or cut out
+  take the colour texture's alpha.
+- A few of the game's animations are stored the way Red Faction: Guerrilla stored them (the heavy
+  walker's `plyr_wklr_dr_enter`): they're read either way and exported the game's own way.
+- `mods\animations` names are the file names: up to 53 characters, as the game's library takes them.
 
 ## Files
 
-- `rfa_formats.py`: the game's files in plain Python (packfiles, skeletons, animations, character
-  meshes), ported from the editor's readers and writers in `src/editor/RfaFormats`. It runs without
+- `rfa_formats.py`: the game's files in plain Python (packfiles, asset lists, skeletons, animations,
+  character meshes and their materials, texture files), ported from the editor's readers and writers in `src/editor/RfaFormats`. It runs without
   Blender: `python -c "import rfa_formats"`.
 - `blender_io.py`: the conversions to and from Blender.
 - `__init__.py`: the operators, panel and preferences.

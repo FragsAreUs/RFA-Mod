@@ -1,9 +1,10 @@
 """RFA Animation Tools: make and change Red Faction: Armageddon's animations in Blender.
 
 Import a skeleton (.rig_pc) as an armature, a character (.ccmesh_pc) skinned to it, and the game's
-animations (.anim_pc) as actions; animate; export an action as an .anim_pc, to a file or straight
-into the mod's overrides (in place of the game's animation of that name). The game's archives are
-read directly: set the game folder in the add-on's preferences.
+animations (.anim_pc, from the animation archives and from inside the containers) as actions;
+animate; export an action as an .anim_pc, to a file or straight into RFA-Mod's mods\\animations (in
+place of the game's animation of that name, wherever the game keeps it, or as a new one). The game's
+archives are read directly: set the game folder in the add-on's preferences.
 
 Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 """
@@ -11,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc)",
@@ -58,7 +59,7 @@ class RFA_Preferences(bpy.types.AddonPreferences):
     game_folder: StringProperty(name="Game folder", subtype="DIR_PATH", default=DEFAULT_GAME,
                                 description="Red Faction: Armageddon's folder (the one with build\\pc\\cache)")
     mod_folder: StringProperty(name="Mod folder", subtype="DIR_PATH", default="",
-                               description="The folder whose overrides\\ the game reads (RFA-Mod installs into the game folder; empty: the game folder)")
+                               description="The folder RFA-Mod is installed in, holding rfa_mods.ini and mods\\ (RFA-Mod installs into the game folder; empty: the game folder)")
 
     def draw(self, context):
         self.layout.prop(self, "game_folder")
@@ -91,7 +92,19 @@ def _items(context, key, archives, extension):
 
 
 def _anim_items(self, context):
-    return _items(context, "anims", bio.GameFiles.ANIMS, ".anim_pc")
+    folder = game_folder(context)
+    cache_key = ("all anims", folder.lower())
+    if cache_key not in _lists:
+        try:
+            found = bio.Animations.all(folder)
+        except Exception as ex:
+            found = []
+            print(f"RFA Animation Tools: {ex}")
+        items = [(f"{rel}|{container}|{name}", name[: -len(".anim_pc")],
+                  f"{rel} > {container}" if container else rel)
+                 for rel, container, name in sorted(found, key=lambda f: f[2].lower())]
+        _lists[cache_key] = items or [("", "(nothing found: check the game folder in the add-on's preferences)", "")]
+    return _lists[cache_key]
 
 
 def _rig_items(self, context):
@@ -105,6 +118,16 @@ def _human_items(self, context):
 def _split(choice):
     rel, _, name = choice.partition("|")
     return rel, name
+
+
+def _split3(choice):
+    """archive|container|name (the container empty for the archive's own files)."""
+    parts = choice.split("|")
+    if len(parts) == 2:
+        return parts[0], "", parts[1]
+    if len(parts) == 3:
+        return tuple(parts)
+    return "", "", ""
 
 
 # ---------------------------------------------------------------- skeletons and characters
@@ -172,6 +195,8 @@ class RFA_OT_import_character_game(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
     bl_property = "choice"
     choice: EnumProperty(name="Character", items=_human_items)
+    textures: BoolProperty(name="Textures", default=True,
+                           description="Bring in the materials' textures (colour, normal and specular maps), packed into the .blend")
 
     def invoke(self, context, event):
         context.window_manager.invoke_search_popup(self)
@@ -211,6 +236,7 @@ class RFA_OT_import_character_game(bpy.types.Operator):
             if pf is not None:
                 rig = rf.Rig.read(pf.read(rig_name + ".rig_pc"))
 
+        textures = bio.Textures(folder, container) if self.textures else None
         made = 0
         for mesh_name in meshes:
             data_name = rf.mesh_data_name(mesh_name)
@@ -221,9 +247,11 @@ class RFA_OT_import_character_game(bpy.types.Operator):
             except Exception as ex:
                 self.report({"WARNING"}, f"{mesh_name}: {ex}")
                 continue
-            bio.make_mesh(context, mesh, os.path.splitext(mesh_name)[0], arm_obj)
+            bio.make_mesh(context, mesh, os.path.splitext(mesh_name)[0], arm_obj, textures)
             made += 1
         context.view_layer.objects.active = arm_obj
+        if textures is not None and textures.missing:
+            self.report({"WARNING"}, f"{name}: textures not found in the game's files: {', '.join(sorted(textures.missing))}")
         self.report({"INFO"}, f"{name}: {made} mesh(es) on {arm_obj.name}")
         return {"FINISHED"} if made else {"CANCELLED"}
 
@@ -261,7 +289,8 @@ class RFA_OT_import_anim_file(bpy.types.Operator, ImportHelper):
 
 
 class RFA_OT_import_anim_game(bpy.types.Operator):
-    """Import one of the game's animations (anims.vpp_pc) onto the selected RFA armature"""
+    """Import one of the game's animations onto the selected RFA armature: the animation archives'
+    own, and those inside containers (the walkers', the vehicles', a level's monsters')"""
     bl_idname = "rfa.import_anim_game"
     bl_label = "Animation from the Game"
     bl_options = {"REGISTER", "UNDO"}
@@ -273,11 +302,15 @@ class RFA_OT_import_anim_game(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
-        rel, name = _split(self.choice)
+        rel, container, name = _split3(self.choice)
         if not name:
             self.report({"ERROR"}, "No animations found: set the game folder in the add-on's preferences")
             return {"CANCELLED"}
-        data = bio.GameFiles.archive(game_folder(context), rel).read(name)
+        try:
+            data = bio.Animations.read(game_folder(context), rel, container, name)
+        except Exception as ex:
+            self.report({"ERROR"}, f"{name}: {ex}")
+            return {"CANCELLED"}
         return _apply(self, context, data, name[: -len(".anim_pc")])
 
 
@@ -340,11 +373,11 @@ class RFA_OT_export_anim_file(bpy.types.Operator, ExportHelper, _ExportSettings)
 
 
 class RFA_OT_export_anim_override(bpy.types.Operator, _ExportSettings):
-    """Export the action into the mod's overrides, in place of the game's animation of that name
-    (the game uses it from its next start)"""
+    """Export the action into RFA-Mod's mods\\animations: the game uses it from its next start, in place
+    of its own animation of that name wherever it keeps it, or as a new animation"""
     bl_idname = "rfa.export_anim_override"
-    bl_label = "Export to Game (Override)"
-    name: StringProperty(name="Animation", description="The game's animation it replaces (its file name without .anim_pc)")
+    bl_label = "Export to Game"
+    name: StringProperty(name="Animation", description="The game's animation it replaces, or a new name (the file name without .anim_pc)")
 
     def invoke(self, context, event):
         arm_obj = active_rfa_armature(context)
@@ -358,27 +391,39 @@ class RFA_OT_export_anim_override(bpy.types.Operator, _ExportSettings):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "name")
+        rel, container = bio.Animations.find(game_folder(context), self.name.strip())
+        if rel is None:
+            layout.label(text="A new animation: an anim set's state or action has to name it", icon="INFO")
+        else:
+            layout.label(text=f"In place of the game's ({container or rel})", icon="CHECKMARK")
         for prop in ("use_action_range", "bones", "every_frame", "rotation_tolerance", "position_tolerance"):
             layout.prop(self, prop)
 
     def execute(self, context):
-        file_name = self.name.strip()
-        if not file_name.lower().endswith(".anim_pc"):
-            file_name += ".anim_pc"
-        rel, _ = bio.GameFiles.find(game_folder(context), bio.GameFiles.ANIMS, file_name)
-        if rel is None:
-            self.report({"ERROR"}, f"The game has no {file_name} in its animation archives to replace "
-                                   "(an animation inside a container can't be replaced one file at a time). Export to a file instead.")
+        name = self.name.strip()
+        if name.lower().endswith(".anim_pc"):
+            name = name[:-len(".anim_pc")]
+        if not name or len(name) > bio.LONGEST_NAME or any(c in name for c in '\\/:*?"<>|'):
+            self.report({"ERROR"}, f"Give the animation a file name of 1 to {bio.LONGEST_NAME} characters")
             return {"CANCELLED"}
-        path = bio.override_path(mod_folder(context), rel, file_name)
+        if not os.path.isdir(mod_folder(context)):
+            self.report({"ERROR"}, f"No folder {mod_folder(context)}: set the mod folder (or the game folder) in the add-on's preferences")
+            return {"CANCELLED"}
+        path = bio.animation_path(mod_folder(context), name)
         if _export(self, context, path) is None:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Written to {path}: the game uses it from its next start")
+        rel, container = bio.Animations.find(game_folder(context), name)
+        if rel is None:
+            self.report({"INFO"}, f"Written to {path}: a new animation, which plays where an anim set names it "
+                                  f"({name}.animx), from the game's next start")
+        else:
+            self.report({"INFO"}, f"Written to {path}: the game uses it in place of its own from its next start")
         return {"FINISHED"}
 
 
 class RFA_OT_restore_anim(bpy.types.Operator):
-    """Remove the override of the game's animation of the action's name, so the game uses its own again"""
+    """Remove the action's animation from mods\\animations (and an override an earlier version of the
+    add-on wrote), so the game uses its own again"""
     bl_idname = "rfa.restore_anim"
     bl_label = "Restore the Game's Own"
 
@@ -388,14 +433,19 @@ class RFA_OT_restore_anim(bpy.types.Operator):
         if action is None:
             self.report({"ERROR"}, "Select an RFA armature with an action")
             return {"CANCELLED"}
-        file_name = action.get("rfa_name", action.name) + ".anim_pc"
+        name = action.get("rfa_name", action.name)
+        file_name = name + ".anim_pc"
+        paths = [bio.animation_path(mod_folder(context), name)]
         rel, _ = bio.GameFiles.find(game_folder(context), bio.GameFiles.ANIMS, file_name)
-        path = bio.override_path(mod_folder(context), rel, file_name) if rel else None
-        if not path or not os.path.isfile(path):
-            self.report({"INFO"}, f"There is no override of {file_name}")
+        if rel:
+            paths.append(bio.override_path(mod_folder(context), rel, file_name))
+        removed = [p for p in paths if os.path.isfile(p)]
+        if not removed:
+            self.report({"INFO"}, f"There is no animation of yours named {file_name}")
             return {"CANCELLED"}
-        os.remove(path)
-        self.report({"INFO"}, f"Removed {path}: the game uses its own {file_name} from its next start")
+        for p in removed:
+            os.remove(p)
+        self.report({"INFO"}, f"Removed {', '.join(removed)}: from its next start the game uses its own {file_name}, if it has one")
         return {"FINISHED"}
 
 

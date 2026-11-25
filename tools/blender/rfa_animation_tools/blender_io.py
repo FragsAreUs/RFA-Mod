@@ -175,8 +175,9 @@ def make_armature(context, rig, name):
 # ---------------------------------------------------------------- character meshes
 
 
-def make_mesh(context, mesh, name, arm_obj):
-    """A character's mesh, skinned to an armature by vertex groups named after its bones."""
+def make_mesh(context, mesh, name, arm_obj, textures=None):
+    """A character's mesh, skinned to an armature by vertex groups named after its bones. textures
+    (a Textures) finds the materials' textures; without it they come in as plain colours."""
     verts = [to_blender(p) for p in mesh.positions]
     tris = [(a, b, c) for a, b, c, _ in mesh.triangles]
     # Swapping the axes turns the triangles' winding round: keep whichever way agrees with the normals.
@@ -193,8 +194,7 @@ def make_mesh(context, mesh, name, arm_obj):
     materials = sorted({m for *_, m in mesh.triangles})
     slot = {}
     for m in materials:
-        mat_name = f"rfa_material_{m}"
-        mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
+        mat = make_material(mesh.materials[m] if m < len(mesh.materials) else None, m, textures)
         me.materials.append(mat)
         slot[m] = len(me.materials) - 1
     me.polygons.foreach_set("material_index", [slot[m] for *_, m in mesh.triangles])
@@ -204,7 +204,7 @@ def make_mesh(context, mesh, name, arm_obj):
     for poly in me.polygons:
         for li in poly.loop_indices:
             u, v = mesh.uvs[me.loops[li].vertex_index]
-            loop_uvs += (u, 1.0 - v)
+            loop_uvs += (u, 1.0 + v)  # the files keep v negated (0 to -1 down the texture)
     uv.data.foreach_set("uv", loop_uvs)
     try:
         if hasattr(me, "use_auto_smooth"):
@@ -232,6 +232,146 @@ def make_mesh(context, mesh, name, arm_obj):
         mod = obj.modifiers.new("Armature", "ARMATURE")
         mod.object = arm_obj
     return obj
+
+
+# ---------------------------------------------------------------- materials
+
+
+class Textures:
+    """The textures a character's materials name: from the character's own container's texture
+    files, then the ones the game always has loaded for characters (misc.vpp_pc's
+    always_loaded_char and always_loaded). Each is saved once as a DDS in a cache folder and loaded
+    into Blender packed, so the .blend keeps it."""
+
+    SHARED = ("always_loaded_char.cpeg_pc", "always_loaded.cpeg_pc")
+
+    def __init__(self, game_folder, container):
+        self.game_folder = game_folder
+        self.pegs = []
+        for n in container.names():
+            g = rf.peg_data_name(n)
+            if g and container.has(g):
+                self.pegs.append((container, n, g))
+        self._shared = None
+        self._open = {}
+        self.missing = set()
+
+    def _shared_pegs(self):
+        if self._shared is None:
+            self._shared = []
+            for rel in GameFiles.RIGS:
+                pf = GameFiles.archive(self.game_folder, rel)
+                if pf is None:
+                    continue
+                for n in self.SHARED:
+                    g = rf.peg_data_name(n)
+                    if pf.has(n) and pf.has(g):
+                        self._shared.append((pf, n, g))
+        return self._shared
+
+    def _find(self, name):
+        for i, (source, c, g) in enumerate(self.pegs + self._shared_pegs()):
+            key = i
+            peg = self._open.get(key)
+            if peg is None:
+                try:
+                    peg = self._open[key] = rf.PegFile(source.read(c), source.read(g))
+                except (ValueError, KeyError):
+                    continue
+            t = peg.find(name)
+            if t is not None:
+                return peg, t
+        return None, None
+
+    def image(self, name):
+        """The texture of that name ("x.tga") as a Blender image, or None (and noted in missing)."""
+        if not name or name.lower().startswith("missing"):
+            return None
+        stem = os.path.splitext(name)[0]
+        img = bpy.data.images.get(stem)
+        if img is not None:
+            return img
+        peg, tex = self._find(name)
+        if tex is None:
+            self.missing.add(name)
+            return None
+        try:
+            dds = peg.dds(tex)
+        except ValueError:
+            self.missing.add(name)
+            return None
+        import tempfile
+        folder = os.path.join(tempfile.gettempdir(), "rfa_animation_tools", "textures")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, stem + ".dds")
+        with open(path, "wb") as f:
+            f.write(dds)
+        img = bpy.data.images.load(path)
+        img.name = stem
+        try:
+            img.pack()
+        except RuntimeError:
+            pass
+        if tex.flags & 0x200 or stem.lower().endswith(("_nm", "_sp")):
+            img.colorspace_settings.name = "Non-Color"
+        return img
+
+
+def make_material(material, number, textures):
+    """A Blender material for one of the game's: Principled BSDF with its colour texture (and its
+    alpha, for materials drawn blended or cut out), normal map and specular map, where they're
+    found; named after the colour texture (or rfa_material_<n>). An existing one of that name is
+    used as it is, so changes made to it are kept."""
+    diffuse = material.texture(rf.DIFFUSE_MAP) if material else None
+    mat_name = os.path.splitext(diffuse)[0] if diffuse and not diffuse.lower().startswith("missing") else f"rfa_material_{number}"
+    mat = bpy.data.materials.get(mat_name)
+    if mat is not None:
+        return mat
+    mat = bpy.data.materials.new(mat_name)
+    if material is None or textures is None:
+        return mat
+    mat["rfa_textures"] = json.dumps({f"{slot:08X}": tex for slot, tex in material.textures})
+    mat["rfa_flags"] = material.flags
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        return mat
+
+    def tex_node(img, x, y):
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.image = img
+        node.location = (x, y)
+        return node
+
+    img = textures.image(diffuse)
+    if img is not None:
+        node = tex_node(img, -600, 300)
+        nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
+        if material.blended or material.cut_out:
+            nt.links.new(node.outputs["Alpha"], bsdf.inputs["Alpha"])
+            method = "BLENDED" if material.blended else "DITHERED"
+            if hasattr(mat, "surface_render_method"):
+                mat.surface_render_method = method
+            if hasattr(mat, "blend_method"):
+                try:
+                    mat.blend_method = "BLEND" if material.blended else "CLIP"
+                except TypeError:
+                    pass
+    img = textures.image(material.texture(rf.NORMAL_MAP))
+    if img is not None:
+        node = tex_node(img, -600, -300)
+        nmap = nt.nodes.new("ShaderNodeNormalMap")
+        nmap.location = (-250, -300)
+        nt.links.new(node.outputs["Color"], nmap.inputs["Color"])
+        nt.links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
+    img = textures.image(material.texture(rf.SPECULAR_MAP))
+    if img is not None:
+        node = tex_node(img, -600, 0)
+        spec = bsdf.inputs.get("Specular IOR Level") or bsdf.inputs.get("Specular")
+        if spec is not None:
+            nt.links.new(node.outputs["Color"], spec)
+    return mat
 
 
 # ---------------------------------------------------------------- animations in
@@ -498,11 +638,172 @@ class GameFiles:
                 return rel, pf
         return None, None
 
+    _containers = {}
+
+    @classmethod
+    def container(cls, game_folder, relative, name):
+        """A container in an archive, opened (the last few kept, as they can be big)."""
+        key = (os.path.join(game_folder, relative).lower(), name.lower())
+        c = cls._containers.get(key)
+        if c is None:
+            c = cls.archive(game_folder, relative).container(name)
+            if len(cls._containers) >= 4:
+                cls._containers.pop(next(iter(cls._containers)))
+            cls._containers[key] = c
+        return c
+
     @classmethod
     def forget(cls):
         cls._open.clear()
+        cls._containers.clear()
+        Animations.forget()
 
 
 def override_path(mod_folder, archive_relative, file_name):
-    """Where an override of a file in an archive goes: overrides\\<the archive's path>\\<the file>."""
+    """Where an override of a file in an archive goes: overrides\\<the archive's path>\\<the file>
+    (version 1.0 of the add-on wrote animations there; Restore still removes those)."""
     return os.path.join(mod_folder, "overrides", *archive_relative.split("\\"), file_name)
+
+
+ANIMATIONS_FOLDER = ("mods", "animations")
+LONGEST_NAME = 53  # the game's library takes names of up to 58 characters, "name.anim"
+
+
+def animation_path(mod_folder, name):
+    """Where an animation for the game goes: mods\\animations\\<name>.anim_pc. RFA-Mod (rfa_qol's
+    animations part) loads every file there at the game's start, in place of the game's animation of
+    that name wherever the game keeps it, or as a new one."""
+    if name.lower().endswith(".anim_pc"):
+        name = name[:-len(".anim_pc")]
+    return os.path.join(mod_folder, *ANIMATIONS_FOLDER, name + ".anim_pc")
+
+
+class Animations:
+    """Every animation the game has: the animation archives' own files, and those inside the
+    containers (.str2_pc) of every archive under build\\, as each archive's asset lists (.asm_pc)
+    name them (a level's monsters, the walkers' and vehicles' own). Listed once a session; the list of
+    each archive is kept in a cache file and read again only when the archive changes."""
+
+    _list = {}
+
+    @classmethod
+    def _cache_path(cls):
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "rfa_animation_tools", "animations.json")
+
+    @classmethod
+    def all(cls, game_folder):
+        """[(archive, container or "", file name)], each name once (the animation archives first)."""
+        key = os.path.normcase(os.path.abspath(game_folder))
+        if key in cls._list:
+            return cls._list[key]
+        try:
+            with open(cls._cache_path(), "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except (OSError, ValueError):
+            cache = {}
+        archives = []
+        build = os.path.join(game_folder, "build")
+        for root, _, files in os.walk(build):
+            for n in sorted(files):
+                if n.lower().endswith(".vpp_pc"):
+                    archives.append(os.path.relpath(os.path.join(root, n), game_folder).replace("/", "\\"))
+        first = {a.lower() for a in GameFiles.ANIMS}
+        archives.sort(key=lambda a: (a.lower() not in first, a.lower()))
+        entries, changed = [], False
+        for rel in archives:
+            path = os.path.join(game_folder, *rel.split("\\"))
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            stamp = f"{st.st_size}:{int(st.st_mtime)}"
+            entry = cache.get(path.lower())
+            if not entry or entry.get("stamp") != stamp or "containers" not in entry:
+                entry = dict(cls._list_archive(path), stamp=stamp)
+                cache[path.lower()] = entry
+                changed = True
+            entries.append((rel, entry))
+        # A container is read from the archive whose list names it, or else from any that holds it
+        # (a level's lists name containers its other archives hold).
+        holder = {}
+        for rel, entry in entries:
+            for c in entry["containers"]:
+                holder.setdefault(c.lower(), (rel, c))
+        out, seen = [], set()
+        for rel, entry in entries:
+            for name in entry["anims"]:
+                if name.lower() not in seen:
+                    seen.add(name.lower())
+                    out.append((rel, "", name))
+        for rel, entry in entries:
+            here = {c.lower() for c in entry["containers"]}
+            for container, anims in entry["lists"].items():
+                where = (rel, container) if container.lower() in here else holder.get(container.lower())
+                if where is None:
+                    continue
+                for name in anims:
+                    if name.lower() not in seen:
+                        seen.add(name.lower())
+                        out.append((where[0], where[1], name))
+        if changed:
+            try:
+                os.makedirs(os.path.dirname(cls._cache_path()), exist_ok=True)
+                with open(cls._cache_path(), "w", encoding="utf-8") as f:
+                    json.dump(cache, f)
+            except OSError:
+                pass
+        cls._list[key] = out
+        return out
+
+    @staticmethod
+    def _list_archive(path):
+        """{"anims": its own animations, "containers": its containers, "lists": {container: animations}}."""
+        out = {"anims": [], "containers": [], "lists": {}}
+        try:
+            pf = rf.Packfile.open(path)
+        except (OSError, ValueError, struct.error):
+            return out
+        out["anims"] = [n for n in pf.names() if n.lower().endswith(".anim_pc")]
+        out["containers"] = [n for n in pf.names() if n.lower().endswith(".str2_pc")]
+        for n in pf.names():
+            if not n.lower().endswith(".asm_pc"):
+                continue
+            # An archive compressed in one stream is read whole for its lists: skip the huge ones.
+            if pf.compressed and pf.condensed and pf.compressed_data_size > (256 << 20):
+                continue
+            try:
+                for container, anims in rf.asm_animations(pf.read(n)).items():
+                    out["lists"].setdefault(container, []).extend(anims)
+            except (ValueError, KeyError, struct.error, zlib_error()):
+                continue
+        return out
+
+    @classmethod
+    def read(cls, game_folder, archive, container, name):
+        pf = GameFiles.archive(game_folder, archive)
+        if pf is None:
+            raise KeyError(f"no {archive}")
+        if container:
+            pf = GameFiles.container(game_folder, archive, container)
+        return pf.read(name)
+
+    @classmethod
+    def find(cls, game_folder, name):
+        """(archive, container) where the game keeps an animation of that name, or (None, None)."""
+        low = name.lower()
+        if not low.endswith(".anim_pc"):
+            low += ".anim_pc"
+        for rel, container, n in cls.all(game_folder):
+            if n.lower() == low:
+                return rel, container
+        return None, None
+
+    @classmethod
+    def forget(cls):
+        cls._list.clear()
+
+
+def zlib_error():
+    import zlib
+    return zlib.error

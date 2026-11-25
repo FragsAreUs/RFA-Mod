@@ -51,6 +51,11 @@ namespace streaming {
 void Init();
 }
 
+// Animations from mods\animations, in place of the game's or new (animations.cpp). No settings.
+namespace animations {
+void Init();
+}
+
 // Enemies that fight in Ruin levels ([Ruin] HostileAI=; ruin_ai.cpp).
 namespace ruin_ai {
 void Init();
