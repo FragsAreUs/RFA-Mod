@@ -310,7 +310,9 @@ class RFA_OT_sound_set(bpy.types.Operator):
         except ValueError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"{vehicle}: {self.key} = {sound or '(none)'} in {path}; the game reads it at its next start")
+        from . import blender_live
+        if not blender_live.vehicles_changed(context, vehicle, self.report):
+            self.report({"INFO"}, f"{vehicle}: {self.key} = {sound or '(none)'} in {path}; the game reads it at its next start")
         return {"FINISHED"}
 
 
@@ -403,6 +405,8 @@ class RFA_PT_vehicle_sounds(bpy.types.Panel):
 
     def draw(self, context):
         draw_vehicle_sounds(self.layout, context)
+        from . import blender_live
+        blender_live.draw(self.layout, context)
 
 
 classes = (RFA_SoundItem, RFA_UL_sounds, RFA_OT_sound_list, RFA_OT_sound_play, RFA_OT_sound_stop, RFA_OT_sound_set,

@@ -329,6 +329,8 @@ class RFA_OT_vp_write(bpy.types.Operator):
         path = bva.write_table(_folders(context)[1], "vehicles.xtbl", text[:span[0]] + vp.entry_text(_work["root"]) + text[span[1]:])
         bs._vehicle_cache.pop(_work["vehicle"], None)
         fill(context, _work["vehicle"], _work["root"])
+        from . import blender_live
+        blender_live.vehicles_changed(context, _work["vehicle"], self.report)
         bs.redraw(context)
         self.report({"INFO"}, f"{_work['vehicle']} written to {path}; the game uses it from its next start")
         return {"FINISHED"}
@@ -434,6 +436,8 @@ class RFA_PT_vehicle_params(bpy.types.Panel):
         row = layout.row(align=True)
         row.operator(RFA_OT_vp_write.bl_idname, icon="EXPORT")
         row.operator(RFA_OT_vp_revert.bl_idname, icon="LOOP_BACK")
+        from . import blender_live
+        blender_live.draw(layout, context)
 
         layout.prop(wm, "rfa_vp_filter", text="", icon="VIEWZOOM")
         layout.prop(wm, "rfa_vp_section", text="")
