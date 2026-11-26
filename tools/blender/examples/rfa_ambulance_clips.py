@@ -272,6 +272,48 @@ def roll_foot(side, pitch, toe):
     C.view_layer.update()
 
 
+# ---- the game's own standing up from a seat (the start of pc_exit_lav), for getting up and, played backwards,
+# sitting down: its bones' turns take over between the standing and seated poses
+_sit_addon = sys.modules["rfa_animation_tools"]
+_sit_bio = sys.modules["rfa_animation_tools.blender_io"]
+_sit_rf = sys.modules["rfa_animation_tools.rfa_formats"]
+SIT_FRAMES = 46          # pc_exit_lav from seated (0) to up on his feet (46), before it climbs out
+SIT_SKIP = {"root", "camera-lookat", "camera", "item1", "item2", "spinebend"}
+
+
+def load_sit(name="pc_exit_lav"):
+    rel, pf = _sit_bio.GameFiles.find(_sit_addon.game_folder(C), _sit_bio.GameFiles.ANIMS, name + ".anim_pc")
+    anim = _sit_rf.Animation.read(pf.read(name + ".anim_pc"))
+    keep = (scene.frame_start, scene.frame_end, scene.render.fps)
+    rest_pose()
+    act = _sit_bio.apply_animation(C, arm, anim, name + " (stand up)", lambda *a: None)
+    names = [pb.name for pb in arm.pose.bones if pb.name in GAME_BONES and pb.name not in SIT_SKIP]
+    frames = []
+    for k in range(SIT_FRAMES + 1):
+        scene.frame_set(k)
+        frames.append({n: arm.pose.bones[n].rotation_quaternion.copy() for n in names})
+    arm.animation_data.action = None
+    bpy.data.actions.remove(act)
+    scene.frame_start, scene.frame_end, scene.render.fps = keep
+    return frames
+
+
+SIT = load_sit()
+
+
+def sit_rot(name, s):
+    """The game's turn for a bone, s of the way from standing (0) to seated (1)."""
+    k = (1.0 - s) * SIT_FRAMES
+    i = min(int(k), SIT_FRAMES - 1)
+    t = k - i
+    a, b = SIT[i].get(name), SIT[i + 1].get(name)
+    if a is None:
+        return None
+    if a.dot(b) < 0:
+        b = -b
+    return a.slerp(b, t)
+
+
 # ---- making a clip
 _bio = sys.modules["rfa_animation_tools.blender_io"]
 _NAMES = _bio.bone_names(arm)
@@ -410,6 +452,12 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
             if r0.dot(r1) < 0:
                 r1 = -r1
             q = r0.slerp(r1, s)
+            if 0.0 < s < 1.0:   # the game's own getting up / sitting down in between, most in the middle
+                g = sit_rot(pb.name, s)
+                if g is not None:
+                    if q.dot(g) < 0:
+                        g = -g
+                    q = q.slerp(g, math.sin(math.pi * s) ** 0.5)
             if pb.name in prev and prev[pb.name].dot(q) < 0:
                 q.negate()
             prev[pb.name] = q
@@ -490,10 +538,11 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
 
 # ---- the clip's camera: outside, to the left and behind the door, a little above, on his chest
 AMB_EYE = Vector((-3.5, 0.5, G + 2.4))
+AMB_AT = Vector((-0.9, 2.6, G + 1.2))   # fixed: on the driver's door
 
 
 def amb_cam(f, chest):
-    return AMB_EYE, chest + Vector((0, 0.2, 0.1))
+    return AMB_EYE, AMB_AT
 
 
 # ---- Get In (60 frames a second)

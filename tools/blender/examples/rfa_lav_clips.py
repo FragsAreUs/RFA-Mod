@@ -414,6 +414,48 @@ def walk_lift(ph, side):
     return WALK["lift"][i][side] * (1 - t) + WALK["lift"][i + 1][side] * t
 
 
+# ---- the game's own standing up from a seat (the start of pc_exit_lav), for getting up and, played backwards,
+# sitting down: its bones' turns take over between the standing and seated poses
+_sit_addon = sys.modules["rfa_animation_tools"]
+_sit_bio = sys.modules["rfa_animation_tools.blender_io"]
+_sit_rf = sys.modules["rfa_animation_tools.rfa_formats"]
+SIT_FRAMES = 46          # pc_exit_lav from seated (0) to up on his feet (46), before it climbs out
+SIT_SKIP = {"root", "camera-lookat", "camera", "item1", "item2", "spinebend"}
+
+
+def load_sit(name="pc_exit_lav"):
+    rel, pf = _sit_bio.GameFiles.find(_sit_addon.game_folder(C), _sit_bio.GameFiles.ANIMS, name + ".anim_pc")
+    anim = _sit_rf.Animation.read(pf.read(name + ".anim_pc"))
+    keep = (scene.frame_start, scene.frame_end, scene.render.fps)
+    rest_pose()
+    act = _sit_bio.apply_animation(C, arm, anim, name + " (stand up)", lambda *a: None)
+    names = [pb.name for pb in arm.pose.bones if pb.name in GAME_BONES and pb.name not in SIT_SKIP]
+    frames = []
+    for k in range(SIT_FRAMES + 1):
+        scene.frame_set(k)
+        frames.append({n: arm.pose.bones[n].rotation_quaternion.copy() for n in names})
+    arm.animation_data.action = None
+    bpy.data.actions.remove(act)
+    scene.frame_start, scene.frame_end, scene.render.fps = keep
+    return frames
+
+
+SIT = load_sit()
+
+
+def sit_rot(name, s):
+    """The game's turn for a bone, s of the way from standing (0) to seated (1)."""
+    k = (1.0 - s) * SIT_FRAMES
+    i = min(int(k), SIT_FRAMES - 1)
+    t = k - i
+    a, b = SIT[i].get(name), SIT[i + 1].get(name)
+    if a is None:
+        return None
+    if a.dot(b) < 0:
+        b = -b
+    return a.slerp(b, t)
+
+
 # ---- making a clip
 _NAMES = _bio.bone_names(arm)
 GAME_BONES = {_NAMES[i] for i in list(range(0, 50)) + list(range(96, 108)) + list(range(109, 117)) if i < len(_NAMES)}
@@ -551,6 +593,12 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
             if r0.dot(r1) < 0:
                 r1 = -r1
             q = r0.slerp(r1, s)
+            if 0.0 < s < 1.0:   # the game's own getting up / sitting down in between, most in the middle
+                g = sit_rot(pb.name, s)
+                if g is not None:
+                    if q.dot(g) < 0:
+                        g = -g
+                    q = q.slerp(g, math.sin(math.pi * s) ** 0.5)
             if pb.name in prev and prev[pb.name].dot(q) < 0:
                 q.negate()
             prev[pb.name] = q
@@ -714,7 +762,8 @@ SEAT = W(seat.x, seat.y, seat.z, 0)
 wps[SEAT_WP].matrix_world = SEAT
 
 LEN = 600
-OPEN_AT, OPEN_END = 112, 176                 # the ramp swings down
+OPEN_END = 176
+OPEN_AT = OPEN_END - 43                      # the ramp swings down in ~0.43 s once sped up, as the APC rear-door sound was made for: it clanks as it lands
 SIT0, SIT1 = 426, 492                        # sitting down
 CLOSE_AT, CLOSE_END = 500, 572               # the ramp swings shut
 keys = [(0, A), (84, H), (118, H), (170, B), (188, B), (278, R), (420, F)]
@@ -783,18 +832,13 @@ hands = {"RH": ([(84, HANDLE + Vector((0, -0.10, 0))), (104, HANDLE), (118, HAND
          "LH": ([(236, ROOF_EDGE), (268, ROOF_EDGE + Vector((0, 0.25, 0))), (410, SEAT_BACK), (450, SEAT_BACK)],
                 [(232, 0.0), (248, 0.9), (266, 0.9), (284, 0.0), (404, 0.0), (418, 1.0), (450, 1.0), (470, 0.0)])}
 
-# the clip's camera: behind him and to his right outside; once he's up the ramp, up behind the LAV's right
-# rear corner, then round to its right side as he sits (outside the hull, which hides him inside)
+# the clip's camera: fixed, up behind the LAV's right rear corner, looking at the hatch and into the bay
+LAV_EYE = Vector((3.4, -9.0, G + 3.0))
+LAV_AT = Vector((0.0, -2.8, G + 0.9))
+
+
 def lav_cam(f, chest):
-    loc = ground_at(min(f, 420)).to_translation()
-    chase_eye = Vector((loc.x + 1.4, loc.y - 2.9, G + 2.0))
-    chase_at = chest + Vector((0, 0.6, 0.1))
-    rear_eye, rear_at = Vector((2.9, -7.0, G + 3.2)), Vector((0.0, max(chest.y, -3.0), chest.z))
-    side_eye, side_at = Vector((3.6, -1.4, G + 3.1)), Vector((seat.x, seat.y, seat.z + 0.6))
-    a, b = smooth((f - 190) / 80), smooth((f - 400) / 130)
-    eye = chase_eye.lerp(rear_eye, a).lerp(side_eye, b)
-    at = chase_at.lerp(rear_at, a).lerp(side_at, b)
-    return eye, at
+    return LAV_EYE, LAV_AT
 
 
 ONLY_EXIT = globals().get("ONLY_EXIT", False)
@@ -835,7 +879,9 @@ print("LAV Get In made, 0-%d; ground %.2f, seat %s; head's least room under the 
 # down the ramp and off it, the ramp swinging shut behind. Ends standing behind the LAV, facing away from it.
 EXIT_WP = acts["exit"]["rfa_to_waypoint"]
 X_LEN = 440
-X_OPEN, X_OPEN_END = 150, 240                  # late: the game shuts the door about 1.7 s after "door end", whatever the close triggers say
+X_OPEN_END = 240
+X_OPEN = X_OPEN_END - 40  # swings down in ~0.43 s once sped up, so the APC rear-door sound's clank lands with it
+# late: the game shuts the door about 1.7 s after "door end", whatever the close triggers say
 X_CLOSE, X_CLOSE_END = 350, 420
 UP0, UP1 = 40, 110                                   # out of the seat, turned round, in the aisle
 F2 = W(-0.05, 0.78, CAB, 180)
@@ -898,14 +944,7 @@ x_hands = {"RH": ([(40, SEAT_BACK), (90, SEAT_BACK)], [(36, 0.0), (52, 1.0), (84
 
 
 def lav_exit_cam(f, chest):
-    side_eye, side_at = Vector((3.6, -1.4, G + 3.1)), Vector((seat.x, seat.y, seat.z + 0.6))
-    rear_eye = Vector((2.9, -7.4, G + 2.9))
-    rear_at = Vector((0.0, min(chest.y, 0.5), chest.z))
-    out_eye = Vector((2.4, -8.2, G + 2.0))
-    a, b = smooth((f - 80) / 100), smooth((f - 300) / 100)
-    eye = side_eye.lerp(rear_eye, a).lerp(out_eye, b)
-    at = side_at.lerp(rear_at, a).lerp(chest + Vector((0, -0.4, 0.1)), b)
-    return eye, at
+    return LAV_EYE, LAV_AT      # the same fixed camera as getting in
 
 
 exit_ = build(
