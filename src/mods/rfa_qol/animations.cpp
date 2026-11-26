@@ -106,6 +106,43 @@ void LoadFolder() {
              failed ? " (some skipped: see above)" : "");
 }
 
+// The list of animation set files (anim_set_filenames.xtbl) is read at start-up by 0x979C20 into an array on its
+// stack, 32 bytes a name at ebp-0xB48, with room for 89 (up to ebp-0x28) and no check: a 90th name (a mod's own set,
+// such as the Blender add-on's vehicle sets) runs over the function's locals, the set fails to open ("unable to
+// open rfa_Z": the name overwritten by the count) and the game crashes soon after. The six places that index the
+// array (lea r32,[ebp+idx*1-0xB48]) are pointed at an array of the mod's instead: lea r32,[idx+array], and a nop.
+constexpr int kAnimSetFileSlots = 1024;
+alignas(16) char g_animSetFiles[kAnimSetFileSlots][32];
+struct AnimSetFileUse {
+    DWORD at;
+    BYTE modrm, sib;  // the lea's own (mod 10, rm 100: SIB with base ebp, index idx, scale 1)
+};
+constexpr AnimSetFileUse kAnimSetFileUses[] = {
+    {0x979CEA, 0x84, 0x15}, {0x97A6A1, 0x94, 0x0D}, {0x97A6C6, 0x8C, 0x05},
+    {0x97A719, 0x94, 0x0D}, {0x97A993, 0x94, 0x0D}, {0x97A9B8, 0x8C, 0x05},
+};
+
+void RoomForAnimSetFiles() {
+    for (const AnimSetFileUse& use : kAnimSetFileUses) {
+        const BYTE* code = reinterpret_cast<const BYTE*>(use.at);
+        if (code[0] != 0x8D || code[1] != use.modrm || code[2] != use.sib || rfa::CodeValue(use.at + 3) != 0xFFFFF4B8u) {
+            rfa::Log("Animation set files: the game's list isn't as expected at 0x%08lX; it keeps room for 89", use.at);
+            return;
+        }
+    }
+    for (const AnimSetFileUse& use : kAnimSetFileUses) {
+        const BYTE reg = (use.modrm >> 3) & 7, index = (use.sib >> 3) & 7;
+        BYTE code[7] = {0x8D, static_cast<BYTE>(0x80 | (reg << 3) | index), 0, 0, 0, 0, 0x90};
+        const DWORD array = reinterpret_cast<DWORD>(&g_animSetFiles[0][0]);
+        memcpy(code + 2, &array, 4);
+        if (!rfa::PatchCode(reinterpret_cast<BYTE*>(use.at), code, sizeof(code))) {
+            rfa::Log("Animation set files: couldn't change the game at 0x%08lX", use.at);
+            return;
+        }
+    }
+    rfa::Log("Animation set files: the game's list holds %d (its own 89)", kAnimSetFileSlots);
+}
+
 void __cdecl EmptyLibraryThenLoad() {
     reinterpret_cast<EmptyLibraryFn>(kEmptyLibrary)();
     LoadFolder();
@@ -114,6 +151,7 @@ void __cdecl EmptyLibraryThenLoad() {
 }  // namespace
 
 void Init() {
+    RoomForAnimSetFiles();
     const BYTE* call = reinterpret_cast<const BYTE*>(kEmptyLibraryCall);
     if (call[0] != 0xE8 || kEmptyLibraryCall + 5 + rfa::CodeValue(kEmptyLibraryCall + 1) != kEmptyLibrary) {
         rfa::Log("Animations: the game's start isn't as expected; animations in mods\\animations aren't loaded");
