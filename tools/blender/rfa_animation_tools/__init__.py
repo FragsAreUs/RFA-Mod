@@ -12,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 3, 9),
+    "version": (1, 4, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
@@ -30,12 +30,14 @@ import sys
 
 # Blender reloads only this file when the add-on is installed again or re-enabled; the other files stay
 # as first loaded unless reloaded here (in dependency order), so a new version would run old code.
-for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "blender_io", "blender_vehicle", "blender_vehicle_anim"):
+for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "rfa_sounds", "blender_io", "blender_vehicle", "blender_vehicle_anim",
+              "blender_sounds"):
     _module = sys.modules.get(f"{__name__}.{_name}")
     if _module is not None:
         importlib.reload(_module)
 
 from . import blender_io as bio
+from . import blender_sounds as bs
 from . import blender_vehicle as bv
 from . import blender_vehicle_anim as bva
 from . import rfa_formats as rf
@@ -72,10 +74,14 @@ class RFA_Preferences(bpy.types.AddonPreferences):
                                 description="Red Faction: Armageddon's folder (the one with build\\pc\\cache)")
     mod_folder: StringProperty(name="Mod folder", subtype="DIR_PATH", default="",
                                description="The folder RFA-Mod is installed in, holding rfa_mods.ini and mods\\ (RFA-Mod installs into the game folder; empty: the game folder)")
+    vgmstream: StringProperty(name="vgmstream-cli.exe", subtype="FILE_PATH", default="",
+                              description="vgmstream's command-line converter (free, vgmstream.org), to hear Armageddon's own sounds "
+                                          "(Wwise Vorbis) in the sound browser; the Guerrilla world's sounds play without it")
 
     def draw(self, context):
         self.layout.prop(self, "game_folder")
         self.layout.prop(self, "mod_folder")
+        self.layout.prop(self, "vgmstream")
 
 
 # ---------------------------------------------------------------- search lists (kept: Blender needs the items alive)
@@ -967,12 +973,7 @@ class RFA_PT_people(bpy.types.Panel):
         if shown in ("enter", "exit"):
             col.operator(RFA_OT_people_snap_end.bl_idname, icon="KEYFRAME")
             col.operator(RFA_OT_people_seat_at_end.bl_idname, icon="EMPTY_ARROWS")
-        sounds = box.column(align=True)
-        sounds.label(text="Door sounds (sound names, e.g. RFG_VEH_FOLEY_APC_REAR_OPEN)")
-        for key, text in (("rfa_door_open_sound", "Opens"), ("rfa_door_close_sound", "Shuts"),
-                          ("rfa_door_land_sound", "Fully open")):
-            if key in root:  # (made by Animate Getting In; older kits: set them as the root's custom properties)
-                sounds.prop(root, '["%s"]' % key, text=text)
+        bs.draw_door_sounds(box, context, root)
         box.operator(RFA_OT_people_export.bl_idname, icon="EXPORT")
         box.operator(RFA_OT_people_remove.bl_idname, icon="TRASH")
 
@@ -1059,6 +1060,7 @@ classes = (
 def register():
     for c in classes:
         bpy.utils.register_class(c)
+    bs.register()
     bpy.types.TOPBAR_MT_file_import.append(_menu_import)
     bpy.types.TOPBAR_MT_file_export.append(_menu_export)
 
@@ -1066,5 +1068,6 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
+    bs.unregister()
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

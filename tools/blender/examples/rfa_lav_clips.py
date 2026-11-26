@@ -541,6 +541,21 @@ def fix_signs(action):
             fc.update()
 
 
+def steady_cam(offset, lag=0.06):
+    """A steady follow camera, as the game's own clips have (1-2 m off the player): always the same angle
+    (offset, in the vehicle's space), looking at his chest, which it follows smoothly (lag per frame)."""
+    state = {"f": None, "at": None}
+
+    def cam(f, chest):
+        if state["f"] is None or f <= state["f"]:
+            state["at"] = chest.copy()
+        else:
+            state["at"] = state["at"].lerp(chest, lag)
+        state["f"] = f
+        return state["at"] + offset, state["at"].copy()
+    return cam
+
+
 def place_camera(eye, target):
     """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
     inv = arm.matrix_world.inverted()
@@ -841,8 +856,8 @@ LAV_EYE = Vector((3.4, -9.0, G + 3.0))
 LAV_AT = Vector((0.0, -2.8, G + 0.9))
 
 
-def lav_cam(f, chest):
-    return LAV_EYE, LAV_AT
+LAV_CAM_OFFSET = Vector((1.3, -1.9, 0.9))   # behind-right and above him, in the LAV's space (~2.5 m)
+lav_cam = steady_cam(LAV_CAM_OFFSET)
 
 
 ONLY_EXIT = globals().get("ONLY_EXIT", False)
@@ -947,8 +962,7 @@ x_hands = {"RH": ([(40, SEAT_BACK), (90, SEAT_BACK)], [(36, 0.0), (52, 1.0), (84
                   [(218, 0.0), (234, 0.9), (256, 0.9), (276, 0.0)])}
 
 
-def lav_exit_cam(f, chest):
-    return LAV_EYE, LAV_AT      # the same fixed camera as getting in
+lav_exit_cam = steady_cam(LAV_CAM_OFFSET)   # the same angle as getting in: from behind the LAV, he comes out towards it
 
 
 exit_ = build(

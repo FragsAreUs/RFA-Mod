@@ -400,6 +400,21 @@ def fix_signs(action):
             fc.update()
 
 
+def steady_cam(offset, lag=0.06):
+    """A steady follow camera, as the game's own clips have (1-2 m off the player): always the same angle
+    (offset, in the vehicle's space), looking at his chest, which it follows smoothly (lag per frame)."""
+    state = {"f": None, "at": None}
+
+    def cam(f, chest):
+        if state["f"] is None or f <= state["f"]:
+            state["at"] = chest.copy()
+        else:
+            state["at"] = state["at"].lerp(chest, lag)
+        state["f"] = f
+        return state["at"] + offset, state["at"].copy()
+    return cam
+
+
 def place_camera(eye, target):
     """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
     inv = arm.matrix_world.inverted()
@@ -545,8 +560,8 @@ AMB_EYE = Vector((-3.5, 0.5, G + 2.4))
 AMB_AT = Vector((-0.9, 2.6, G + 1.2))   # fixed: on the driver's door
 
 
-def amb_cam(f, chest):
-    return AMB_EYE, AMB_AT
+AMB_CAM_OFFSET = Vector((-1.9, -1.2, 0.9))  # outside the driver's door side, behind and above him (~2.4 m)
+amb_cam = steady_cam(AMB_CAM_OFFSET)
 
 
 # ---- Get In (60 frames a second)
