@@ -413,6 +413,34 @@ class VehicleModel:
         self.shapes_changed = False
         self.submeshes = None  # read on asking (read_mesh)
 
+    def segment_submeshes(self):
+        """The piston segments' submeshes (as stored), in part order."""
+        h, out = self.c, []
+        for p in self.parts:
+            n, at = _i(h, p.at + 0x80), _i(h, p.at + 0x84)
+            out += [_i(h, at + 60 * k) for k in range(max(0, n))]
+        return out
+
+    def submesh_order(self, count=None):
+        """For each submesh number a part (or light) gives, the submesh stored under it.
+
+        Parts number the submeshes as if the piston segments' came right after the pistons' own
+        (the LAVs: pistons 1-6, their 12 segments 7-18, the swing arms from 19), while the file keeps
+        the segments' after the other parts' (the LAVs': 41-52, the swing arms 7-12; the segment
+        records give those stored numbers). Vehicles whose pistons are their last parts (the C-Tran)
+        number them the same either way. Checked on every vehicle with pistons: each part's mesh
+        then fits it (the LAVs' and the tank's wheels, windscreen, turret, hatches)."""
+        if count is None:
+            count = _i(self.c, self.mesh_at + 0x14)
+        segs = [s for s in self.segment_submeshes() if 0 <= s < count]
+        if not segs:
+            return list(range(count))
+        pistons = [p.submesh for p in self.parts if _i(self.c, p.at + 0x80) > 0 and p.submesh >= 0]
+        last = max(pistons) if pistons else 0
+        taken = set(segs)
+        others = [s for s in range(count) if s not in taken]
+        return others[:last + 1] + segs + others[last + 1:]
+
     def _tags(self, at):
         if at in (0, -1) or at + 4 > len(self.c):
             return []

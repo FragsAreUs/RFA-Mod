@@ -56,7 +56,14 @@ The **RFA Vehicle** panel (same sidebar tab) builds new vehicles.
    working part, named as the game names it (`body`, `wheel_fl1`, `steering_joint_fr1`, `door_l`,
    `turret`, `barrel_main`, ...), parented as the parts hang from each other; the lights' meshes;
    the collision (wire hulls, in the "collision" collection); the points (driver and passenger
-   seats, engine, gas tank, turrets, cameras: empties in the "points" collection).
+   seats, engine, gas tank, turrets, cameras: empties in the "points" collection). It comes in laid
+   out as the game draws it: the suspension pistons between their two points on the wheel and the
+   chassis, the collision stand-ins (`veh_proxy`, `wheelhulls`, ...) and the tank's single tread link
+   hidden, and what the game hangs on it from its tables in a "turrets and props" collection: each
+   turret's own models (the LAV's gun head, the combug's swivel and head) on the point the vehicle
+   names for it, the gun on the turret's head, and props such as the ATV's tassel. Those move with
+   the part they sit on (the LAV's gun turns with its turret) and stay out of the vehicle you export
+   (the game puts them on from its tables).
 2. Model the vehicle: replace each part's mesh with your own (edit it, or parent your own meshes
    under the part's object: everything under a part, down to the next part, is that part), move
    the parts where your model needs them (a wheel where your wheel is), move the seats and points.

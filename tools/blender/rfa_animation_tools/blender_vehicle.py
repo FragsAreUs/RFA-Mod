@@ -248,15 +248,24 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
         return f
 
     for p in model.parts:
-        f = frame_of(p.index)
-        if 0 <= p.submesh < len(subs):
-            obj = _mesh_object(context, coll, p.name, subs[p.submesh], materials, f)
-            used.add(p.submesh)
+        frame_of(p.index)
+    try:
+        stretch = _place_pistons(model, frames, subs)
+    except Exception as ex:  # (left where stored)
+        print(f"RFA Animation Tools: {kind}'s pistons: {ex}")
+        stretch = {}
+    order = model.submesh_order(len(subs))  # the parts' submesh numbers -> the submeshes stored
+
+    for p in model.parts:
+        f = frames[p.index]
+        if 0 <= p.submesh < len(order):
+            obj = _mesh_object(context, coll, p.name, subs[order[p.submesh]], materials, f)
+            used.add(order[p.submesh])
         else:
             obj = _empty(coll, p.name, f)
         obj["rfa_part"] = p.index
         obj["rfa_part_shape"] = p.shape if 0 < p.shape < len(model.shapes) else 0
-        if p.flags & 0x800:
+        if p.flags & 0x800 or not seen(p):
             _hide(obj)
         part_obj[p.index] = obj
     for p in model.parts:
@@ -277,6 +286,7 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
         f = owner_frame @ game_matrix(rot, pos)
         for side, off in (("off", 0x34), ("on", 0x40)):
             s = rv._i(h, rec + off)
+            s = order[s] if 0 <= s < len(order) else s
             if 0 <= s < len(subs) and s not in used:
                 obj = _mesh_object(context, coll, f"light {k} {side}", subs[s], materials, f)
                 obj["rfa_light"] = rec
@@ -292,7 +302,10 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
             s = rv._i(h, rec)
             if not (0 <= s < len(subs)) or s in used:
                 continue
-            f = frames[p.index] @ game_matrix(rv.struct.unpack_from("<9f", h, rec + 0xC), rv.struct.unpack_from("<3f", h, rec + 0x30))
+            pos = rv.struct.unpack_from("<3f", h, rec + 0x30)
+            k_stretch = stretch.get(p.index, 1.0)
+            pos = (pos[0], pos[1], pos[2] * k_stretch)  # along the piston (its z), as it reaches its target
+            f = frames[p.index] @ game_matrix(rv.struct.unpack_from("<9f", h, rec + 0xC), pos)
             obj = _mesh_object(context, coll, f"piston {p.name} {k}", subs[s], materials, f)
             obj["rfa_submesh"] = s
             obj["rfa_frame"] = [x for row in (frames[p.index].inverted() @ f) for x in row]
@@ -336,8 +349,243 @@ def make_kit(context, game_folder, container_name, new_name, textures=True):
     for p in model.parts:
         tag_objects(p.tags, part_obj[p.index], frames[p.index], p.name)
 
+    # What the game hangs on it: turrets' parts and guns, props.
+    try:
+        attach(context, game_folder, kind, model, root, part_obj, frames, coll, tex)
+    except Exception as ex:  # the kit is whole without them
+        print(f"RFA Animation Tools: {kind}'s turrets and props: {ex}")
+
     context.view_layer.objects.active = root
     return root, (tex.missing if tex else set())
+
+
+UNSEEN = ("proxy", "hull", "collision", "treadsegment")
+
+
+def seen(p):
+    """Whether the game shows the part where it is stored: not the collision stand-ins (veh_proxy,
+    wheel_proxy, wheelhulls, chassiscollision) nor the tank's one tread link (repeated along the track)."""
+    return not any(w in p.name.lower() for w in UNSEEN)
+
+
+def _place_pistons(model, frames, subs):
+    """Each suspension piston where the game puts it: from the "<piston>_base" point (on the wheel's hub
+    or steering joint, or the chassis) towards "<piston>_target" (on the chassis, or the swing arm), its
+    segments slid along to reach. Its stored place is the game's to work out (the LAVs' stand at the
+    vehicle's middle). Changes frames; returns how far each piston's segments are slid (part -> factor)."""
+    points = {}
+    for t in model.chassis_tags:
+        points[t.hash] = game_matrix(t.rotation, t.position)
+    for p in model.parts:
+        for t in p.tags:
+            points[t.hash] = frames[p.index] @ game_matrix(t.rotation, t.position)
+    h = model.c
+    stretch = {}
+    for p in model.parts:
+        n = rv._i(h, p.at + 0x80)
+        if n <= 0:
+            continue
+        base, target = points.get(rf.name_hash(p.name + "_base")), points.get(rf.name_hash(p.name + "_target"))
+        if base is None or target is None:
+            continue
+        a, b = base.to_translation(), target.to_translation()
+        y = b - a
+        d = y.length
+        if d < 1e-4:
+            continue
+        y.normalize()
+        x = frames[p.index].to_3x3().col[0]
+        x = x - y * x.dot(y)
+        if x.length < 1e-4:
+            x = y.orthogonal()
+        x.normalize()
+        z = x.cross(y)
+        m = Matrix((x, y, z)).transposed().to_4x4()
+        m.translation = a
+        frames[p.index] = m
+        # How long it is with its segments out (game z: Blender's y here), to fit them to the distance.
+        at = rv._i(h, p.at + 0x84)
+        reach = 0.0
+        for k in range(n):
+            rec = at + 60 * k
+            s = rv._i(h, rec)
+            z0 = rv.struct.unpack_from("<f", h, rec + 0x38)[0]
+            length = max((q[2] for q in subs[s].positions), default=0.0) if 0 <= s < len(subs) else 0.0
+            reach = max(reach, z0 + length)
+        if reach > 1e-4:
+            stretch[p.index] = d / reach
+    return stretch
+
+
+# ---------------------------------------------------------------- what the game hangs on a vehicle
+
+ITEMS = r"build\pc\cache\items.vpp_pc"
+
+
+class _Tables:
+    """The game's tables (its own copy, table.vpp_pc), read as text once each."""
+
+    def __init__(self, game_folder):
+        self.pf = bio.GameFiles.archive(game_folder, TABLE_ARCHIVES[0])
+        self.text = {}
+
+    def entry(self, table, tag, name):
+        if table not in self.text:
+            self.text[table] = self.pf.read(table).decode("latin-1") if self.pf is not None and self.pf.has(table) else ""
+        t = self.text[table]
+        m = re.search(r"<" + tag + r">\s*<Name>\s*" + re.escape(name) + r"\s*</Name>", t, re.IGNORECASE)
+        if not m:
+            return None
+        return t[m.start():t.find("</" + tag + ">", m.end())]
+
+    def entries(self, table, tag):
+        if table not in self.text:
+            self.entry(table, tag, "\0")
+        return re.findall(r"<" + tag + r">.*?</" + tag + r">", self.text[table], re.DOTALL)
+
+
+def _field(text, name):
+    m = re.search(r"<" + name + r">\s*([^<]*?)\s*</" + name + r">", text or "")
+    return m.group(1) if m and m.group(1) else None
+
+
+def _item_mesh(tables, item):
+    """An items_3d.xtbl entry's model file (x.smeshx -> x.csmesh_pc, x.cmeshx -> x.ccmesh_pc), or None."""
+    e = tables.entry("items_3d.xtbl", "Item", item)
+    if not e:
+        return None
+    for f in re.findall(r"<Filename>\s*([^<]*?)\s*</Filename>", e):
+        low = f.lower()
+        if low.endswith(".smeshx"):
+            return f[:-7] + ".csmesh_pc"
+        if low.endswith(".cmeshx"):
+            return f[:-7] + ".ccmesh_pc"
+    return None
+
+
+def _mesh_tags(header):
+    """A static mesh's tags (0x24: count, then 56 bytes each: ?, name hash, rotation rows, position)."""
+    out = []
+    try:
+        at = rv._i(header, 0x24)
+        n = rv._i(header, at)
+        for k in range(max(0, min(n, 64))):
+            t = at + 4 + 56 * k
+            out.append((rv.struct.unpack_from("<I", header, t + 4)[0], rv.struct.unpack_from("<9f", header, t + 8),
+                        rv.struct.unpack_from("<3f", header, t + 44)))
+    except (rv.struct.error, IndexError):
+        pass
+    return out
+
+
+def _item_object(context, game_folder, tables, item, coll, frame, owner, label, cache):
+    """An item's model as a mesh at frame (under owner), or None; and the frame of its first tag."""
+    mesh_name = _item_mesh(tables, item)
+    if not mesh_name:
+        return None, frame
+    pf = bio.GameFiles.archive(game_folder, ITEMS)
+    if pf is None:
+        return None, frame
+    if "names" not in cache:
+        cache["names"] = {n.lower(): n for n in pf.names()}
+    container_name = cache["names"].get(item.lower() + ".str2_pc")
+    container = pf.container(container_name) if container_name else None
+    inner = None
+    if container is not None:
+        inner = next((n for n in container.names() if n.lower() == mesh_name.lower()), None)
+    if inner is None:
+        return None, frame
+    stem, ext = inner.rsplit(".", 1)
+    data_name = f"{stem}.g{ext[1:]}"  # x.csmesh_pc -> x.gsmesh_pc, x.ccmesh_pc -> x.gcmesh_pc
+    header = container.read(inner)
+    if not container.has(data_name):
+        return None, frame
+    tags = _mesh_tags(header) if inner.lower().endswith(".csmesh_pc") else []
+    nxt = frame @ game_matrix(tags[0][1], tags[0][2]) if tags else frame
+    mesh = rf.CharacterMesh.read(header, container.read(data_name))
+    if len(mesh.triangles) < 4 or "null" in inner.lower():
+        return None, nxt  # an empty stand-in (super_null_mesh, a turret's null top): only its point counts
+    tex = bio.Textures(game_folder, container)
+    obj = bio.make_mesh(context, mesh, label, None, tex)
+    for c in list(obj.users_collection):
+        c.objects.unlink(obj)
+    coll.objects.link(obj)
+    obj.matrix_world = frame
+    _parent(obj, owner)
+    obj["rfa_attachment"] = item
+    return obj, nxt
+
+
+def _first_tag(model, p, frames):
+    return frames[p.index] @ game_matrix(p.tags[0].rotation, p.tags[0].position) if p.tags else frames[p.index]
+
+
+def attach(context, game_folder, kind, model, root, part_obj, frames, coll, tex=None):
+    """The turrets and props the vehicles table hangs on this model (the first vehicle using it), as the
+    game builds them: a mount's turret (turrets.xtbl) at the vehicle's point it names (PropPoint, a
+    tag), its base, middle and top each either one of the vehicle's own parts (Component) or an item's
+    model (items_3d.xtbl) on the tag of the one below, and its gun (weapons.xtbl Item_3d) on the top's
+    tag; a prop's item at the vehicle's point. Each is a mesh under the kit (rfa_attachment: the item),
+    moving with the part it sits on, and left out of the vehicle written back."""
+    tables = _Tables(game_folder)
+    entry = None
+    for e in tables.entries("vehicles.xtbl", "Vehicle"):
+        mesh = _field(re.search(r"<Mesh_Name>(.*?)</Mesh_Name>", e, re.DOTALL).group(1), "Filename") \
+            if "<Mesh_Name>" in e else None
+        if mesh and os.path.splitext(mesh)[0].lower() == kind.lower():
+            entry = e
+            break
+    if entry is None:
+        return
+    points = {}
+    for t in model.chassis_tags:
+        points[t.hash] = (game_matrix(t.rotation, t.position), root)
+    for p in model.parts:
+        for t in p.tags:
+            points[t.hash] = (frames[p.index] @ game_matrix(t.rotation, t.position), part_obj[p.index])
+    by_name = {p.name.lower(): p for p in model.parts}
+    att = bpy.data.collections.new(f"{coll.name} turrets and props")
+    coll.children.link(att)
+    cache = {}
+    made = 0
+    for mount in re.findall(r"<Mount>(.*?)</Mount>", entry, re.DOTALL):
+        turret = _field(mount, "AttachedTurret")
+        prop = (_field(mount, "PropPoint") or "").lower()
+        frame, owner = points.get(rf.name_hash(prop), (Matrix(), root)) if prop and prop != "none" else (Matrix(), root)
+        te = tables.entry("turrets.xtbl", "Turret", turret) if turret else None
+        if not te:
+            continue
+        for field in ("TurretBase", "TurretMiddle", "TurretTop"):
+            m = re.search(r"<" + field + r">(.*?)</" + field + r">", te, re.DOTALL)
+            if not m:
+                continue
+            component, item = _field(m.group(1), "Component"), _field(m.group(1), "Item")
+            if component and component.lower() in by_name:
+                p = by_name[component.lower()]
+                frame, owner = _first_tag(model, p, frames), part_obj[p.index]
+            elif item:
+                obj, nxt = _item_object(context, game_folder, tables, item, att, frame, owner, f"{field[6:].lower()} {item}", cache)
+                if obj is not None:
+                    owner = obj
+                    made += 1
+                frame = nxt
+        weapon = _field(te, "Weapon")
+        we = tables.entry("weapons.xtbl", "Weapon", weapon) if weapon else None
+        gun = _field(we, "Item_3d") or (_field(we, "Inventory_Item") if we else None)
+        if gun and gun.lower() != "generic_inventory_item":
+            obj, _ = _item_object(context, game_folder, tables, gun, att, frame, owner, f"gun {gun}", cache)
+            made += obj is not None
+    for prop in re.findall(r"<Item>(.*?)</Item>", entry, re.DOTALL):
+        item, where = _field(prop, "Name"), (_field(prop, "Vehicle_Prop") or "").lower()
+        if not item or not where:
+            continue
+        frame, owner = points.get(rf.name_hash(where), (None, None))
+        if frame is None:
+            continue
+        obj, _ = _item_object(context, game_folder, tables, item, att, frame, owner, f"prop {item}", cache)
+        made += obj is not None
+    if not made:
+        bpy.data.collections.remove(att)
 
 
 # ---------------------------------------------------------------- writing
@@ -726,13 +974,14 @@ def _build(context, root, game_folder, report):
             continue
         world[p.index] = unscaled(root_inv @ o.matrix_world)
     for p in model.parts:
-        if p.index not in world:
+        if p.index not in world or p.vehicle_space:  # (a piston's place is the game's to work out: kept)
             continue
-        parent = world.get(p.parent, Matrix()) if p.parent >= 0 and not p.vehicle_space else Matrix()
+        parent = world.get(p.parent, Matrix()) if p.parent >= 0 else Matrix()
         p.rotation, p.position = placement(parent.inverted() @ world[p.index])
 
     # The meshes.
     new_subs = list(subs)
+    order = model.submesh_order(len(subs))  # the parts' submesh numbers -> the submeshes stored
     body = by_part.get(-1)
     if body is not None and _owned(body):
         new_subs[0] = _submesh(context, _owned(body), root.matrix_world, materials)
@@ -744,8 +993,8 @@ def _build(context, root, game_folder, report):
         if not geometry:
             continue
         sm = _submesh(context, geometry, root.matrix_world @ world[p.index], materials)
-        if 0 <= p.submesh < len(new_subs):
-            new_subs[p.submesh] = sm
+        if 0 <= p.submesh < len(order):
+            new_subs[order[p.submesh]] = sm
         else:  # a part the kind didn't draw: its own new submesh
             p.submesh = len(new_subs)
             new_subs.append(sm)
