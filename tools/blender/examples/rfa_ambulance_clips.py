@@ -199,7 +199,7 @@ def two_bone(b1, b2, b3, target_world, keep_end=True):
     M1, M2, M3 = b1.matrix.copy(), b2.matrix.copy(), b3.matrix.copy()
     l1, l2 = (K - H).length, (A - K).length
     d = T - H
-    dist = max(abs(l1 - l2) + 1e-3, min((l1 + l2) * (0.995 if keep_end else 0.96), d.length))
+    dist = max(abs(l1 - l2) + 1e-3, min((l1 + l2) * (0.985 if keep_end else 0.95), d.length))
     dn = d.normalized()
     bend = (K - H) - dn * (K - H).dot(dn)
     if bend.length < 1e-5:
@@ -229,6 +229,47 @@ CHAINS = {
     "LH": ("l-upperarm", "l-forearm", "L-Hand"),
     "RH": ("r-upperarm", "r-forearm", "R-Hand"),
 }
+
+
+# ---- the feet rolling
+TOES = {"L": "L-Toe", "R": "R-Toe"}
+
+
+def foot_roll(plants, f):
+    """(pitch: + toes down, toe bend, heel raise in metres) for a foot at frame f from its plants."""
+    if f < plants[0][0]:
+        return 0.0, 0.0, 0.0
+    last = len(plants) - 1
+    for i, (a, b, where) in enumerate(plants):
+        if a <= f <= b:
+            since = (f - a) if i > 0 else 99
+            until = (b - f) if i < last else 99
+            strike = -0.20 * (1 - smooth(since / 9.0))
+            push = 0.42 * (1 - smooth(until / 14.0))
+            return strike + push, push * 1.25, 0.10 * math.sin(push)
+        if i < last and b < f < plants[i + 1][0]:
+            t = (f - b) / (plants[i + 1][0] - b)
+            pitch = 0.42 * (1 - smooth(t / 0.4)) - 0.20 * smooth((t - 0.35) / 0.55)
+            return pitch, 0.5 * (1 - smooth(t / 0.3)), 0.0
+    return 0.0, 0.0, 0.0
+
+
+def ground_slope(p):
+    """The ground's rise along +Y under a point (the LAV's ramp; flat elsewhere)."""
+    if "surf" in globals():
+        return (surf(p.y + 0.05) - surf(p.y - 0.05)) / 0.1
+    return 0.0
+
+
+def roll_foot(side, pitch, toe):
+    fb = arm.pose.bones[CHAINS[side][2]]
+    fy = (arm.matrix_world.to_3x3() @ Vector((0, 1, 0))).y
+    up = math.atan(ground_slope(arm.matrix_world @ fb.head) * fy)  # toes up the slope
+    fb.matrix = about(fb.head, Quaternion((1, 0, 0), up - pitch)) @ fb.matrix
+    C.view_layer.update()
+    tb = arm.pose.bones[TOES[side]]
+    tb.matrix = about(tb.head, Quaternion((1, 0, 0), toe)) @ tb.matrix
+    C.view_layer.update()
 
 
 # ---- making a clip
@@ -392,6 +433,7 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
         scene.frame_set(f)
         base = {n: arm.pose.bones[n].rotation_quaternion.copy() for c in CHAINS.values() for n in c}
         rel = {t: arm.pose.bones[a].matrix.inverted() @ arm.pose.bones[t].matrix for t, a in TWIST.items()}
+        base.update({t: arm.pose.bones[t].rotation_quaternion.copy() for t in TOES.values()})
         sway(f, lean_keys, look_keys)
         for n in BODY_EXTRA:
             out.setdefault(n, []).append((f, arm.pose.bones[n].rotation_quaternion.copy(), None, 1.0))
@@ -400,7 +442,9 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
             w = track(weights, f)
             target = steps(plants, f)
             if w > 1e-3 and target is not None:
-                two_bone(*(arm.pose.bones[n] for n in CHAINS[side]), target)
+                pitch, toe, heel = foot_roll(plants, f)
+                two_bone(*(arm.pose.bones[n] for n in CHAINS[side]), target + Vector((0, 0, heel)))
+                roll_foot(side, pitch, toe)
                 done[side] = w
         for side, (targets, weights) in hands.items():
             w = track(weights, f)
@@ -414,6 +458,12 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
                     ik.negate()
                 q = base[n].slerp(ik, w)
                 out.setdefault(n, []).append((f, q, arm.pose.bones[n].location.copy() if n.endswith("Foot") else None, w))
+            if side in TOES:
+                n = TOES[side]
+                tq = arm.pose.bones[n].rotation_quaternion.copy()
+                if base[n].dot(tq) < 0:
+                    tq.negate()
+                out.setdefault(n, []).append((f, base[n].slerp(tq, w), None, w))
         for n, keys in out.items():  # the arms as they'll be keyed this frame, then the twist bones after them
             if keys and keys[-1][0] == f and n in ("l-upperarm", "r-upperarm", "l-forearm", "r-forearm"):
                 arm.pose.bones[n].rotation_quaternion = keys[-1][1]
