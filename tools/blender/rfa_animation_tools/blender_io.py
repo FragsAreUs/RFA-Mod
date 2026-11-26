@@ -713,6 +713,9 @@ def build_animation(context, arm_obj, settings, report):
         chosen = [i for i, n in enumerate(names) if n in animated]
         if not chosen:
             chosen = list(range(len(names)))
+    only = getattr(settings, "only_bones", None)
+    if only is not None:
+        chosen = [i for i in chosen if i in only]
     pbs = [arm_obj.pose.bones.get(names[i]) for i in chosen]
 
     rot = {i: [] for i in chosen}
@@ -776,6 +779,11 @@ def build_animation(context, arm_obj, settings, report):
     if root.positions:  # the movement over the clip: where the root track ends, from where it starts
         a, b = root.positions[0][1], root.positions[-1][1]
         struct.pack_into("<3f", header, 0x1C, b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    if root.rotations:  # the turn over the clip: the root track's last turn, from its first
+        qa = Quaternion((root.rotations[0][1][3], *root.rotations[0][1][:3]))
+        qb = Quaternion((root.rotations[-1][1][3], *root.rotations[-1][1][:3]))
+        t = qa.inverted() @ qb
+        struct.pack_into("<4f", header, 0x0C, t.x, t.y, t.z, t.w)
     anim = rf.Animation(frames, len(names), tracks, root)
     return anim, bytes(header)
 

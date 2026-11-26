@@ -566,6 +566,14 @@ class _Settings:
     every_frame = False
     rotation_tolerance = 0.1
     position_tolerance = 0.0005
+    only_bones = None
+
+
+# The player's bones (player_v2, 137) the game's own vehicle clips animate (pc_enter_lav and the others): the
+# body, fingers, item and camera bones, satchels, pads and twist bones. The face, cutscene items, belt and the
+# muscle helpers (gluteus, biceps, deltoids, elbows, knees, chest, lats) the game drives itself: keyed by a clip
+# they're held at rest and the skin on them stretches.
+PLAYER_CLIP_BONES = frozenset(list(range(0, 50)) + list(range(96, 108)) + list(range(109, 117)))
 
 
 def _fmt(v):
@@ -708,7 +716,10 @@ def export(context, game_folder, mod_folder, root, arm, report):
     try:
         for clip, action in actions.items():
             show_clip(context, root, arm, clip)
-            anim, header = bio.build_animation(context, arm, _Settings(), report)
+            settings = _Settings()
+            if len(bio.bone_names(arm)) == 137:
+                settings.only_bones = PLAYER_CLIP_BONES
+            anim, header = bio.build_animation(context, arm, settings, report)
             data = rf.write_animation(anim, header)
             rf.Animation.read(data)
             path = bio.animation_path(mod_folder, action["rfa_name"])

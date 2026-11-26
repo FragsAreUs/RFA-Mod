@@ -108,8 +108,8 @@ def down_in_axes(dz, bone="Pelvis"):
 
 
 # The Drive clip back as the game had it (an earlier run lowered its pelvis), to take the seated pose from.
-LOWER = ("Pelvis", "Spine")  # the two bones hung straight off the root: lowering both lowers the whole body
-for bone in LOWER:
+LOWER = ("root",)  # the root bone: the game's own player clips move it (never Pelvis); everything hangs off it
+for bone in ("Pelvis", "Spine", "root"):  # older runs lowered Pelvis and Spine: undone first
     key = "rfa_lowered_" + bone
     if bone == "Pelvis" and acts["drive"].get("rfa_lowered_v") is not None:
         acts["drive"][key] = list(acts["drive"]["rfa_lowered_v"])
@@ -132,7 +132,7 @@ STAND_OFF, SEAT_OFF = flat(stand_heads["Pelvis"]), flat(seat_heads["Pelvis"])
 
 # The seat: low enough that his head clears the cab's roof (the body's underside above the driver's point),
 # not below the cushion.
-body = next(o for o in kit if o.name == "body")
+body = next(o for o in kit if o.name.split(".")[0] == "body" and o.type == "MESH")
 verts = [body.matrix_world @ v.co for v in body.data.vertices]
 near = [v for v in verts if abs(v.x - seat.x) < 0.22 and abs(v.y - (seat.y + SEAT_OFF.y * 0)) < 0.3]
 ROOF = min((v.z for v in near if v.z > seat.z + 0.45), default=seat.z + 1.2)
@@ -255,6 +255,36 @@ CHAINS = {
 
 
 # ---- making a clip
+_bio = sys.modules["rfa_animation_tools.blender_io"]
+_NAMES = _bio.bone_names(arm)
+GAME_BONES = {_NAMES[i] for i in list(range(0, 50)) + list(range(96, 108)) + list(range(109, 117)) if i < len(_NAMES)}
+# Twist bones hung off the collarbone, not the arm: they must turn with the arm or the skin on them stays behind.
+TWIST = {"L-upperarm-twst1": "l-upperarm", "r-upperarm-twst1": "r-upperarm"}
+
+
+def follow_twists(rel):
+    """Each twist bone back where it was against its arm (rel: the pose before the arm was moved)."""
+    for t, a in TWIST.items():
+        m = arm.pose.bones[a].matrix @ rel[t]
+        m.translation = arm.pose.bones[t].matrix.translation
+        arm.pose.bones[t].matrix = m
+        C.view_layer.update()
+
+
+def keep_game_bones(action):
+    """Only the bones the game's own clips animate keep keys (the others back to rest)."""
+    for fc in list(action.fcurves):
+        if fc.data_path.startswith('pose.bones["'):
+            n = fc.data_path[len('pose.bones["'):].split('"]', 1)[0]
+            if n not in GAME_BONES:
+                action.fcurves.remove(fc)
+    for pb in arm.pose.bones:
+        if pb.name not in GAME_BONES:
+            pb.location = (0, 0, 0)
+            pb.rotation_quaternion = (1, 0, 0, 0)
+            pb.scale = (1, 1, 1)
+
+
 SPINE = (("Spine", 0.45), ("Spine1", 0.35), ("Spine2", 0.2))
 LOOK = (("Neck", 0.4), ("Head", 0.6))
 BODY_EXTRA = [n for n, _ in SPINE + LOOK]
@@ -319,8 +349,9 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
     arm.parent = start_wp
     arm.matrix_parent_inverse = Matrix()
     new = bpy.data.actions.new(old.name + " new")
-    for k in ("rfa_name", "rfa_vehicle", "rfa_clip", "rfa_from_waypoint", "rfa_to_waypoint"):
-        new[k] = old[k]
+    for k in ("rfa_name", "rfa_vehicle", "rfa_clip", "rfa_from_waypoint", "rfa_to_waypoint", "rfa_header"):
+        if k in old:
+            new[k] = old[k]
     new["rfa_source"] = "made from scratch: walking in through the rear hatch"
     new["rfa_triggers"] = json.dumps(triggers)
     arm.animation_data.action = new
@@ -361,14 +392,25 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
     for f in range(0, length + 1):
         scene.frame_set(f)
         base = {n: arm.pose.bones[n].rotation_quaternion.copy() for c in CHAINS.values() for n in c}
+        rel = {t: arm.pose.bones[a].matrix.inverted() @ arm.pose.bones[t].matrix for t, a in TWIST.items()}
         sway(f, lean_keys, look_keys)
         if swing_keys:
             a = track(swing_keys, f)
-            for n, sgn in (("l-upperarm", 1), ("r-upperarm", -1)):
+            # hips turn with the leg going forward, shoulders against them; the arms swing, the elbows bend more
+            # as an arm comes forward
+            for n, turn in (("Pelvis", 0.45 * a), ("Spine2", -0.35 * a)):
+                pb = arm.pose.bones[n]
+                pb.matrix = about(pb.head, Quaternion((0, 0, 1), turn)) @ pb.matrix
+                C.view_layer.update()
+            for n, fore, sgn in (("l-upperarm", "l-forearm", 1), ("r-upperarm", "r-forearm", -1)):
                 pb = arm.pose.bones[n]
                 pb.matrix = about(pb.head, Quaternion((1, 0, 0), a * sgn)) @ pb.matrix
                 C.view_layer.update()
-        for n in BODY_EXTRA + (["l-upperarm", "r-upperarm"] if swing_keys else []):
+                fb = arm.pose.bones[fore]
+                bend = (0.12 + 1.1 * max(0.0, a * sgn)) * min(1.0, abs(a) / 0.05 + 0.3)
+                fb.matrix = about(fb.head, Quaternion((1, 0, 0), bend)) @ fb.matrix
+                C.view_layer.update()
+        for n in BODY_EXTRA + (["Pelvis", "l-upperarm", "r-upperarm", "l-forearm", "r-forearm"] if swing_keys else []):
             out.setdefault(n, []).append((f, arm.pose.bones[n].rotation_quaternion.copy(), None, 1.0))
         done = {}
         for side, (plants, weights) in feet.items():
@@ -391,12 +433,20 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
                     ik.negate()
                 q = base[n].slerp(ik, w)
                 out.setdefault(n, []).append((f, q, arm.pose.bones[n].location.copy() if n.endswith("Foot") else None, w))
+        for n, keys in out.items():  # the arms as they'll be keyed this frame, then the twist bones after them
+            if keys and keys[-1][0] == f and n in ("l-upperarm", "r-upperarm", "l-forearm", "r-forearm"):
+                arm.pose.bones[n].rotation_quaternion = keys[-1][1]
+        C.view_layer.update()
+        follow_twists(rel)
+        for t in TWIST:
+            out.setdefault(t, []).append((f, arm.pose.bones[t].rotation_quaternion.copy(), None, 1.0))
     for n, keys in out.items():
         pb = arm.pose.bones[n]
         for f, q, loc, w in keys:
             pb.rotation_quaternion = q
             pb.keyframe_insert("rotation_quaternion", frame=f)
     fix_signs(new)
+    keep_game_bones(new)
     arm.animation_data.action = None
     name = old.name
     bpy.data.actions.remove(old)
@@ -470,6 +520,10 @@ def ground_at(f):
     if f <= 420:
         loc, rot, _ = m.decompose()
         loc.z = surf(loc.y, f >= OPEN_END - 10) - track(duck, f)
+        # walking: up over each planted foot (when the arms swing widest), and the weight over it
+        a = track(SWING, f) if SWING else 0.0
+        loc.z += 0.028 * min(1.0, abs(a) / 0.22) - 0.014 * (1.0 if abs(a) > 0.005 else 0.0)
+        loc += rot @ Vector((-0.11 * a, 0.0, 0.0))
         return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
     t = smooth((f - 420) / (SIT1 - 420))
     stand = F @ Matrix.Translation((0, 0, -track(duck, f)))
@@ -484,6 +538,7 @@ def path(f):
     return ground_at(f)
 
 
+SWING = None
 for side in "LR":
     plants[side][0][2] = foot_on(A, side)
 walk(path, 0, 84, 4, "R", ramp_open=False)                   # up to the hatch
@@ -491,6 +546,7 @@ walk(path, 124, 170, 2, "L", ramp_open=False, arms=0.08)     # back off as it sw
 walk(path, 188, 420, 10, "R")                                # up the ramp and along the bay
 for side in "LR":
     plants[side][-1][1] = LEN
+SWING = sorted(swing + [(SIT0, 0.0), (LEN, 0.0)], key=lambda k: k[0])
 feet = {s: ([tuple(p) for p in plants[s]], [(0, 1.0), (SIT0 + 20, 1.0), (SIT1 - 6, 0.0)]) for s in "LR"}
 
 # the hands: the right pulls the handle; the left steadies on the roof edge ducking in, then on the seat back
@@ -512,10 +568,10 @@ enter = build(
                 (300, Vector((0, 0.5, 0.2))), (400, seat), (520, Vector((0, -3.0, 0.0))), (LEN, Vector((0, 3.0, 0.3)))],
                [(0, 0.3), (60, 0.7), (130, 0.6), (200, 0.4), (300, 0.2), (400, 0.6), (440, 0.4), (SIT1, 0.0),
                 (520, 0.3), (560, 0.3), (LEN, 0.0)]),
-    swing_keys=sorted(swing + [(SIT0, 0.0), (LEN, 0.0)], key=lambda k: k[0]))
+    swing_keys=SWING)
 
 # ---- check: the head under the roof inside, the feet on what they stand on
-body = next(o for o in kit if o.name == "body")
+body = next(o for o in kit if o.name.split(".")[0] == "body" and o.type == "MESH")
 bv_verts = [body.matrix_world @ v.co for v in body.data.vertices]
 worst = (9.0, 0)
 bva.show_clip(C, root, arm, "enter")
