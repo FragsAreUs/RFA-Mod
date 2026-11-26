@@ -121,7 +121,7 @@ def fill(context, vehicle, root, original=True):
             it = wm.rfa_vp_items.add()
             it.key = vp.path_key(path)
             it.label = vp.label_of(path, info)
-            it.section = "GENERAL" if tags[0] in vp.OWN else vp.section_of(tags[0])
+            it.section = vp.section_of(tags[0])
             it.own = tags[0] in vp.OWN
             kind = info["type"]
             it.kind = kind if kind in ("Float", "Int", "Selection") else "String"
@@ -392,8 +392,11 @@ class RFA_OT_vp_reset(bpy.types.Operator):
 # ---------------------------------------------------------------- the panel
 
 
+SHOWN = vp.SECTIONS + (("OTHER", "The vehicle's own (never copied by templates)", ()),)
+
+
 def _section_items(self, context):
-    return [(ALL, "All sections", "")] + [(k, label, "") for k, label, _ in vp.SECTIONS]
+    return [(ALL, "All sections", "")] + [(k, label, "") for k, label, _ in SHOWN]
 
 
 class RFA_PT_vehicle_params(bpy.types.Panel):
@@ -437,7 +440,7 @@ class RFA_PT_vehicle_params(bpy.types.Panel):
         words = wm.rfa_vp_filter.lower().split()
         sec = wm.rfa_vp_section
         shown = 0
-        for key, label, _ in vp.SECTIONS:
+        for key, label, _ in SHOWN:
             if sec != ALL and sec != key:
                 continue
             items = [i for i in wm.rfa_vp_items if i.section == key and all(w in (i.label + " " + i.key).lower() for w in words)]

@@ -23,16 +23,22 @@ SECTIONS = (
     ("TRANSMISSION", "Transmission", ("Transmission",)),
     ("WHEELS", "Wheels & suspension", ("Axles",)),
     ("STEERING", "Steering", ("Steering", "Extra_Steering_Torque")),
-    ("HANDLING", "Handling & speed", ("Mass", "Center_Of_Mass_Y", "Viscosity_Friction", "Roll_Torque_Factor", "Pitch_Torque_Factor",
-                                      "Yaw_Torque_Factor", "Yaw_Unit_Inertia", "Angular_Damping", "Aerodynamics", "EnforcedMaxSpeed",
-                                      "EnforcedMaxRSpeed", "Powerslide_Friction", "Powerslide_Power")),
+    ("HANDLING", "Handling & speed", ("Mass", "Center_Of_Mass_Y", "Center_Of_Mass_Z", "Viscosity_Friction", "Roll_Torque_Factor",
+                                      "Pitch_Torque_Factor", "Yaw_Torque_Factor", "Yaw_Torque_Scalar", "Yaw_Unit_Inertia", "Angular_Damping",
+                                      "Aerodynamics", "EnforcedMaxSpeed", "EnforcedMaxRSpeed", "AIEnforcedMaxSpeed", "Powerslide_Friction",
+                                      "Powerslide_Power")),
     ("DAMAGE", "Health & damage", ("Max_Hitpoints", "Electric_Hitpoints", "Terrain_Damage_Scale", "Collision_Damage_Scale",
                                    "Explode_When_On_Fire", "humans_invulnerable")),
     ("CAMERA", "Camera", ("Cameras", "speed_effects", "Camera_Shake_Multiplier")),
     ("SOUNDS", "Sounds", ("Foley",)),
     ("EFFECTS", "Effects", ("Effects",)),
-    ("GENERAL", "General", ()),  # everything else that templates may copy
+    ("GENERAL", "General", ("Group", "Value", "Default_Team", "Special_Vehicle_Type", "Convertible", "CanBlockRoads",
+                            "Always_Allow_enter", "Player_Passenger_Only", "Neutral_Reticule", "Has_Vision_Mode")),
 )
+# Templates copy only the tags the sections name. Everything else in an entry (its rig and rider animations, seats,
+# items, lights, turrets, model, ...) is the vehicle's own: copying an ATV's rig into the ambulance crashed the game
+# at start-up (2026-11-26).
+COPIED = {t for _, _, tags in SECTIONS for t in tags}
 # The vehicle's own: never copied from a template, shown read-only under General.
 OWN = ("Name", "_Editor", "Mesh_Name", "Vehicle_Interaction", "Lights", "Turrets", "spawn_offset_info", "Component_Info",
        "Memory_Slot_Type", "VehicleClass", "Preload", "Display_Name")
@@ -43,7 +49,7 @@ def section_of(top_tag):
     for key, _, tags in SECTIONS:
         if top_tag in tags:
             return key
-    return "GENERAL"
+    return "OTHER"
 
 
 def entry_span(text, name):
@@ -178,7 +184,7 @@ def sections_xml(root, sections):
     """{section: [element XML, ...]} of an entry's chosen sections (the vehicle's own parts left out)."""
     out = {}
     for child in root:
-        if child.tag in OWN:
+        if child.tag in OWN or child.tag not in COPIED:
             continue
         s = section_of(child.tag)
         if s in sections:
@@ -194,7 +200,7 @@ def apply_sections(root, template, sections):
     for s in sections:
         for xml in template.get(s, []):
             new = ET.fromstring(xml)
-            if new.tag in OWN:
+            if new.tag in OWN or new.tag not in COPIED:  # (older templates may hold more)
                 continue
             old = root.find(new.tag)
             if new.tag == "Axles" and old is not None:
