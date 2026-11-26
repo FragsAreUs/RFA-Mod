@@ -87,7 +87,7 @@ def down_in_axes(dz, bone="Pelvis"):
 
 
 # The Drive clip back as the game had it (an earlier run lowered its pelvis), to take the seated pose from.
-LOWER = ("root",)  # the root bone: the game's own player clips move it (never Pelvis); everything hangs off it
+LOWER = ("Pelvis", "Spine")  # the two bones hung off the root (the game ignores the root bone's own height when seated)
 for bone in ("Pelvis", "Spine", "root"):  # older runs lowered Pelvis and Spine: undone first
     key = "rfa_lowered_" + bone
     if bone == "Pelvis" and acts["drive"].get("rfa_lowered_v") is not None:
@@ -317,7 +317,26 @@ def fix_signs(action):
             fc.update()
 
 
-def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None):
+def place_camera(eye, target):
+    """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
+    inv = arm.matrix_world.inverted()
+    E, T = inv @ eye, inv @ target
+    lb, cb = arm.pose.bones["camera-lookat"], arm.pose.bones["camera"]
+    now = cb.head - lb.head
+    turn = rot_between(now, E - T) if now.length > 1e-4 else Quaternion()
+    m = lb.matrix.copy()
+    lb.matrix = Matrix.Translation(T) @ (turn.to_matrix().to_4x4() @ m.to_3x3().to_4x4())
+    C.view_layer.update()
+    m = cb.matrix.copy()
+    m.translation = E
+    cb.matrix = m
+    C.view_layer.update()
+    for pb in (lb, cb):
+        pb.keyframe_insert("location", frame=scene.frame_current)
+        pb.keyframe_insert("rotation_quaternion", frame=scene.frame_current)
+
+
+def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None, camera=None):
     """root_keys [(frame, world placement)], blend_keys [(frame, 0 standing .. 1 seated)], feet
     {"L"/"R": (plants, weight keys)}, hands {"LH"/"RH": (target keys, weight keys)}."""
     old = acts[clip]
@@ -330,7 +349,10 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
         if k in old:
             new[k] = old[k]
     new["rfa_source"] = "made from the LAV's standing and seated poses, with steps and hands"
-    new["rfa_triggers"] = json.dumps(triggers)
+    if camera:
+        triggers = triggers + [("camera lookat start", 2), ("camera pos start", 2),
+                               ("camera lookat end", length - 2), ("camera pos end", length - 2)]
+    new["rfa_triggers"] = json.dumps(sorted(triggers, key=lambda t: t[1]))
     arm.animation_data.action = new
     arm.rotation_mode = "QUATERNION"
     for pb in arm.pose.bones:
@@ -397,6 +419,9 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
                 arm.pose.bones[n].rotation_quaternion = keys[-1][1]
         C.view_layer.update()
         follow_twists(rel)
+        if camera:
+            eye, target = camera(f, arm.matrix_world @ arm.pose.bones["Spine2"].head)
+            place_camera(eye, target)
         for t in TWIST:
             out.setdefault(t, []).append((f, arm.pose.bones[t].rotation_quaternion.copy(), None, 1.0))
     for n, keys in out.items():
@@ -411,6 +436,14 @@ def build(clip, length, root_keys, blend_keys, feet, hands, triggers, lean_keys=
     bpy.data.actions.remove(old)
     new.name = name
     return new
+
+
+# ---- the clip's camera: outside, to the left and behind the door, a little above, on his chest
+AMB_EYE = Vector((-3.5, 0.5, G + 2.4))
+
+
+def amb_cam(f, chest):
+    return AMB_EYE, chest + Vector((0, 0.2, 0.1))
 
 
 # ---- Get In (60 frames a second)
@@ -440,7 +473,8 @@ enter = build(
     lean_keys=[(0, 0.0), (16, 0.06), (40, 0.12), (70, 0.06), (84, 0.35), (100, 0.45), (118, 0.55), (136, 0.3),
                (152, 0.0), (205, 0.0)],
     look_keys=([(0, HANDLE), (60, HANDLE), (76, step_L), (100, PILLAR), (130, PILLAR), (160, DOOR_OPEN), (190, HANDLE)],
-               [(0, 0.0), (12, 0.8), (55, 0.6), (76, 0.7), (100, 0.4), (130, 0.0), (160, 0.5), (190, 0.3), (205, 0.0)]))
+               [(0, 0.0), (12, 0.8), (55, 0.6), (76, 0.7), (100, 0.4), (130, 0.0), (160, 0.5), (190, 0.3), (205, 0.0)]),
+    camera=amb_cam)
 
 # ---- Get Out
 D = W(seat.x, seat.y, seat.z, 0)
@@ -465,7 +499,8 @@ exit_ = build(
     [("door start", 18), ("door end", 38), ("door close start", 140), ("door close end", 156)],
     lean_keys=[(0, 0.0), (36, 0.05), (55, 0.45), (72, 0.5), (90, 0.4), (110, 0.15), (125, 0.0), (170, 0.0)],
     look_keys=([(0, HANDLE), (40, DOOR_OPEN), (70, step_R), (100, foot_at(X, "R")), (130, DOOR_OPEN), (160, HANDLE)],
-               [(0, 0.5), (20, 0.8), (45, 0.5), (70, 0.7), (100, 0.5), (118, 0.0), (130, 0.5), (156, 0.3), (170, 0.0)]))
+               [(0, 0.5), (20, 0.8), (45, 0.5), (70, 0.7), (100, 0.5), (118, 0.0), (130, 0.5), (156, 0.3), (170, 0.0)]),
+    camera=amb_cam)
 
 scene.timeline_markers.clear()
 bva.show_clip(C, root, arm, "enter")

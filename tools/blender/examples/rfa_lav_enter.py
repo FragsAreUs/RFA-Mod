@@ -108,7 +108,7 @@ def down_in_axes(dz, bone="Pelvis"):
 
 
 # The Drive clip back as the game had it (an earlier run lowered its pelvis), to take the seated pose from.
-LOWER = ("root",)  # the root bone: the game's own player clips move it (never Pelvis); everything hangs off it
+LOWER = ("Pelvis", "Spine")  # the two bones hung off the root (the game ignores the root bone's own height when seated)
 for bone in ("Pelvis", "Spine", "root"):  # older runs lowered Pelvis and Spine: undone first
     key = "rfa_lowered_" + bone
     if bone == "Pelvis" and acts["drive"].get("rfa_lowered_v") is not None:
@@ -340,7 +340,26 @@ def fix_signs(action):
             fc.update()
 
 
-def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None, swing_keys=None):
+def place_camera(eye, target):
+    """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
+    inv = arm.matrix_world.inverted()
+    E, T = inv @ eye, inv @ target
+    lb, cb = arm.pose.bones["camera-lookat"], arm.pose.bones["camera"]
+    now = cb.head - lb.head
+    turn = rot_between(now, E - T) if now.length > 1e-4 else Quaternion()
+    m = lb.matrix.copy()
+    lb.matrix = Matrix.Translation(T) @ (turn.to_matrix().to_4x4() @ m.to_3x3().to_4x4())
+    C.view_layer.update()
+    m = cb.matrix.copy()
+    m.translation = E
+    cb.matrix = m
+    C.view_layer.update()
+    for pb in (lb, cb):
+        pb.keyframe_insert("location", frame=scene.frame_current)
+        pb.keyframe_insert("rotation_quaternion", frame=scene.frame_current)
+
+
+def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None, camera=None, swing_keys=None):
     """root_keys [(frame, world placement)], blend_keys [(frame, 0 standing .. 1 seated)], feet
     {"L"/"R": (plants, weight keys)}, hands {"LH"/"RH": (target keys, weight keys)}."""
     old = acts[clip]
@@ -353,7 +372,10 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
         if k in old:
             new[k] = old[k]
     new["rfa_source"] = "made from scratch: walking in through the rear hatch"
-    new["rfa_triggers"] = json.dumps(triggers)
+    if camera:
+        triggers = triggers + [("camera lookat start", 2), ("camera pos start", 2),
+                               ("camera lookat end", length - 2), ("camera pos end", length - 2)]
+    new["rfa_triggers"] = json.dumps(sorted(triggers, key=lambda t: t[1]))
     arm.animation_data.action = new
     arm.rotation_mode = "QUATERNION"
     for pb in arm.pose.bones:
@@ -438,6 +460,9 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
                 arm.pose.bones[n].rotation_quaternion = keys[-1][1]
         C.view_layer.update()
         follow_twists(rel)
+        if camera:
+            eye, target = camera(f, arm.matrix_world @ arm.pose.bones["Spine2"].head)
+            place_camera(eye, target)
         for t in TWIST:
             out.setdefault(t, []).append((f, arm.pose.bones[t].rotation_quaternion.copy(), None, 1.0))
     for n, keys in out.items():
@@ -557,6 +582,20 @@ hands = {"RH": ([(84, HANDLE + Vector((0, -0.10, 0))), (104, HANDLE), (118, HAND
          "LH": ([(236, ROOF_EDGE), (268, ROOF_EDGE + Vector((0, 0.25, 0))), (410, SEAT_BACK), (450, SEAT_BACK)],
                 [(232, 0.0), (248, 0.9), (266, 0.9), (284, 0.0), (404, 0.0), (418, 1.0), (450, 1.0), (470, 0.0)])}
 
+# the clip's camera: behind him and to his right outside; once he's up the ramp, up behind the LAV's right
+# rear corner, then round to its right side as he sits (outside the hull, which hides him inside)
+def lav_cam(f, chest):
+    loc = ground_at(min(f, 420)).to_translation()
+    chase_eye = Vector((loc.x + 1.4, loc.y - 2.9, G + 2.0))
+    chase_at = chest + Vector((0, 0.6, 0.1))
+    rear_eye, rear_at = Vector((2.9, -7.0, G + 3.2)), Vector((0.0, max(chest.y, -3.0), chest.z))
+    side_eye, side_at = Vector((3.6, -1.4, G + 3.1)), Vector((seat.x, seat.y, seat.z + 0.6))
+    a, b = smooth((f - 190) / 80), smooth((f - 400) / 130)
+    eye = chase_eye.lerp(rear_eye, a).lerp(side_eye, b)
+    at = chase_at.lerp(rear_at, a).lerp(side_at, b)
+    return eye, at
+
+
 enter = build(
     "enter", LEN, ground_at,
     [(0, 0.0), (SIT0, 0.0), (SIT1, 1.0), (LEN, 1.0)],
@@ -568,7 +607,7 @@ enter = build(
                 (300, Vector((0, 0.5, 0.2))), (400, seat), (520, Vector((0, -3.0, 0.0))), (LEN, Vector((0, 3.0, 0.3)))],
                [(0, 0.3), (60, 0.7), (130, 0.6), (200, 0.4), (300, 0.2), (400, 0.6), (440, 0.4), (SIT1, 0.0),
                 (520, 0.3), (560, 0.3), (LEN, 0.0)]),
-    swing_keys=SWING)
+    swing_keys=SWING, camera=lav_cam)
 
 # ---- check: the head under the roof inside, the feet on what they stand on
 body = next(o for o in kit if o.name.split(".")[0] == "body" and o.type == "MESH")
