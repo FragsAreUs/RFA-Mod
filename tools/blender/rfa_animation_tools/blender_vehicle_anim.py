@@ -610,8 +610,15 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
             ET.SubElement(i, "Action").text = "Transition"
             ET.SubElement(i, "Anim_Action").text = action
             ET.SubElement(i, "Anim_State").text = state
-            if door and t.find("Door_1") is None:  # the door the clip's door triggers open
-                ET.SubElement(t, "Door_1").text = door
+            if door:  # the door the clip's door triggers open (the copied entry may name another vehicle's)
+                d1 = t.find("Door_1")
+                if d1 is None:
+                    d1 = ET.SubElement(t, "Door_1")
+                if (d1.text or "").strip().lower() != door.lower():
+                    for snd in ("Door_open", "Door_close"):  # that other door's sounds
+                        for e in t.findall(snd):
+                            t.remove(e)
+                d1.text = door
     s = el.find("Anim_Set")
     if s is None:
         s = ET.SubElement(el, "Anim_Set")
@@ -779,6 +786,18 @@ def export(context, game_folder, mod_folder, root, arm, report):
         entry = _anim_file(stem, triggers.get(clip, []), clip != "drive")
         span = _anim_file_entry(files, stem + ".animx")
         files = files[:span[0]] + entry + files[span[1]:] if span else _insert_before(files, "</Anim_files>", entry)
+        # Any other entry for the same file (left by an older export) goes: the game would read the first.
+        keep_end = _anim_file_entry(files, stem + ".animx")[1]
+        while True:
+            rest = _anim_file_entry(files[keep_end:], stem + ".animx")
+            if rest is None:
+                break
+            s, e = keep_end + rest[0], keep_end + rest[1]
+            while e < len(files) and files[e] in "\r\n":
+                e += 1
+            while s > 0 and files[s - 1] in " \t":
+                s -= 1
+            files = files[:s] + files[e:]
     written.append(write_table(mod_folder, "anim_files.xtbl", files))
 
     entry = _interaction_entry(base_text, vehicle, root, the_set, steps)
