@@ -214,6 +214,61 @@ def to_wav(wem, vgmstream="", work=None):
 # ---------------------------------------------------------------- the library
 
 
+# What a bank's sounds are, by the start of its name (first match wins).
+_TYPES = (
+    (("wep_", "rfge_wep", "rfgw_wep", "rfge_mp_wep", "rfgw_mp_wep"), "Weapons"),
+    (("vehicles", "rfg_veh", "rfge_veh", "sfx_exo", "veh_"), "Vehicles"),
+    (("foley", "rfg_mov", "rfge_mov", "rfgw_mov", "rfge_mp_backpacks", "rfgw_mp_backpacks", "tentacle"), "Foley & movement"),
+    (("destruction", "rfg_destruction", "rfge_destruction", "rfg_obj", "rfge_obj_shared_dth", "rfge_obj_shared_exp",
+      "rfge_obj_shared_impact", "rfgw_obj"), "Destruction & impacts"),
+    (("amb_", "rfge_obj_shared_ambient", "rfgk_obj_shared_ambient", "sfx_streaming"), "Ambience"),
+    (("efx", "nanoforge"), "Effects"),
+    (("mus_", "rfgm_"), "Music"),
+    (("interface", "debug", "global", "rfgw_system"), "Interface"),
+    (("voices", "rfgv_", "rfgk_voc", "rfge_walla", "audiologs", "voc_"), "Voices"),
+    (("sfx_",), "Mission effects"),
+)
+
+
+# audio_events.xtbl's categories (the start of the sounds' names) in words.
+_CATEGORY_WORDS = {
+    "AMB": "Ambience", "ANI": "Animations", "DES": "Destruction", "EFX": "Effects", "FOL": "Foley", "INT": "Interface",
+    "ITM": "Items", "MOV": "Movement", "MP_": "Multiplayer", "MUS": "Music", "NAN": "Nano forge", "OBJ": "Objects",
+    "S_C": "Scripted", "SFX": "Sound effects", "STOP": "Stop", "VEH": "Vehicles", "VFX": "Visual effects",
+    "VOC": "Voices", "WEP": "Weapons", "CIN": "Cinematics", "UI_": "Interface", "PC_": "Player",
+}
+_GUERRILLA_BANKS = {"civ": "civilian", "edf": "EDF", "mar": "Marauder", "min": "miners", "shared": "shared",
+                    "mov": "movement", "obj": "objects", "wep": "weapons", "veh": "vehicles", "dth": "deaths",
+                    "exp": "explosions", "mp": "multiplayer", "voc": "voices"}
+
+
+def category_words(category, bank):
+    """A category to show: the game's (in words; M04 = Mission 4), else where the sound comes from."""
+    c = (category or "").upper()
+    if c:
+        if re.fullmatch(r"M\d\d", c):
+            return "Mission " + str(int(c[1:]))
+        if re.fullmatch(r"Q\d\d", c):
+            return "Quest " + str(int(c[1:]))
+        return _CATEGORY_WORDS.get(c, c)
+    b = (bank or "").lower()
+    m = re.match(r"rfg[a-z]?_(.*)", b)
+    if m:
+        return "Guerrilla: " + " ".join(_GUERRILLA_BANKS.get(w, w) for w in m.group(1).split("_"))
+    return b.replace("_", " ").capitalize()
+
+
+def sound_type(bank, name=""):
+    """A sound's kind, from its bank's name ("Stop" for events that end other sounds)."""
+    if name.upper().endswith("_STOP"):
+        return "Stop"
+    b = (bank or "").lower()
+    for starts, kind in _TYPES:
+        if b.startswith(starts):
+            return kind
+    return "Other"
+
+
 class _Source:
     """Somewhere banks are: a folder of loose files, or an archive."""
 
@@ -267,7 +322,7 @@ class Library:
         self._event_bank = None
         self._media = {}
         self._names = None
-        self.categories = {}
+        self.categories, self.types, self.banks = {}, {}, {}
 
     def bank_names(self):
         seen = {}
@@ -339,7 +394,10 @@ class Library:
                 if name not in found and event_id(name) in events:
                     found[name] = ""
         for name in found:
-            self.categories[name] = found[name] or events.get(event_id(name), "")
+            bank = events.get(event_id(name), "")
+            self.banks[name] = bank
+            self.types[name] = sound_type(bank, name)
+            self.categories[name] = category_words(found[name], bank)
         self._names = sorted(found, key=str.upper)
         return self._names
 
