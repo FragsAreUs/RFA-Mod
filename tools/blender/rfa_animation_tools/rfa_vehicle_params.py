@@ -33,14 +33,14 @@ SECTIONS = (
     ("SOUNDS", "Sounds", ("Foley",)),
     ("EFFECTS", "Effects", ("Effects",)),
     ("GENERAL", "General", ("Group", "Value", "Default_Team", "Special_Vehicle_Type", "Convertible", "CanBlockRoads",
-                            "Always_Allow_enter", "Player_Passenger_Only", "Neutral_Reticule", "Has_Vision_Mode")),
+                            "Neutral_Reticule", "Has_Vision_Mode")),
 )
 # Templates copy only the tags the sections name. Everything else in an entry (its rig and rider animations, seats,
 # items, lights, turrets, model, ...) is the vehicle's own: copying an ATV's rig into the ambulance crashed the game
 # at start-up (2026-11-26).
 COPIED = {t for _, _, tags in SECTIONS for t in tags}
 # The vehicle's own: never copied from a template, shown read-only under General.
-OWN = ("Name", "_Editor", "Mesh_Name", "Vehicle_Interaction", "Lights", "Turrets", "spawn_offset_info", "Component_Info",
+OWN = ("Name", "_Editor", "Player_Passenger_Only", "Always_Allow_enter", "Rig", "Rider_Blend_Tree", "Props", "Mesh_Name", "Vehicle_Interaction", "Lights", "Turrets", "spawn_offset_info", "Component_Info",
        "Memory_Slot_Type", "VehicleClass", "Preload", "Display_Name")
 TEMPLATE_FOLDER = ("mods", "vehicle_templates")
 
