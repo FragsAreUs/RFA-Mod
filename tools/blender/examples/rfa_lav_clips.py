@@ -117,9 +117,32 @@ for bone in ("Pelvis", "Spine", "root"):  # older runs lowered Pelvis and Spine:
     if acts["drive"].get(key) is not None:
         shift_bone(acts["drive"], [-x for x in acts["drive"][key]], bone)
         del acts["drive"][key]
-if acts["exit"].get("rfa_source") != "pc_exit_lav":
-    raise RuntimeError("Get Out no longer starts from pc_exit_lav: its standing pose is taken from its end")
-standing, stand_heads = capture("exit", int(round(acts["exit"].frame_range[1])))
+# The standing pose is the end of the LAV's own Get Out (pc_exit_lav). Our Get Out replaces it, so a copy of
+# the original is kept (no vehicle or clip of its own, so it's never shown or exported as a clip).
+ORIGINAL_EXIT = VEHICLE + " pc_exit_lav (standing pose)"
+if bpy.data.actions.get(ORIGINAL_EXIT) is None:
+    if acts["exit"].get("rfa_source") != "pc_exit_lav":
+        raise RuntimeError("Get Out no longer starts from pc_exit_lav and no copy of it is kept: start it from pc_exit_lav again (Start Clip From...)")
+    keep = acts["exit"].copy()
+    keep.name = ORIGINAL_EXIT
+    keep.use_fake_user = True
+    for k in ("rfa_vehicle", "rfa_clip", "rfa_name"):
+        if k in keep:
+            del keep[k]
+
+
+def capture_action(action, frame):
+    rest_pose()
+    arm.animation_data.action = action
+    scene.frame_set(frame)
+    pose = {pb.name: (pb.location.copy(), pb.rotation_quaternion.copy()) for pb in arm.pose.bones}
+    heads = {n: arm.pose.bones[n].head.copy() for n in ("Pelvis", "L-Foot", "R-Foot", "Head")}
+    arm.animation_data.action = None
+    return pose, heads
+
+
+_orig = bpy.data.actions[ORIGINAL_EXIT]
+standing, stand_heads = capture_action(_orig, int(round(_orig.frame_range[1])))
 seated, seat_heads = capture("drive", 0)
 print("root bone turned in the seated pose:", round(arm.pose.bones["root"].rotation_quaternion.angle, 3) if "root" in arm.pose.bones else None)
 
@@ -596,25 +619,27 @@ def lav_cam(f, chest):
     return eye, at
 
 
-enter = build(
-    "enter", LEN, ground_at,
-    [(0, 0.0), (SIT0, 0.0), (SIT1, 1.0), (LEN, 1.0)],
-    feet, hands,
-    [("door start", OPEN_AT), ("door end", OPEN_END), ("door close start", CLOSE_AT), ("door close end", CLOSE_END)],
-    lean_keys=[(0, 0.04), (84, 0.08), (104, 0.18), (124, 0.05), (188, 0.04), (230, 0.12), (262, 0.32), (300, 0.22),
-               (420, 0.22), (450, 0.35), (SIT1, 0.0), (LEN, 0.0)],
-    look_keys=([(0, HANDLE), (110, HANDLE), (150, Vector((0, -3.6, -0.6))), (200, Vector((0, -2.6, -0.3))),
-                (300, Vector((0, 0.5, 0.2))), (400, seat), (520, Vector((0, -3.0, 0.0))), (LEN, Vector((0, 3.0, 0.3)))],
-               [(0, 0.3), (60, 0.7), (130, 0.6), (200, 0.4), (300, 0.2), (400, 0.6), (440, 0.4), (SIT1, 0.0),
-                (520, 0.3), (560, 0.3), (LEN, 0.0)]),
-    swing_keys=SWING, camera=lav_cam)
+ONLY_EXIT = globals().get("ONLY_EXIT", False)
+if not ONLY_EXIT:
+    enter = build(
+        "enter", LEN, ground_at,
+        [(0, 0.0), (SIT0, 0.0), (SIT1, 1.0), (LEN, 1.0)],
+        feet, hands,
+        [("door start", OPEN_AT), ("door end", OPEN_END), ("door close start", CLOSE_AT), ("door close end", CLOSE_END)],
+        lean_keys=[(0, 0.04), (84, 0.08), (104, 0.18), (124, 0.05), (188, 0.04), (230, 0.12), (262, 0.32), (300, 0.22),
+                   (420, 0.22), (450, 0.35), (SIT1, 0.0), (LEN, 0.0)],
+        look_keys=([(0, HANDLE), (110, HANDLE), (150, Vector((0, -3.6, -0.6))), (200, Vector((0, -2.6, -0.3))),
+                    (300, Vector((0, 0.5, 0.2))), (400, seat), (520, Vector((0, -3.0, 0.0))), (LEN, Vector((0, 3.0, 0.3)))],
+                   [(0, 0.3), (60, 0.7), (130, 0.6), (200, 0.4), (300, 0.2), (400, 0.6), (440, 0.4), (SIT1, 0.0),
+                    (520, 0.3), (560, 0.3), (LEN, 0.0)]),
+        swing_keys=SWING, camera=lav_cam)
 
 # ---- check: the head under the roof inside, the feet on what they stand on
 body = next(o for o in kit if o.name.split(".")[0] == "body" and o.type == "MESH")
 bv_verts = [body.matrix_world @ v.co for v in body.data.vertices]
 worst = (9.0, 0)
 bva.show_clip(C, root, arm, "enter")
-for f in range(240, LEN + 1, 6):
+for f in ([] if ONLY_EXIT else range(240, LEN + 1, 6)):
     scene.frame_set(f)
     hd = arm.matrix_world @ arm.pose.bones["Head"].head
     above = [v.z for v in bv_verts if abs(v.x - hd.x) < 0.15 and abs(v.y - hd.y) < 0.15 and v.z > hd.z - 0.05]
@@ -625,3 +650,102 @@ scene.timeline_markers.clear()
 bva.show_clip(C, root, arm, "enter")
 print("LAV Get In made, 0-%d; ground %.2f, seat %s; head's least room under the roof %s m (frame %s)"
       % (LEN, G, tuple(round(v, 2) for v in seat), worst[0], worst[1]))
+
+
+# ================================================================ Get Out
+# Stand up out of the seat and turn round (the ramp swinging down meanwhile), duck back along the bay, walk
+# down the ramp and off it, the ramp swinging shut behind. Ends standing behind the LAV, facing away from it.
+EXIT_WP = acts["exit"]["rfa_to_waypoint"]
+X_LEN = 440
+X_OPEN, X_OPEN_END = 60, 124
+X_CLOSE, X_CLOSE_END = 350, 420
+UP0, UP1 = 40, 110                                   # out of the seat, turned round, in the aisle
+F2 = W(-0.05, 0.78, CAB, 180)
+R2 = W(0.00, -2.60, BAY, 180)
+B2 = W(0.20, -4.90, G, 180)                          # off the ramp, clear of its swing back up
+wps[EXIT_WP].matrix_world = B2
+x_duck = [(0, 0.0), (UP0, 0.0), (95, 0.2), (175, 0.2), (205, 0.13), (245, 0.13), (285, 0.0)]  # lower under the turret's ring by the cab
+X_LEG = [F2.to_translation(), R2.to_translation(), B2.to_translation()]
+
+
+def x_along(f):
+    a, mid, b = X_LEG
+    l1, l2 = (mid - a).length, (b - mid).length
+    lin = (f - UP1) / (330 - UP1)
+    t = 0.5 * smooth(lin) + 0.5 * max(0.0, min(1.0, lin))
+    d = t * (l1 + l2)
+    return a.lerp(mid, d / l1) if d <= l1 else mid.lerp(b, (d - l1) / l2)
+
+
+X_SWING = None
+
+
+def x_ground_at(f):
+    """Out of the seat (up first, then across), turning round; then walking out on the floor and the ramp."""
+    if f <= UP1:
+        t = smooth((f - UP0) / (UP1 - UP0))
+        l0, r0, _ = SEAT.decompose()
+        l1, r1, _ = F2.decompose()
+        l1 = l1 - Vector((0, 0, track(x_duck, f)))
+        loc = Vector((l0.x + (l1.x - l0.x) * smooth((t - 0.25) / 0.75), l0.y + (l1.y - l0.y) * t,
+                      l0.z + (l1.z - l0.z) * smooth(t * 1.5)))
+        return Matrix.Translation(loc) @ r0.slerp(r1, smooth((t - 0.1) / 0.9)).to_matrix().to_4x4()
+    loc = x_along(min(f, 330))
+    rot = F2.to_quaternion()
+    loc.z = surf(loc.y) - track(x_duck, f)
+    if f < 330:
+        a = track(X_SWING, f) if X_SWING else 0.0
+        loc.z += 0.028 * min(1.0, abs(a) / 0.22) - 0.014 * (1.0 if abs(a) > 0.005 else 0.0)
+        loc += rot @ Vector((-0.11 * a, 0.0, 0.0))
+    return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+
+
+plants = {"L": [[0, 10 ** 6, None]], "R": [[0, 10 ** 6, None]]}
+swing = [(0, 0.0)]
+for side in "LR":
+    plants[side][0][2] = foot_on(F2, side)
+walk(x_ground_at, UP1, 330, 10, "R")                     # back along the bay and down the ramp
+for side in "LR":
+    plants[side][-1][1] = X_LEN
+X_SWING = sorted(swing + [(X_LEN, 0.0)], key=lambda k: k[0])
+x_feet = {s: ([tuple(p) for p in plants[s]], [(0, 0.0), (80, 0.0), (105, 1.0), (X_LEN, 1.0)]) for s in "LR"}
+X_ROOF_EDGE = Vector((-0.55, -2.85, 0.62))
+x_hands = {"RH": ([(40, SEAT_BACK), (90, SEAT_BACK)], [(36, 0.0), (52, 1.0), (84, 1.0), (100, 0.0)]),
+           "LH": ([(222, X_ROOF_EDGE + Vector((0, 0.25, 0))), (262, X_ROOF_EDGE)],
+                  [(218, 0.0), (234, 0.9), (256, 0.9), (276, 0.0)])}
+
+
+def lav_exit_cam(f, chest):
+    side_eye, side_at = Vector((3.6, -1.4, G + 3.1)), Vector((seat.x, seat.y, seat.z + 0.6))
+    rear_eye = Vector((2.9, -7.4, G + 2.9))
+    rear_at = Vector((0.0, min(chest.y, 0.5), chest.z))
+    out_eye = Vector((2.4, -8.2, G + 2.0))
+    a, b = smooth((f - 80) / 100), smooth((f - 300) / 100)
+    eye = side_eye.lerp(rear_eye, a).lerp(out_eye, b)
+    at = side_at.lerp(rear_at, a).lerp(chest + Vector((0, -0.4, 0.1)), b)
+    return eye, at
+
+
+exit_ = build(
+    "exit", X_LEN, x_ground_at,
+    [(0, 1.0), (UP0, 1.0), (100, 0.0), (X_LEN, 0.0)],
+    x_feet, x_hands,
+    [("door start", X_OPEN), ("door end", X_OPEN_END), ("door close start", X_CLOSE), ("door close end", X_CLOSE_END)],
+    lean_keys=[(0, 0.0), (UP0, 0.12), (70, 0.38), (110, 0.32), (175, 0.32), (240, 0.3), (285, 0.06), (330, 0.04), (X_LEN, 0.0)],
+    look_keys=([(0, Vector((0, -3.0, -0.2))), (100, Vector((0, -3.0, -0.4))), (240, Vector((0, -4.6, -1.4))),
+                (330, Vector((0.3, -8.0, -0.6))), (360, Vector((0, -3.2, -0.2))), (X_LEN, Vector((0.3, -9.0, 0.0)))],
+               [(0, 0.5), (40, 0.6), (120, 0.3), (240, 0.4), (330, 0.2), (350, 0.6), (420, 0.5), (X_LEN, 0.0)]),
+    swing_keys=X_SWING, camera=lav_exit_cam)
+
+worst = (9.0, 0)
+bva.show_clip(C, root, arm, "exit")
+for f in range(0, 300, 6):
+    scene.frame_set(f)
+    hd = arm.matrix_world @ arm.pose.bones["Head"].head
+    above = [v.z for v in bv_verts if abs(v.x - hd.x) < 0.15 and abs(v.y - hd.y) < 0.15 and v.z > hd.z - 0.05]
+    if above:
+        worst = min(worst, (round(min(above) - (hd.z + 0.14), 3), f))
+arm.animation_data.action = None
+scene.timeline_markers.clear()
+bva.show_clip(C, root, arm, "exit")
+print("LAV Get Out made, 0-%d; head's least room under the roof %s m (frame %s)" % (X_LEN, worst[0], worst[1]))

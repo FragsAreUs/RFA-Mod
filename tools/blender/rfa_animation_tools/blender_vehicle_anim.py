@@ -605,6 +605,18 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
             h = ET.SubElement(w, "Heading")
         h.text = _fmt(round(heading, 3))
     for (a, b), (action, state, door) in steps.items():
+        if not any((t.findtext("Name") or "").strip() == a and (t.findtext("Destination") or "").strip() == b
+                   for t in el.findall("Waypoint_transitions/Waypoint_transition")):
+            # The entry it was made from has no such step (the LAV's copied entry had no getting out): one is
+            # added, so the game plays the clip from that waypoint to the other.
+            box = el.find("Waypoint_transitions")
+            if box is None:
+                box = ET.Element("Waypoint_transitions")
+                wp_box = el.find("Waypoints")
+                el.insert(list(el).index(wp_box) + 1 if wp_box is not None else len(el), box)
+            t = ET.SubElement(box, "Waypoint_transition")
+            ET.SubElement(t, "Name").text = a
+            ET.SubElement(t, "Destination").text = b
         for t in el.findall("Waypoint_transitions/Waypoint_transition"):
             if (t.findtext("Name") or "").strip() != a or (t.findtext("Destination") or "").strip() != b:
                 continue
