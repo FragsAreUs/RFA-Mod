@@ -56,7 +56,8 @@ TRIGGERS = ("door start", "door end", "door close start", "door close end",
             "door 2 start", "door 2 end", "door 2 close start", "door 2 close end",
             "camera lookat start", "camera pos start", "camera lookat end", "camera pos end",
             "left-foot", "right-foot", "release movement", "interrupt")
-PLAYER = "RF4_PC.str2_pc"  # the player character, in humans.vpp_pc
+PLAYER = "RF4_PC.str2_pc"
+DOOR_TYPE = 0x0196EBB2  # the part type of doors and hatches  # the player character, in humans.vpp_pc
 
 TABLES = r"build\pc\cache\table.vpp_pc"
 OWN_RECORD = "anim_entries.txt"  # in mods\animations: the Guerrilla tools' record format ("set x.xtbl", "file x.animx")
@@ -588,7 +589,7 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
         if h is None:
             h = ET.SubElement(w, "Heading")
         h.text = _fmt(round(heading, 3))
-    for (a, b), (action, state) in steps.items():
+    for (a, b), (action, state, door) in steps.items():
         for t in el.findall("Waypoint_transitions/Waypoint_transition"):
             if (t.findtext("Name") or "").strip() != a or (t.findtext("Destination") or "").strip() != b:
                 continue
@@ -602,6 +603,8 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
             ET.SubElement(i, "Action").text = "Transition"
             ET.SubElement(i, "Anim_Action").text = action
             ET.SubElement(i, "Anim_State").text = state
+            if door and t.find("Door_1") is None:  # the door the clip's door triggers open
+                ET.SubElement(t, "Door_1").text = door
     s = el.find("Anim_Set")
     if s is None:
         s = ET.SubElement(el, "Anim_Set")
@@ -726,14 +729,29 @@ def export(context, game_folder, mod_folder, root, arm, report):
     steps, states, set_actions = {}, {}, {}
     enter_action, seated = _transition_steps(base_el, *clip_roles["enter"])
     seated = seated or SEATED_STATE
-    steps[clip_roles["enter"]] = (ENTER_ACTION, seated)
+    doors = door_parts(game_folder, root)
+    wps = waypoints(root)
+    used_doors = []
+
+    def door_for(clip, at):
+        """The door nearest the place a clip with door triggers gets in or out at (else none)."""
+        if not any(n.startswith("door") for n, _ in triggers.get(clip, [])) or not doors or wps.get(at) is None:
+            return None
+        here = wps[at].matrix_world.to_translation()
+        name = min(doors, key=lambda d: (doors[d] - here).length)
+        used_doors.append(name)
+        return name
+
+    steps[clip_roles["enter"]] = (ENTER_ACTION, seated, door_for("enter", clip_roles["enter"][0]))
     set_actions[ENTER_ACTION] = actions["enter"]["rfa_name"]
     if "drive" in actions:
         states[seated] = actions["drive"]["rfa_name"]
     if "exit" in actions and "exit" in clip_roles:
         _, standing = _transition_steps(base_el, *clip_roles["exit"])
-        steps[clip_roles["exit"]] = (EXIT_ACTION, standing or STANDING_STATE)
+        steps[clip_roles["exit"]] = (EXIT_ACTION, standing or STANDING_STATE, door_for("exit", clip_roles["exit"][1]))
         set_actions[EXIT_ACTION] = actions["exit"]["rfa_name"]
+    if used_doors:
+        report({"INFO"}, f"{vehicle}: the door triggers open {', '.join(dict.fromkeys(used_doors))}")
     the_set = set_name(vehicle)
 
     # Our anim set: a new table the game finds by name.
@@ -770,6 +788,50 @@ def export(context, game_folder, mod_folder, root, arm, report):
     _record(mod_folder, sets=[the_set + ".xtbl"], files=[a["rfa_name"] + ".animx" for a in actions.values()],
             vehicles=[f"{vehicle} {original}"])
     return written
+
+
+def door_parts(game_folder, root):
+    """{part name: where it is (world)} of the kit's doors (part type "door")."""
+    try:
+        _, model = bv.open_kind(game_folder, root["rfa_vehicle"])
+    except Exception:
+        return {}
+    kinds = {p.index: p for p in model.parts}
+    out = {}
+    for o in bv._kit_objects(root):
+        p = kinds.get(o.get("rfa_part", -2))
+        if p is not None and p.type == DOOR_TYPE:
+            out[p.name] = o.matrix_world.to_translation()
+    return out
+
+
+def restart_clip(context, game_folder, root, arm, clip, rel, container, name, report):
+    """The clip started anew from another of the game's animations (its triggers too), keeping its place."""
+    vehicle = root["rfa_people_vehicle"]
+    old = clip_actions(vehicle).get(clip)
+    if old is None:
+        raise ValueError(f"{vehicle} has no {CLIP_LABELS[clip]} clip")
+    anim = rf.Animation.read(bio.Animations.read(game_folder, rel, container, name))
+    scene = context.scene
+    _save_markers(scene, arm.animation_data.action if arm.animation_data else None)
+    arm.animation_data_create()
+    arm.animation_data.action = None
+    arm.location = (0, 0, 0)
+    arm.rotation_mode = "QUATERNION"
+    arm.rotation_quaternion = (1, 0, 0, 0)
+    action = bio.apply_animation(context, arm, anim, f"{vehicle} {CLIP_LABELS[clip]}", report)
+    stem = name[: -len(".anim_pc")] if name.lower().endswith(".anim_pc") else name
+    for key in ("rfa_name", "rfa_vehicle", "rfa_clip", "rfa_from_waypoint", "rfa_to_waypoint"):
+        action[key] = old[key]
+    action["rfa_source"] = stem
+    files_text = game_table(game_folder, "anim_files.xtbl") or ""
+    action["rfa_triggers"] = json.dumps(source_triggers(files_text, stem))
+    arm.animation_data.action = None
+    label = old.name
+    bpy.data.actions.remove(old)
+    action.name = label
+    show_clip(context, root, arm, clip)
+    return action
 
 
 def remove(game_folder, mod_folder, vehicle):

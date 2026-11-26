@@ -109,6 +109,8 @@ The "RFA Vehicle Animation" panel animates the player with any of the game's veh
 2. The **Get In / Drive / Get Out** buttons switch clips: the player stands at the clip's first place,
    and the timeline shows the clip's frames and its triggers. Animate as usual: bones, and the
    armature object itself for moving through space (its keys are the root track, from the first place).
+   **Start Clip From...** starts the clip shown again from any of the game's animations (search
+   "enter", "exit", "exo", "lddr"...), with that animation's triggers.
 3. **Add Trigger Here** marks the frame for the game: a door opening (door start, door end) and closing,
    the camera handing over, footsteps. Triggers are timeline markers; the clip keeps its own.
 4. **End at the Next Place** keys the player so the clip's last frame is at the seat (or where they get
@@ -117,7 +119,9 @@ The "RFA Vehicle Animation" panel animates the player with any of the game's veh
    the vehicle's own anim set (overrides\build\pc\cache\rfa_<vehicle>.xtbl), and its entries in the
    tables the game reads while it starts: anim_set_filenames.xtbl, anim_files.xtbl (triggers, flags),
    vehicle_interactions.xtbl (RFA_<vehicle>: the places and steps) and vehicles.xtbl (the vehicle names
-   it). From the game's next start. **Remove** puts the vehicle back as it was.
+   it). From the game's next start. **Remove** puts the vehicle back as it was. A clip with door
+   triggers opens the vehicle's door (or hatch) nearest where the player gets in or out, unless
+   the vehicle's steps already name one.
 
 The start-up tables go to mods\tables\, which RFA-Mod hands the game (rfa_qol's tables part,
 `[Mods] tables=1`); where the Guerrilla world's tools have written that table (mods\guerrilla_world\),

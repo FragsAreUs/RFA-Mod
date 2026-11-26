@@ -12,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 3, 1),
+    "version": (1, 3, 2),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
@@ -813,6 +813,34 @@ class RFA_OT_people_clip(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class RFA_OT_people_restart(bpy.types.Operator):
+    """Start the clip shown again from another of the game's animations (any of them: the ATV's, the
+    exos', a ladder's...), keeping where it starts and ends"""
+    bl_idname = "rfa.people_restart"
+    bl_label = "Start Clip From..."
+    bl_options = {"REGISTER", "UNDO"}
+    bl_property = "choice"
+    choice: EnumProperty(name="Animation", items=_anim_items)
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        root, arm = _people(self, context)
+        if root is None or not self.choice:
+            return {"CANCELLED"}
+        clip = root.get("rfa_people_clip", "enter")
+        rel, container, name = _split3(self.choice)
+        try:
+            bva.restart_clip(context, game_folder(context), root, arm, clip, rel, container, name, self.report)
+        except Exception as ex:
+            self.report({"ERROR"}, f"{name}: {ex}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{bva.CLIP_LABELS[clip]} now starts from {name}")
+        return {"FINISHED"}
+
+
 class RFA_OT_people_trigger(bpy.types.Operator):
     """Mark this frame for the game: a door opening or closing, the camera handing over, a footstep"""
     bl_idname = "rfa.people_trigger"
@@ -934,6 +962,7 @@ class RFA_PT_people(bpy.types.Panel):
                            (f" to {a.get('rfa_to_waypoint')}" if a.get('rfa_to_waypoint') != a.get('rfa_from_waypoint') else " (loops)"))
             box.label(text=f"Started from {a.get('rfa_source', '?')}; frames {context.scene.frame_start}-{context.scene.frame_end}")
         col = box.column(align=True)
+        col.operator(RFA_OT_people_restart.bl_idname, icon="ACTION")
         col.operator_menu_enum(RFA_OT_people_trigger.bl_idname, "trigger", text="Add Trigger Here", icon="MARKER_HLT")
         if shown in ("enter", "exit"):
             col.operator(RFA_OT_people_snap_end.bl_idname, icon="KEYFRAME")
@@ -1009,6 +1038,7 @@ classes = (
     RFA_OT_refresh,
     RFA_OT_people_setup,
     RFA_OT_people_clip,
+    RFA_OT_people_restart,
     RFA_OT_people_trigger,
     RFA_OT_people_snap_end,
     RFA_OT_people_seat_at_end,
