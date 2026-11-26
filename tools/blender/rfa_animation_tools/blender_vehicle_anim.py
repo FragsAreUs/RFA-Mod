@@ -390,6 +390,9 @@ def setup(context, game_folder, mod_folder, vehicle, report):
             container = next(n for n in bio.GameFiles.archive(game_folder, bv.VEHICLES).names() if n.lower() == container.lower())
             root, _ = bv.make_kit(context, game_folder, container, vehicle)
         root["rfa_people_vehicle"] = vehicle
+        for key in ("rfa_door_open_sound", "rfa_door_close_sound"):
+            if key not in root:
+                root[key] = ""
         root["rfa_people_original"] = original
 
     # The waypoints, as empties.
@@ -639,6 +642,16 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
                         for e in t.findall(snd):
                             t.remove(e)
                 d1.text = door
+                # The door's sounds, when the vehicle's kit names them (rfa_door_open_sound / rfa_door_close_sound
+                # on its root, e.g. RFG_VEH_FOLEY_APC_REAR_OPEN): played as the door opens and shuts.
+                for snd, key in (("Door_open", "rfa_door_open_sound"), ("Door_close", "rfa_door_close_sound")):
+                    name = str(root.get(key, "")).strip()
+                    if not name:
+                        continue
+                    e = t.find(snd)
+                    if e is None:
+                        e = ET.SubElement(t, snd)
+                    e.text = name
     s = el.find("Anim_Set")
     if s is None:
         s = ET.SubElement(el, "Anim_Set")

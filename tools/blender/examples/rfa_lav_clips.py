@@ -318,8 +318,103 @@ def roll_foot(side, pitch, toe):
     C.view_layer.update()
 
 
-# ---- making a clip
+# ---- the game's own walk cycle (pc_shtgn_walk: 80 frames, 1.36 m), for the legs and the body's sway
+_addon = sys.modules["rfa_animation_tools"]
 _bio = sys.modules["rfa_animation_tools.blender_io"]
+_rf = sys.modules["rfa_animation_tools.rfa_formats"]
+WALK_LEGS = ["L-Thigh", "R-Thigh", "L-Calf", "R-Calf", "L-Foot", "R-Foot", "L-Toe", "R-Toe",
+             "l-thigh-twst1", "r-thigh-twst1"]
+WALK_SWAY = ["Pelvis", "Spine", "Spine1", "Spine2", "Neck", "Head"]   # as changes from the cycle's average
+WALK_LEN, WALK_FRAMES = 1.36, 80
+
+
+def load_walk(name="pc_shtgn_walk"):
+    rel, pf = _bio.GameFiles.find(_addon.game_folder(C), _bio.GameFiles.ANIMS, name + ".anim_pc")
+    anim = _rf.Animation.read(pf.read(name + ".anim_pc"))
+    keep = (scene.frame_start, scene.frame_end, scene.render.fps)
+    rest_pose()
+    act = _bio.apply_animation(C, arm, anim, name + " (walk cycle)", lambda *a: None)
+    rot, feet = [], []
+    for k in range(WALK_FRAMES + 1):
+        scene.frame_set(k)
+        rot.append({n: arm.pose.bones[n].rotation_quaternion.copy() for n in WALK_LEGS + WALK_SWAY})
+        feet.append({s_: arm.pose.bones[CHAINS[s_][2]].head.copy() for s_ in "LR"})
+    arm.animation_data.action = None
+    bpy.data.actions.remove(act)
+    scene.frame_start, scene.frame_end, scene.render.fps = keep
+    mean = {}
+    for n in WALK_SWAY:
+        acc, first = Vector((0, 0, 0, 0)), rot[0][n]
+        for r in rot[:WALK_FRAMES]:
+            q = r[n] if r[n].dot(first) >= 0 else -r[n]
+            acc += Vector(q)
+        mean[n] = Quaternion(acc.normalized())
+    low = {s_: min(f_[s_].z for f_ in feet[:WALK_FRAMES]) for s_ in "LR"}
+    lift = [{s_: f_[s_].z - low[s_] for s_ in "LR"} for f_ in feet]
+    ahead = [f_["R"].y - f_["L"].y for f_ in feet[:WALK_FRAMES]]
+    p_r = ahead.index(max(ahead)) / WALK_FRAMES                   # the right foot furthest forward
+    p_cross = min(range(WALK_FRAMES), key=lambda k: abs(ahead[k]) if ahead[(k - 1) % WALK_FRAMES] > ahead[k] else 9) / WALK_FRAMES
+    return {"rot": rot, "mean": mean, "lift": lift, "p_r": p_r, "p_cross": p_cross}
+
+
+WALK = load_walk()
+RAMP_OPEN = lambda f: True   # whether the ramp is down at a frame (each clip sets its own)
+
+
+class Gait:
+    """Where the walk cycle is at each frame: its phase from the distance the root has covered along its facing
+    (so the feet don't slide), and how much of it to use (easing in and out over 12 frames at each walk's ends)."""
+
+    def __init__(self, segments, root_at, length, p0=None):
+        self.segments = segments
+        self.dist = [0.0] * (length + 2)
+        prev = root_at(0)
+        for f in range(1, length + 2):
+            m = root_at(f)
+            fwd = prev.to_3x3() @ Vector((0, 1, 0))
+            d = m.to_translation() - prev.to_translation()
+            d.z = 0
+            self.dist[f] = self.dist[f - 1] + d.dot(fwd)
+            prev = m
+        self.p0 = WALK["p_cross"] if p0 is None else p0
+
+    def at(self, f):
+        f = max(0, min(int(round(f)), len(self.dist) - 1))
+        for a, b in self.segments:
+            if a <= f <= b:
+                w = smooth(min((f - a) / 12.0, (b - f) / 12.0, 1.0))
+                ph = (self.p0 + (self.dist[f] - self.dist[a]) / WALK_LEN) % 1.0
+                return ph, w
+        return 0.0, 0.0
+
+
+def walk_pose(ph, w):
+    """The walk cycle's legs (as they are) and sway (as changes) put on the pose, w of the way."""
+    k = ph * WALK_FRAMES
+    i = int(k) % WALK_FRAMES
+    t = k - int(k)
+    for n in WALK_LEGS:
+        q = WALK["rot"][i][n].slerp(WALK["rot"][i + 1][n], t)
+        pb = arm.pose.bones[n]
+        if pb.rotation_quaternion.dot(q) < 0:
+            q = -q
+        pb.rotation_quaternion = pb.rotation_quaternion.slerp(q, w)
+    for n in WALK_SWAY:
+        q = WALK["rot"][i][n].slerp(WALK["rot"][i + 1][n], t)
+        d = WALK["mean"][n].inverted() @ (q if q.dot(WALK["mean"][n]) >= 0 else -q)
+        pb = arm.pose.bones[n]
+        pb.rotation_quaternion = pb.rotation_quaternion @ Quaternion().slerp(d, w)
+    C.view_layer.update()
+
+
+def walk_lift(ph, side):
+    k = ph * WALK_FRAMES
+    i = int(k) % WALK_FRAMES
+    t = k - int(k)
+    return WALK["lift"][i][side] * (1 - t) + WALK["lift"][i + 1][side] * t
+
+
+# ---- making a clip
 _NAMES = _bio.bone_names(arm)
 GAME_BONES = {_NAMES[i] for i in list(range(0, 50)) + list(range(96, 108)) + list(range(109, 117)) if i < len(_NAMES)}
 # Twist bones hung off the collarbone, not the arm: they must turn with the arm or the skin on them stays behind.
@@ -423,7 +518,7 @@ def place_camera(eye, target):
         pb.keyframe_insert("rotation_quaternion", frame=scene.frame_current)
 
 
-def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None, camera=None, swing_keys=None):
+def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=None, look_keys=None, camera=None, swing_keys=None, gait=None):
     """root_keys [(frame, world placement)], blend_keys [(frame, 0 standing .. 1 seated)], feet
     {"L"/"R": (plants, weight keys)}, hands {"LH"/"RH": (target keys, weight keys)}."""
     old = acts[clip]
@@ -480,16 +575,27 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
         base = {n: arm.pose.bones[n].rotation_quaternion.copy() for c in CHAINS.values() for n in c}
         rel = {t: arm.pose.bones[a].matrix.inverted() @ arm.pose.bones[t].matrix for t, a in TWIST.items()}
         base.update({t: arm.pose.bones[t].rotation_quaternion.copy() for t in TOES.values()})
+        gph, gw = gait.at(f) if gait else (0.0, 0.0)
+        if gw > 1e-3:
+            walk_pose(gph, gw)
+            for n in WALK_LEGS + WALK_SWAY:
+                base[n] = arm.pose.bones[n].rotation_quaternion.copy() if n in base else None
+            base = {n: q for n, q in base.items() if q is not None}
         sway(f, lean_keys, look_keys)
-        if swing_keys:
-            a = track(swing_keys, f)
+        if swing_keys or gw > 1e-3:
+            if gw > 1e-3:   # the arms in time with the walk cycle's legs: the left arm forward with the right foot
+                a = gw * 0.24 * math.cos(2 * math.pi * (gph - WALK["p_r"]))
+                lag = gw * 0.24 * math.cos(2 * math.pi * (gph - WALK["p_r"] - 0.07))
+            else:
+                a = track(swing_keys, f)
             # hips turn with the leg going forward, shoulders against them; the arms swing, the elbows bend more
             # as an arm comes forward
-            for n, turn in (("Pelvis", 0.45 * a), ("Spine2", -0.35 * a)):
+            for n, turn in (("Pelvis", 0.45 * a * (1 - gw)), ("Spine2", -0.35 * a * (1 - gw))):
                 pb = arm.pose.bones[n]
                 pb.matrix = about(pb.head, Quaternion((0, 0, 1), turn)) @ pb.matrix
                 C.view_layer.update()
-            lag = track(swing_keys, f - 6)
+            if gw <= 1e-3:
+                lag = track(swing_keys, f - 6)
             for clav, n, fore, hand, sgn in (("L-clavicle", "l-upperarm", "l-forearm", "L-Hand", 1),
                                              ("r-clavicle", "r-upperarm", "r-forearm", "R-Hand", -1)):
                 cb = arm.pose.bones[clav]
@@ -506,7 +612,9 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
                 hb.matrix = about(hb.head, Quaternion((1, 0, 0), -0.35 * lag * sgn)) @ hb.matrix
                 C.view_layer.update()
         for n in BODY_EXTRA + (["Pelvis", "L-clavicle", "r-clavicle", "l-upperarm", "r-upperarm", "l-forearm", "r-forearm",
-                                "L-Hand", "R-Hand"] if swing_keys else []):
+                                "L-Hand", "R-Hand"] if (swing_keys or gw > 1e-3) else []) + \
+                (["L-Thigh", "R-Thigh", "L-Calf", "R-Calf", "L-Foot", "R-Foot", "L-Toe", "R-Toe", "l-thigh-twst1",
+                  "r-thigh-twst1", "Spine1"] if gw > 1e-3 else []):
             out.setdefault(n, []).append((f, arm.pose.bones[n].rotation_quaternion.copy(), None, 1.0))
         done = {}
         for side, (plants, weights) in feet.items():
@@ -514,7 +622,14 @@ def build(clip, length, root_at, blend_keys, feet, hands, triggers, lean_keys=No
             target = steps(plants, f)
             if w > 1e-3 and target is not None:
                 pitch, toe, heel = foot_roll(plants, f)
-                two_bone(*(arm.pose.bones[n] for n in CHAINS[side]), target + Vector((0, 0, heel)))
+                target = target + Vector((0, 0, heel))
+                if gw > 1e-3:
+                    mine = arm.matrix_world @ arm.pose.bones[CHAINS[side][2]].head
+                    ground = surf(mine.y, RAMP_OPEN(f)) if "surf" in globals() else target.z - FOOT[side].z
+                    mine.z = ground + FOOT[side].z + walk_lift(gph, side)
+                    target = target.lerp(mine, gw)
+                    pitch, toe = pitch * (1 - gw), toe * (1 - gw)
+                two_bone(*(arm.pose.bones[n] for n in CHAINS[side]), target)
                 roll_foot(side, pitch, toe)
                 done[side] = w
         for side, (targets, weights) in hands.items():
@@ -628,9 +743,9 @@ def ground_at(f):
         loc, rot, _ = m.decompose()
         loc.z = surf(loc.y, f >= OPEN_END - 10) - track(duck, f)
         # walking: up over each planted foot (when the arms swing widest), and the weight over it
-        a = track(SWING, f) if SWING else 0.0
-        loc.z += 0.028 * min(1.0, abs(a) / 0.22) - 0.014 * (1.0 if abs(a) > 0.005 else 0.0)
-        loc += rot @ Vector((-0.11 * a, 0.0, 0.0))
+        if GAIT_IN:   # up over each foot as it passes under the body, in time with the walk cycle
+            gph, gw = GAIT_IN.at(f)
+            loc.z += gw * 0.012 * math.cos(4 * math.pi * (gph - WALK["p_cross"]))
         return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
     t = smooth((f - 420) / (SIT1 - 420))
     stand = F @ Matrix.Translation((0, 0, -track(duck, f)))
@@ -646,6 +761,7 @@ def path(f):
 
 
 SWING = None
+GAIT_IN = None
 for side in "LR":
     plants[side][0][2] = foot_on(A, side)
 walk(path, 0, 84, 4, "R", ramp_open=False)                   # up to the hatch
@@ -654,6 +770,9 @@ walk(path, 188, 420, 10, "R")                                # up the ramp and a
 for side in "LR":
     plants[side][-1][1] = LEN
 SWING = sorted(swing + [(SIT0, 0.0), (LEN, 0.0)], key=lambda k: k[0])
+GAIT_IN = None
+RAMP_OPEN = lambda f: f >= OPEN_END - 10
+GAIT_IN = Gait([(0, 84), (124, 170), (188, 420)], ground_at, LEN)
 feet = {s: ([tuple(p) for p in plants[s]], [(0, 1.0), (SIT0 + 20, 1.0), (SIT1 - 6, 0.0)]) for s in "LR"}
 
 # the hands: the right pulls the handle; the left steadies on the roof edge ducking in, then on the seat back
@@ -691,7 +810,7 @@ if not ONLY_EXIT:
                     (300, Vector((0, 0.5, 0.2))), (400, seat), (520, Vector((0, -3.0, 0.0))), (LEN, Vector((0, 3.0, 0.3)))],
                    [(0, 0.3), (60, 0.7), (130, 0.6), (200, 0.4), (300, 0.2), (400, 0.6), (440, 0.4), (SIT1, 0.0),
                     (520, 0.3), (560, 0.3), (LEN, 0.0)]),
-        swing_keys=SWING, camera=lav_cam)
+        swing_keys=None, camera=lav_cam, gait=GAIT_IN)
 
 # ---- check: the head under the roof inside, the feet on what they stand on
 body = next(o for o in kit if o.name.split(".")[0] == "body" and o.type == "MESH")
@@ -723,7 +842,7 @@ F2 = W(-0.05, 0.78, CAB, 180)
 R2 = W(0.00, -2.60, BAY, 180)
 B2 = W(0.20, -4.90, G, 180)                          # off the ramp, clear of its swing back up
 wps[EXIT_WP].matrix_world = B2
-x_duck = [(0, 0.0), (UP0, 0.0), (95, 0.2), (175, 0.2), (205, 0.13), (245, 0.13), (285, 0.0)]  # lower under the turret's ring by the cab
+x_duck = [(0, 0.0), (UP0, 0.0), (95, 0.26), (180, 0.26), (210, 0.15), (245, 0.15), (285, 0.0)]  # lower under the turret's ring by the cab
 X_LEG = [F2.to_translation(), R2.to_translation(), B2.to_translation()]
 
 
@@ -737,6 +856,7 @@ def x_along(f):
 
 
 X_SWING = None
+GAIT_OUT = None
 
 
 def x_ground_at(f):
@@ -753,9 +873,9 @@ def x_ground_at(f):
     rot = F2.to_quaternion()
     loc.z = surf(loc.y) - track(x_duck, f)
     if f < 330:
-        a = track(X_SWING, f) if X_SWING else 0.0
-        loc.z += 0.028 * min(1.0, abs(a) / 0.22) - 0.014 * (1.0 if abs(a) > 0.005 else 0.0)
-        loc += rot @ Vector((-0.11 * a, 0.0, 0.0))
+        if GAIT_OUT:   # up over each foot as it passes under the body, in time with the walk cycle
+            gph, gw = GAIT_OUT.at(f)
+            loc.z += gw * 0.012 * math.cos(4 * math.pi * (gph - WALK["p_cross"]))
     return Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
 
 
@@ -767,6 +887,9 @@ walk(x_ground_at, UP1, 330, 10, "R")                     # back along the bay an
 for side in "LR":
     plants[side][-1][1] = X_LEN
 X_SWING = sorted(swing + [(X_LEN, 0.0)], key=lambda k: k[0])
+GAIT_OUT = None
+RAMP_OPEN = lambda f: f >= X_OPEN_END - 10
+GAIT_OUT = Gait([(UP1, 330)], x_ground_at, X_LEN)
 x_feet = {s: ([tuple(p) for p in plants[s]], [(0, 0.0), (80, 0.0), (105, 1.0), (X_LEN, 1.0)]) for s in "LR"}
 X_ROOF_EDGE = Vector((-0.55, -2.85, 0.62))
 x_hands = {"RH": ([(40, SEAT_BACK), (90, SEAT_BACK)], [(36, 0.0), (52, 1.0), (84, 1.0), (100, 0.0)]),
@@ -794,7 +917,7 @@ exit_ = build(
     look_keys=([(0, Vector((0, -3.0, -0.2))), (100, Vector((0, -3.0, -0.4))), (240, Vector((0, -4.6, -1.4))),
                 (330, Vector((0.3, -8.0, -0.6))), (360, Vector((0, -3.2, -0.2))), (X_LEN, Vector((0.3, -9.0, 0.0)))],
                [(0, 0.5), (40, 0.6), (120, 0.3), (240, 0.4), (330, 0.2), (350, 0.6), (420, 0.5), (X_LEN, 0.0)]),
-    swing_keys=X_SWING, camera=lav_exit_cam)
+    swing_keys=None, camera=lav_exit_cam, gait=GAIT_OUT)
 
 worst = (9.0, 0)
 bva.show_clip(C, root, arm, "exit")

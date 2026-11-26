@@ -12,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 3, 7),
+    "version": (1, 3, 8),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
@@ -967,6 +967,11 @@ class RFA_PT_people(bpy.types.Panel):
         if shown in ("enter", "exit"):
             col.operator(RFA_OT_people_snap_end.bl_idname, icon="KEYFRAME")
             col.operator(RFA_OT_people_seat_at_end.bl_idname, icon="EMPTY_ARROWS")
+        sounds = box.column(align=True)
+        sounds.label(text="Door sounds (sound names, e.g. RFG_VEH_FOLEY_APC_REAR_OPEN)")
+        for key, text in (("rfa_door_open_sound", "Opens"), ("rfa_door_close_sound", "Shuts")):
+            if key in root:  # (made by Animate Getting In; older kits: set them as the root's custom properties)
+                sounds.prop(root, '["%s"]' % key, text=text)
         box.operator(RFA_OT_people_export.bl_idname, icon="EXPORT")
         box.operator(RFA_OT_people_remove.bl_idname, icon="TRASH")
 
