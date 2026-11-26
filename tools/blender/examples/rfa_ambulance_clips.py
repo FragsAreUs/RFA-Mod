@@ -404,6 +404,10 @@ def place_camera(eye, target):
     """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
     inv = arm.matrix_world.inverted()
     E, T = inv @ eye, inv @ target
+    # the game places the camera bones relative to where the clip has carried the player (the root bone's
+    # movement so far, not its turn): take that off so the camera stays put in the world
+    moved = arm.pose.bones["root"].head - arm.data.bones["root"].head_local
+    E, T = E - moved, T - moved
     lb, cb = arm.pose.bones["camera-lookat"], arm.pose.bones["camera"]
     now = cb.head - lb.head
     turn = rot_between(now, E - T) if now.length > 1e-4 else Quaternion()

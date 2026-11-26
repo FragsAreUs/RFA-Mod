@@ -545,6 +545,10 @@ def place_camera(eye, target):
     """The camera bones: camera-lookat at the point looked at, camera (its child) at the eye (world points)."""
     inv = arm.matrix_world.inverted()
     E, T = inv @ eye, inv @ target
+    # the game places the camera bones relative to where the clip has carried the player (the root bone's
+    # movement so far, not its turn): take that off so the camera stays put in the world
+    moved = arm.pose.bones["root"].head - arm.data.bones["root"].head_local
+    E, T = E - moved, T - moved
     lb, cb = arm.pose.bones["camera-lookat"], arm.pose.bones["camera"]
     now = cb.head - lb.head
     turn = rot_between(now, E - T) if now.length > 1e-4 else Quaternion()
@@ -765,7 +769,7 @@ LEN = 600
 OPEN_END = 176
 OPEN_AT = OPEN_END - 43                      # the ramp swings down in ~0.43 s once sped up, as the APC rear-door sound was made for: it clanks as it lands
 SIT0, SIT1 = 426, 492                        # sitting down
-CLOSE_AT, CLOSE_END = 500, 572               # the ramp swings shut
+CLOSE_AT, CLOSE_END = 330, 373               # the ramp swings shut behind him once he is in the bay (both triggers needed, else the game warns and shuts it itself)
 keys = [(0, A), (84, H), (118, H), (170, B), (188, B), (278, R), (420, F)]
 duck = [(0, 0.0), (230, 0.0), (262, 0.14), (420, 0.12), (SIT0, 0.12), (SIT1, 0.0)]
 
@@ -882,7 +886,7 @@ X_LEN = 440
 X_OPEN_END = 240
 X_OPEN = X_OPEN_END - 40  # swings down in ~0.43 s once sped up, so the APC rear-door sound's clank lands with it
 # late: the game shuts the door about 1.7 s after "door end", whatever the close triggers say
-X_CLOSE, X_CLOSE_END = 350, 420
+X_CLOSE, X_CLOSE_END = 335, 375   # shut once he is off it, inside the clip (needs both close triggers)
 UP0, UP1 = 40, 110                                   # out of the seat, turned round, in the aisle
 F2 = W(-0.05, 0.78, CAB, 180)
 R2 = W(0.00, -2.60, BAY, 180)

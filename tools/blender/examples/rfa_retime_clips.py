@@ -6,8 +6,8 @@ bva = sys.modules["rfa_animation_tools.blender_vehicle_anim"]
 C = bpy.context
 
 # vehicle: {clip: (cut at frame, speed factor)}
-PLAN = {"RF_LAV_1": {"enter": (510, 0.6), "exit": (345, 0.65)},
-        "Civ_Emergency_1": {"enter": (192, 0.7), "exit": (150, 0.7)}}
+PLAN = {"RF_LAV_1": {"enter": (510, 0.6), "exit": (380, 0.65)},
+        "Civ_Emergency_1": {"enter": (192, 0.7), "exit": (160, 0.7)}}
 SCENES = {"RF_LAV_1": "LAV", "Civ_Emergency_1": "Ambulance"}
 
 
