@@ -390,7 +390,7 @@ def setup(context, game_folder, mod_folder, vehicle, report):
             container = next(n for n in bio.GameFiles.archive(game_folder, bv.VEHICLES).names() if n.lower() == container.lower())
             root, _ = bv.make_kit(context, game_folder, container, vehicle)
         root["rfa_people_vehicle"] = vehicle
-        for key in ("rfa_door_open_sound", "rfa_door_close_sound"):
+        for key in ("rfa_door_open_sound", "rfa_door_close_sound", "rfa_door_land_sound"):
             if key not in root:
                 root[key] = ""
         root["rfa_people_original"] = original
@@ -682,11 +682,15 @@ def _set_table(game_folder, base_set, name, states, actions):
     return text
 
 
-def _anim_file(stem, triggers, moving):
+def _anim_file(stem, triggers, moving, sounds=()):
+    """An anim_files.xtbl entry. sounds: (frame at 30 fps, sound name) the clip plays itself."""
     t = "".join(f"<Trigger><Name>{n}</Name><Frame>{f}</Frame></Trigger>" for n, f in triggers)
     out = f"<Anim_file><Animation><Filename>{stem}.animx</Filename><Preload>False</Preload></Animation>"
     if t:
         out += f"<Triggers>{t}</Triggers>"
+    s = "".join(f"<Sound><Frame>{f}</Frame><Foley>{n}</Foley><Looping>False</Looping></Sound>" for f, n in sounds)
+    if s:
+        out += f"<Sounds>{s}</Sounds>"
     if moving:
         out += "<Flags>" + "".join(f"<Flag>{f}</Flag>" for f in MOVING_FLAGS) + "</Flags>"
     return out + "</Anim_file>"
@@ -752,7 +756,7 @@ def export(context, game_folder, mod_folder, root, arm, report):
             written.append(path)
             # Triggers at 30 frames a second, as anim_files.xtbl counts them, from the clip's start.
             first = int(round(action.frame_range[0]))
-            triggers[clip] = sorted(((n, max(0, (int(f) - first) // 2)) for n, f in json.loads(action.get("rfa_triggers", "[]"))),
+            triggers[clip] = sorted(((n, max(1, (int(f) - first) // 2)) for n, f in json.loads(action.get("rfa_triggers", "[]"))),
                                     key=lambda t: t[1])
     finally:
         show_clip(context, root, arm, keep[3] if keep[3] in actions else "enter")
@@ -819,7 +823,10 @@ def export(context, game_folder, mod_folder, root, arm, report):
     files = read_table(game_folder, mod_folder, "anim_files.xtbl")
     for clip, action in actions.items():
         stem = action["rfa_name"]
-        entry = _anim_file(stem, triggers.get(clip, []), clip != "drive")
+        # The door landing (or swinging fully open): the kit's rfa_door_land_sound at the clip's "door end".
+        land = str(root.get("rfa_door_land_sound", "")).strip()
+        sounds = [(f, land) for n, f in triggers.get(clip, []) if land and n == "door end"]
+        entry = _anim_file(stem, triggers.get(clip, []), clip != "drive", sounds)
         span = _anim_file_entry(files, stem + ".animx")
         files = files[:span[0]] + entry + files[span[1]:] if span else _insert_before(files, "</Anim_files>", entry)
         # Any other entry for the same file (left by an older export) goes: the game would read the first.
