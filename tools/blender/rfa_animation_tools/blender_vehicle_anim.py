@@ -344,6 +344,13 @@ def show_clip(context, root, arm, clip):
     arm.rotation_mode = "QUATERNION"
     arm.location = (0, 0, 0)
     arm.rotation_quaternion = (1, 0, 0, 0)
+    # Every bone back to rest first: a channel the clip doesn't key would otherwise keep whatever an
+    # earlier clip or script left on it (a stray scale there stretched the arms in game).
+    for pb in arm.pose.bones:
+        pb.location = (0, 0, 0)
+        pb.rotation_quaternion = (1, 0, 0, 0)
+        pb.rotation_euler = (0, 0, 0)
+        pb.scale = (1, 1, 1)
     arm.animation_data.action = action
     _load_markers(scene, action)
     first, last = (int(round(v)) for v in action.frame_range)
