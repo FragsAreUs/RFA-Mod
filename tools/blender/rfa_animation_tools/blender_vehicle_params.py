@@ -31,6 +31,32 @@ def _format(kind, v):
 # ---------------------------------------------------------------- the fields
 
 
+def working_foley(vehicle):
+    """The working copy's Foley ({field: sound}) while this vehicle is being edited here, else None."""
+    if _work["root"] is None or _work["vehicle"].lower() != (vehicle or "").lower():
+        return None
+    foley = _work["root"].find("Foley")
+    return {el.tag: (el.text or "").strip() for el in foley} if foley is not None else {}
+
+
+def sound_written(context, vehicle, field, sound):
+    """The RFA Sounds tab wrote one of this vehicle's sounds to the game: the working copy and its field follow
+    (as written, so not marked as changed)."""
+    if working_foley(vehicle) is None:
+        return
+    root = _work["root"]
+    foley = root.find("Foley")
+    if foley is None or foley.find(field) is None:
+        fill(context, _work["vehicle"], vp.parse_entry(_table(context), vehicle) or root)  # a new element: read it again
+        return
+    key = vp.path_key((("Foley", 0), (field, 0)))
+    _work["original"][key] = sound
+    for it in context.window_manager.rfa_vp_items:
+        if it.key == key:
+            it.sval = sound
+            it.changed = False
+
+
 def _changed(item):
     item.changed = item.sval != _work["original"].get(item.key, item.sval)
 
@@ -39,6 +65,8 @@ def _sval_update(self, context):
     if _work["busy"] or _work["root"] is None:
         return
     vp.set_value(_work["root"], vp.key_path(self.key), self.sval)
+    from . import blender_sounds as bs
+    bs.redraw(context)
     _work["busy"] = True
     try:
         if self.kind == "Float":
@@ -182,6 +210,8 @@ def _load(op, context, vehicle):
         op.report({"ERROR"}, f"vehicles.xtbl has no vehicle named {vehicle} (export it first)")
         return {"CANCELLED"}
     fill(context, vehicle, root)
+    from . import blender_sounds as bs
+    bs.redraw(context)
     op.report({"INFO"}, f"{vehicle}: {len(context.window_manager.rfa_vp_items)} parameters")
     return {"FINISHED"}
 
@@ -235,6 +265,8 @@ class RFA_OT_vp_template_apply(bpy.types.Operator):
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         fill(context, _work["vehicle"], _work["root"], original=False)
+        from . import blender_sounds as bs
+        bs.redraw(context)
         self.report({"INFO"}, f"{n} parts copied from {wm.rfa_vp_template.split(':', 1)[1]}; Write to Game to keep them")
         return {"FINISHED"}
 
@@ -297,6 +329,7 @@ class RFA_OT_vp_write(bpy.types.Operator):
         path = bva.write_table(_folders(context)[1], "vehicles.xtbl", text[:span[0]] + vp.entry_text(_work["root"]) + text[span[1]:])
         bs._vehicle_cache.pop(_work["vehicle"], None)
         fill(context, _work["vehicle"], _work["root"])
+        bs.redraw(context)
         self.report({"INFO"}, f"{_work['vehicle']} written to {path}; the game uses it from its next start")
         return {"FINISHED"}
 
@@ -376,6 +409,7 @@ class RFA_PT_vehicle_params(bpy.types.Panel):
         row = layout.row(align=True)
         row.operator(RFA_OT_vp_edit_selected.bl_idname, icon="RESTRICT_SELECT_OFF")
         row.operator(RFA_OT_vp_edit.bl_idname, text="Any Vehicle...", icon="VIEWZOOM")
+        layout.prop(wm, "rfa_vp_follow")
         if _work["root"] is None or not len(wm.rfa_vp_items):
             layout.label(text="Pick a vehicle to edit its parameters", icon="INFO")
             return
@@ -433,6 +467,26 @@ class RFA_PT_vehicle_params(bpy.types.Panel):
             layout.label(text="Nothing matches")
 
 
+def _follow():
+    """Every half second: when the vehicle selected in the scene isn't the one edited here and nothing here is
+    waiting to be written, edit the selected one (so the tabs all show the same vehicle)."""
+    try:
+        context = bpy.context
+        wm = context.window_manager
+        if not wm.rfa_vp_follow or context.mode not in ("OBJECT", "POSE", "EDIT_MESH", "EDIT_ARMATURE"):
+            return 0.5
+        from . import blender_sounds as bs
+        vehicle, _ = bs.current_vehicle(context)
+        if vehicle and vehicle.lower() != _work["vehicle"].lower() and not any(i.changed for i in wm.rfa_vp_items):
+            root = vp.parse_entry(_table(context), vehicle)
+            if root is not None:
+                fill(context, vehicle, root)
+                bs.redraw(context)
+    except Exception as e:  # never let the timer die
+        print("RFA Animation Tools: following the selected vehicle:", e)
+    return 0.5
+
+
 classes = (RFA_VParam, RFA_OT_vp_edit, RFA_OT_vp_edit_selected, RFA_OT_vp_template_pick, RFA_OT_vp_template_apply,
            RFA_OT_vp_template_save, RFA_OT_vp_template_delete, RFA_OT_vp_write, RFA_OT_vp_revert, RFA_OT_vp_choose,
            RFA_OT_vp_reset, RFA_PT_vehicle_params)
@@ -447,14 +501,20 @@ def register():
     wm.rfa_vp_section = EnumProperty(name="Section", items=_section_items)
     wm.rfa_vp_template = StringProperty(name="Template")
     wm.rfa_vp_choosing = StringProperty()
+    wm.rfa_vp_follow = BoolProperty(name="Follow selected vehicle", default=True,
+                                    description="Edit whichever vehicle is selected in the scene (unless changes here are waiting to be written)")
+    if not bpy.app.timers.is_registered(_follow):
+        bpy.app.timers.register(_follow, first_interval=1.0, persistent=True)
     wm.rfa_vp_apply = EnumProperty(name="Copy", options={"ENUM_FLAG"},
                                    items=[(k, label, f"Copy the template's {label.lower()}") for k, label, _ in vp.SECTIONS],
                                    default={"ENGINE", "TRANSMISSION", "WHEELS", "STEERING", "HANDLING"})
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_follow):
+        bpy.app.timers.unregister(_follow)
     wm = bpy.types.WindowManager
-    for p in ("rfa_vp_apply", "rfa_vp_choosing", "rfa_vp_template", "rfa_vp_section", "rfa_vp_filter", "rfa_vp_items"):
+    for p in ("rfa_vp_follow", "rfa_vp_apply", "rfa_vp_choosing", "rfa_vp_template", "rfa_vp_section", "rfa_vp_filter", "rfa_vp_items"):
         if hasattr(wm, p):
             delattr(wm, p)
     for c in reversed(classes):

@@ -108,7 +108,12 @@ def current_vehicle(context):
 
 
 def vehicle_foley(context, vehicle):
-    """{field: sound} of a vehicle's Foley, or None when vehicles.xtbl has no such vehicle (read once, until changed)."""
+    """{field: sound} of a vehicle's Foley, or None when vehicles.xtbl has no such vehicle (read once, until changed).
+    While the RFA Tuning tab edits this vehicle, its working copy (with changes not yet written) is what's shown."""
+    from . import blender_vehicle_params as bvp
+    shared = bvp.working_foley(vehicle)
+    if shared is not None:
+        return shared
     if vehicle not in _vehicle_cache:
         from . import blender_vehicle_anim as bva
         text = bva.read_table(*_folders(context), "vehicles.xtbl")
@@ -147,7 +152,18 @@ def set_vehicle_sound(context, vehicle, field, sound):
         entry = entry[:end] + f"\t<Foley>\n\t\t\t{element}\n\t\t</Foley>\n\t" + entry[end:]
     path = bva.write_table(mod, "vehicles.xtbl", text[:span[0]] + entry + text[span[1]:])
     _vehicle_cache.pop(vehicle, None)
+    from . import blender_vehicle_params as bvp
+    bvp.sound_written(context, vehicle, field, sound)  # the RFA Tuning tab's copy follows
+    redraw(context)
     return path
+
+
+def redraw(context):
+    """Draw every sidebar again, so all the tabs show the same."""
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
 
 
 # ---------------------------------------------------------------- the list, its search and its drop-downs
@@ -286,6 +302,7 @@ class RFA_OT_sound_set(bpy.types.Operator):
             return {"CANCELLED"}
         if self.key.startswith("rfa_door_"):
             root[self.key] = sound
+            redraw(context)
             self.report({"INFO"}, f"{vehicle}: {self.key} = {sound or '(none)'}; export the vehicle's animations to use it")
             return {"FINISHED"}
         try:
