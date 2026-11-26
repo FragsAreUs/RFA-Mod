@@ -12,7 +12,7 @@ Part of RFA-Mod (tools/blender/rfa_animation_tools). See README.md.
 bl_info = {
     "name": "RFA Animation Tools",
     "author": "RFA-Mod",
-    "version": (1, 4, 1),
+    "version": (1, 5, 0),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > RFA Anim; File > Import / Export",
     "description": "Red Faction: Armageddon skeletons, characters and animations (.rig_pc, .ccmesh_pc, .anim_pc), and new vehicles",
@@ -30,14 +30,15 @@ import sys
 
 # Blender reloads only this file when the add-on is installed again or re-enabled; the other files stay
 # as first loaded unless reloaded here (in dependency order), so a new version would run old code.
-for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "rfa_sounds", "blender_io", "blender_vehicle", "blender_vehicle_anim",
-              "blender_sounds"):
+for _name in ("rfa_formats", "rfa_textures", "rfa_vehicle", "rfa_sounds", "rfa_vehicle_params", "blender_io", "blender_vehicle", "blender_vehicle_anim",
+              "blender_sounds", "blender_vehicle_params"):
     _module = sys.modules.get(f"{__name__}.{_name}")
     if _module is not None:
         importlib.reload(_module)
 
 from . import blender_io as bio
 from . import blender_sounds as bs
+from . import blender_vehicle_params as bvp
 from . import blender_vehicle as bv
 from . import blender_vehicle_anim as bva
 from . import rfa_formats as rf
@@ -1061,6 +1062,7 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
     bs.register()
+    bvp.register()
     bpy.types.TOPBAR_MT_file_import.append(_menu_import)
     bpy.types.TOPBAR_MT_file_export.append(_menu_export)
 
@@ -1068,6 +1070,7 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(_menu_export)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)
+    bvp.unregister()
     bs.unregister()
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
