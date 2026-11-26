@@ -184,7 +184,7 @@ def sections_xml(root, sections):
         if s in sections:
             el = copy.deepcopy(child)
             el.tail = None
-            out.setdefault(s, []).append(ET.tostring(el, encoding="unicode"))
+            out.setdefault(s, []).append(ET.tostring(el, encoding="unicode", short_empty_elements=False))
     return out
 
 
@@ -259,4 +259,5 @@ def delete_template(mod_folder, name):
 
 
 def entry_text(root):
-    return ET.tostring(root, encoding="unicode")
+    # Never <tag />: the game's table reader takes only <tag></tag> (a short one crashed it at start-up, 2026-11-26).
+    return ET.tostring(root, encoding="unicode", short_empty_elements=False)

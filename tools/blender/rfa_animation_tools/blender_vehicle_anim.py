@@ -656,7 +656,7 @@ def _interaction_entry(base_text, vehicle, root, the_set, steps):
     if s is None:
         s = ET.SubElement(el, "Anim_Set")
     s.text = the_set
-    return ET.tostring(el, encoding="unicode")
+    return ET.tostring(el, encoding="unicode", short_empty_elements=False)  # never <tag />: the game reads only <tag></tag>
 
 
 def _set_table(game_folder, base_set, name, states, actions):
