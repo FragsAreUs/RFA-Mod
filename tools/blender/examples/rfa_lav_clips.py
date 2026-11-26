@@ -657,7 +657,7 @@ print("LAV Get In made, 0-%d; ground %.2f, seat %s; head's least room under the 
 # down the ramp and off it, the ramp swinging shut behind. Ends standing behind the LAV, facing away from it.
 EXIT_WP = acts["exit"]["rfa_to_waypoint"]
 X_LEN = 440
-X_OPEN, X_OPEN_END = 60, 124
+X_OPEN, X_OPEN_END = 150, 240                  # late: the game shuts the door about 1.7 s after "door end", whatever the close triggers say
 X_CLOSE, X_CLOSE_END = 350, 420
 UP0, UP1 = 40, 110                                   # out of the seat, turned round, in the aisle
 F2 = W(-0.05, 0.78, CAB, 180)
