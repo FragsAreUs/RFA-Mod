@@ -253,6 +253,12 @@ function ui_pause_menu_init()
 	else
 		ruin_tip_group:set_visible(false)
 	end
+
+	-- [RFA] Options > Main Menu > Style: Modern covers the pause menu too (vdo_button_highlight.lua's rfa_theme_*).
+	local rfa_apply, rfa_screen = _GetAnyGlobalSilent("rfa_theme_apply"), _GetAnyGlobalSilent("rfa_theme_screen") -- [RFA]
+	if rfa_apply ~= nil and rfa_screen ~= nil and rfa_apply() then -- [RFA]
+		rfa_screen({List, Sub_list}) -- [RFA]
+	end -- [RFA]
 end
 
 function ui_pause_menu_cleanup()

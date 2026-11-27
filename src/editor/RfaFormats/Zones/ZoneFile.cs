@@ -218,6 +218,20 @@ public sealed class ZoneFile
         return obj;
     }
 
+    /// <summary>
+    /// Attaches an object that is attached to nothing to another, as its first child (as the game's logic
+    /// handlers mostly are): the parent then names it as its child, and it names the parent's former first
+    /// child as its sibling. <see cref="Remove"/> takes it out of the list again, <see cref="PutBack"/> puts it back.
+    /// </summary>
+    public void Attach(ZoneObject child, ZoneObject parent)
+    {
+        if (child.Parent != ZoneObject.None) throw new InvalidOperationException("the object is attached to another already");
+        if (child == parent) throw new InvalidOperationException("an object can't be attached to itself");
+        child.Parent = parent.Handle;
+        child.Sibling = parent.Child;
+        parent.Child = child.Handle;
+    }
+
     /// <summary>Puts an object (a <see cref="Copy"/>) into the zone at a place in its list.</summary>
     public void Insert(int index, ZoneObject obj)
     {

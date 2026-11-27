@@ -40,7 +40,7 @@ Part g_parts[] = {
     {L"guerrilla_kiosks", guerrilla_kiosks::Init, nullptr, false, false},
     {L"guerrilla_people", guerrilla_people::Init, nullptr, false, false},
     {L"guerrilla_save", guerrilla_save::Init, nullptr, false, false},
-    {L"guerrilla_vehicles", guerrilla_vehicles::Init, nullptr, false, false},
+    {L"guerrilla_vehicles", guerrilla_vehicles::Init, guerrilla_vehicles::Menu, false, false},
     {L"guerrilla_voices", guerrilla_voices::Init, nullptr, false, false},
     {L"guerrilla_world", guerrilla_world::Init, nullptr, false, false},
 };
@@ -105,7 +105,7 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     rfa::LogInfo("%d of %d parts running: %ls", running, static_cast<int>(kParts), names.c_str());
 }
 
-// The in-game menus (rfa_menu.h): guerrilla_gear's upgrades window, then guerrilla_hud's keys window. A part whose
+// The in-game menus (rfa_menu.h): guerrilla_gear's upgrades window, guerrilla_hud's keys window, then guerrilla_vehicles' flyer controls. A part whose
 // menus crashed is left out from then on, and the rest wait for the next frame, after the loader has put ImGui
 // right again.
 extern "C" __declspec(dllexport) void __cdecl RFAMod_Menu(const RFAMenu* menu) {

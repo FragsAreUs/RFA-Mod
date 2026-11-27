@@ -125,7 +125,8 @@ public partial class LevelEditor : UserControl, IEditorDocument
         Inspector = DocumentParts.Detach(InspectorPart);
         DetachWindowParts();  // its menus, status and Show chips, which the window shows (see LevelEditor.Layout.cs)
         names = context.Assets.ZoneNames;
-        propertyRows = new ZonePropertyRows(names, context.Assets.ZoneSchema, context.Assets.Choices);
+        propertyRows = new ZonePropertyRows(names, context.Assets.ZoneSchema, context.Assets.Choices,
+                                            () => context.Assets.LogicFunctions, ScriptObjectName, h => EditScript(h), AddLogicHandler);
         zone = ZoneFile.Read(ReadZone());
         NotePlacements();
         gameLink = new GameLink(Workspace.ModFolder);
@@ -318,6 +319,12 @@ public partial class LevelEditor : UserControl, IEditorDocument
         return $"#{obj.Index} (handle {obj.Handle:X8})";
     }
 
+    /// <summary>An object of this zone named in a logic handler's script: its class and outliner label; null if it isn't here.</summary>
+    string? ScriptObjectName(uint handle) =>
+        zone?.Objects.FirstOrDefault(o => o.Handle == handle) is { } obj
+            ? Label(obj) is var label && !label.StartsWith('#') ? $"{names.Class(obj.ClassHash)} \"{label}\"" : names.Class(obj.ClassHash)
+            : null;
+
     ObjectKind KindOf(ZoneObject obj) => ObjectKind.Of(names.Class(obj.ClassHash), LevelScene.ModelOf(obj) != null);
 
     /// <summary>The Scene panel's tree of the zone's objects and the level's parts (see LevelEditor.Scene.cs).</summary>
@@ -453,6 +460,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
     {
         MarkUnsaved();
         if (selected == null) return;
+        scene?.Remodel(selected);  // a squad, vehicle set, item type... changed: its model too
         scene?.Place(selected);
         ShowSelection();
         ShowObjectTitle();  // its name may be the property changed
@@ -1453,6 +1461,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         MarkUnsaved();
         UpdateUndoButtons();
         LinksChanged();  // a property naming another object may have changed, or the object moved
+        KeepSpawnResourcesStocked();  // a spawn node added, or its squad, vehicle set or exo changed
     }
 
     void Undo()
@@ -1490,6 +1499,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
         }
         else if (change.Object != null)
         {
+            scene?.Remodel(change.Object);  // (an undone property may have named another squad, vehicle...)
             scene?.Place(change.Object);
             foreach (ZoneObject other in change.Others ?? []) scene?.Place(other);
             LinksChanged();
@@ -2625,6 +2635,7 @@ public partial class LevelEditor : UserControl, IEditorDocument
                                                    here.Select(p => p.Group).ToList()).TrimEnd('.') + ". ";
             }
             message += BringEffects();
+            message += BringRigAnimations();
             byte[] bytes = ZoneBytesWithoutGeometry();  // (the level geometry goes into the stitch list: SaveGeometry)
             message += "Saved: " + string.Join("; ", Copies().Select(p => Put(p.Archive, p.Container, bytes))) + ".";
             message += SaveGeometry();

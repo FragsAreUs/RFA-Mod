@@ -2047,8 +2047,10 @@ void ReadSkeletonList() {
 
 void StartTraffic();  // traffic.cpp (with convoys.cpp, edf.cpp, crews.cpp on its frame)
 namespace gv { void StartFlyers(); }  // flyers.cpp
+namespace gv { void StartFlyerControls(); bool FlyersFly(); }  // flyer_controls.cpp; flyers.cpp
 namespace gv { void StartTurrets(); }  // turrets.cpp
 namespace gv { void StartEntering(); }  // entering.cpp
+namespace gv { void StartGamepad(); }  // gamepad.cpp
 namespace gv { void StartRiders(); }  // riders.cpp
 
 void guerrilla_vehicles::Init() {
@@ -2077,10 +2079,13 @@ void guerrilla_vehicles::Init() {
     HookTurretParts();
     gv::StartTurrets();
     gv::StartEntering();
+    gv::StartGamepad();
     gv::StartRiders();
     HookLights();
     StartTraffic();
     gv::StartFlyers();
+    if (gv::FlyersFly()) gv::StartFlyerControls();  // made in the vehicles' presim, which flyers.cpp hooks
+    else rfa::Log("Flyer controls: Guerrilla's flyers keep their own (the vehicles' presim isn't hooked: [GuerrillaVehicles] NpcFlight=0 or no flyers.txt)");
     if (rfa::IniInt(L"GuerrillaVehicles", L"Dents", 1) != 0) TurnOnDents();
     else rfa::LogDetail("Dents: off ([GuerrillaVehicles] Dents=0)");
     HookDoors();

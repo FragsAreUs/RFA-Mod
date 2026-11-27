@@ -101,7 +101,26 @@ public sealed class GameLink : IDisposable
     {
         string path = Path.Combine(folder, "to_game.txt"), temporary = path + ".tmp";
         File.WriteAllLines(temporary, commands);
-        File.Move(temporary, path, overwrite: true);
+        // The game may have the file open that moment (it reads and deletes it within a tenth of a
+        // second): try again for a moment rather than fail (the move is refused, access denied).
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < 40)
+            {
+                Thread.Sleep(25);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { File.Delete(temporary); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                EditorLog.Write("Couldn't hand the game its commands (the link file stayed in use): " + ex.Message);
+                return;
+            }
+        }
     }
 
     /// <summary>

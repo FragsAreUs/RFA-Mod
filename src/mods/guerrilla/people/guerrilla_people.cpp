@@ -75,6 +75,7 @@
 #include "rfa_guerrilla.h"
 #include "people_api.h"
 #include "rfa_game.h"
+#include "rfa_bundle.h"
 #include "ambient.h"
 #include "ambush.h"
 #include "story.h"
@@ -1807,47 +1808,32 @@ auto const OverlayAnimation = reinterpret_cast<int(__cdecl*)(const char* name, v
 // The names stay with their places (the library keeps the pointer), so they are kept for good.
 std::vector<std::unique_ptr<std::string>> g_animationNames;
 
-// Reads one file whole into memory aligned as the game's animation memory (16 bytes), kept for good.
-void* ReadAnimation(const std::wstring& path, unsigned& size) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) return nullptr;
-    const std::streamoff length = file.tellg();
-    if (length <= 0 || length > 64 * 1024 * 1024) return nullptr;
-    void* data = _aligned_malloc(static_cast<size_t>(length), 16);
-    if (!data) return nullptr;
-    file.seekg(0);
-    if (!file.read(static_cast<char*>(data), length)) {
-        _aligned_free(data);
-        return nullptr;
-    }
-    size = static_cast<unsigned>(length);
-    return data;
-}
-
 void LoadOurAnimations() {
     const std::wstring folder = rfa::RootDir() + L"\\mods\\guerrilla_people\\animations\\";
-    WIN32_FIND_DATAW found;
-    HANDLE search = FindFirstFileW((folder + L"*.anim_pc").c_str(), &found);
-    if (search == INVALID_HANDLE_VALUE) return;
-    unsigned loaded = 0, failed = 0, noRoom = 0;
+    // (From the folder's bundle when it is as the folder's files are: see rfa_bundle.h.)
+    const ULONGLONG started = GetTickCount64();
+    bool fromBundle = false;
+    unsigned failed = 0;
+    const std::vector<rfa::BundledFile> files = rfa::ReadFolderBundled(folder, L"*.anim_pc", &fromBundle, &failed);
+    const ULONGLONG readIn = GetTickCount64() - started;
+    if (files.empty() && !failed) return;
+    unsigned loaded = 0, noRoom = 0;
     size_t bytes = 0;
-    do {
-        std::wstring file = found.cFileName;
+    for (const rfa::BundledFile& file : files) {
         std::string stem;
-        for (wchar_t c : file.substr(0, file.size() - 8)) stem += static_cast<char>(c);  // without .anim_pc
+        for (wchar_t c : file.name.substr(0, file.name.size() - 8)) stem += static_cast<char>(c);  // without .anim_pc
         if (stem.empty() || stem.size() > 58) { ++failed; continue; }
         g_animationNames.push_back(std::make_unique<std::string>(stem + ".anim"));
         const char* name = g_animationNames.back()->c_str();
         if (FindAnimation(name) < 0 && NewAnimation(name) < 0) { ++noRoom; continue; }
-        unsigned size = 0;
-        void* data = ReadAnimation(folder + file, size);
-        if (!data) { ++failed; continue; }
-        // (A place that has data already, or is kept already, is passed over: the game's own wins.)
-        if (OverlayAnimation(name, data, size, true) < 0) { _aligned_free(data); ++noRoom; continue; }
+        // (A place that has data already, or is kept already, is passed over. The data stays either way: a bundle's
+        // files are one block.)
+        if (OverlayAnimation(name, file.data, file.size, true) < 0) { ++noRoom; continue; }
         ++loaded;
-        bytes += size;
-    } while (FindNextFileW(search, &found));
-    FindClose(search);
+        bytes += file.size;
+    }
+    rfa::LogDetail("Animations: read in %llu ms %s, put in the library in %llu ms", readIn,
+             fromBundle ? "from the folder's bundle" : "file by file (bundled for next time)", GetTickCount64() - started - readIn);
     rfa::LogDetail("Animations: %u of Guerrilla's people's loaded and kept (%.1f MB)", loaded, bytes / 1048576.0);
     if (noRoom) rfa::Log("Animations: %u had no place in the animation library (it is full: is guerrilla_vehicles on?); the people won't play them", noRoom);
     if (failed) rfa::Log("Animations: %u could not be read", failed);

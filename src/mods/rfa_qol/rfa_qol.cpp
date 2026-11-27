@@ -12,10 +12,16 @@
 //                   picture settings, saved as you change them
 //   streaming       a fix for a race in the game's zone stream-out         (no settings)
 //                   (two worker threads; a crash when zones stream out)
+//   animations      the .anim_pc files of mods\animations, in place of    (no settings)
+//                   the game's animations of their names, or new ones
+//   tables          the .xtbl files of mods\tables, in place of the        (no settings)
+//                   tables the game reads while it starts, or new ones
+//   ruin_ai         enemies that fight in Ruin levels (editor-made ones)  [Ruin]
 //   live analysis   a pipe for the MCP servers (live_analysis_mcp.exe):    [Mcp]
-//                   only when [Mcp] Enabled=1 (off by default)
+//                   only when [Mcp] Enabled=1 (off by default; Options > Experimentals
+//                   > MCP servers turns it on and off while the game runs)
 // Each works as it did when it was a DLL of its own: its settings section in rfa_mods.ini, its own
-// switch under [Mods] (borderless=, console=, fov=, video_settings=, spawner=, limits=, graphics=, streaming=; 0 = off, on when missing) and
+// switch under [Mods] (borderless=, console=, fov=, video_settings=, spawner=, limits=, graphics=, streaming=, animations=, tables=; 0 = off, on when missing) and
 // its own name in the log. They start in the order they loaded as separate DLLs.
 //
 // Those old DLLs (borderless.dll, console.dll, fov.dll, video_settings.dll) may still be in mods\
@@ -56,6 +62,22 @@ bool g_fovRunning = false;
 bool g_spawnerRunning = false;
 bool g_limitsRunning = false;
 bool g_graphicsRunning = false;
+bool g_ruinAiRunning = false;
+bool g_liveAnalysisRunning = false;
+
+// The live analysis pipe, on or off as [Mcp] Enabled says (and [Mods] rfa_live_analysis= allows).
+void FollowMcpSwitch() {
+    const bool wanted = rfa::IniInt(L"Mcp", L"Enabled", 0) != 0;
+    if (wanted && !g_liveAnalysisRunning) {
+        g_liveAnalysisRunning = StartPart(L"rfa_live_analysis", live_analysis::Init);
+    } else if (!wanted && g_liveAnalysisRunning) {
+        live_analysis::Shutdown();
+        g_liveAnalysisRunning = false;
+        rfa::Log("Live analysis is off now ([Mcp] Enabled=0): the pipe is closed");
+    } else if (!wanted) {
+        rfa::Log("Live analysis is off ([Mcp] Enabled=0): no pipe is opened");
+    }
+}
 
 }  // namespace
 
@@ -70,12 +92,13 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init() {
     g_limitsRunning = StartPart(L"limits", limits::Init);
     g_graphicsRunning = StartPart(L"graphics", graphics::Init);
     StartPart(L"streaming", streaming::Init);
+    StartPart(L"animations", animations::Init);
+    StartPart(L"tables", tables::Init);
+    g_ruinAiRunning = StartPart(L"ruin_ai", ruin_ai::Init);
     // The live analysis pipe lets a program on this PC read and change the running game, for the MCP
-    // servers. It is opened only when the player turns the MCP servers on ([Mcp] Enabled=1).
-    if (rfa::IniInt(L"Mcp", L"Enabled", 0))
-        StartPart(L"rfa_live_analysis", live_analysis::Init);
-    else
-        rfa::LogDetail("Live analysis is off ([Mcp] Enabled=0): no pipe is opened");
+    // servers. It is opened only when the player turns the MCP servers on ([Mcp] Enabled=1, or Options >
+    // Experimentals > MCP servers, which opens and closes it at once).
+    FollowMcpSwitch();
 }
 
 // A console command for the next frame, from the loader's rfa_console_command (the main menu's Guerrilla
@@ -84,9 +107,11 @@ extern "C" __declspec(dllexport) int __cdecl RFAQol_QueueConsoleCommand(const ch
     return g_consoleRunning && console::QueueCommand(line) ? 1 : 0;
 }
 
-// The game's menus changed a setting: only fov listens.
+// The game's menus changed a setting: fov and ruin_ai listen, and [Mcp] Enabled opens or closes the pipe.
 extern "C" __declspec(dllexport) void __cdecl RFAMod_SettingChanged(const char* section, const char* key) {
     if (g_fovRunning) fov::SettingChanged(section, key);
+    if (g_ruinAiRunning) ruin_ai::SettingChanged(section, key);
+    if (_stricmp(section, "Mcp") == 0 && _stricmp(key, "Enabled") == 0) FollowMcpSwitch();
 }
 
 // The in-game menus (rfa_menu.h): the spawner's, the limits' and the graphics'.

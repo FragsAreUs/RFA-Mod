@@ -103,6 +103,26 @@ public sealed class GameAssets
         return found;
     }
 
+    /// <summary>
+    /// The game's script functions (statemachine_functions.xtbl and edge_conditions.xtbl, as the game sees
+    /// them), for showing logic handlers' scripts; read once. Null if neither table can be found.
+    /// </summary>
+    public LogicFunctions? LogicFunctions
+    {
+        get
+        {
+            if (logicFunctionsRead) return logicFunctions;
+            byte[]? actions = workspace.ReadAsGameSeesIt("statemachine_functions.xtbl");
+            byte[]? tests = workspace.ReadAsGameSeesIt("edge_conditions.xtbl");
+            logicFunctions = actions == null && tests == null ? null
+                : new LogicFunctions(actions == null ? null : XtblFile.FromBytes(actions), tests == null ? null : XtblFile.FromBytes(tests));
+            logicFunctionsRead = true;
+            return logicFunctions;
+        }
+    }
+    LogicFunctions? logicFunctions;
+    bool logicFunctionsRead;
+
     /// <summary>Every place a file name is: archives, and containers in them. Empty until the index is ready.</summary>
     public IEnumerable<(string Archive, string? Container)> PlacesOf(string name) =>
         places == null ? [] : places[name].Select(f => (f.Archive, f.Container));
@@ -117,6 +137,8 @@ public sealed class GameAssets
     Dictionary<string, AsmPrimitive>? primitiveKinds;    // a file's primitive as some asset list gives it (its type, allocator, ...)
     Task<Dictionary<string, ChunkPlacement>>? placements;
     readonly Dictionary<uint, List<ObjectExample>> examples = [];  // filled with the placements (see ObjectExamples)
+    readonly List<LogicRecipe> gameRecipes = [];                    // and every different state machine of the game's scripts
+    readonly Dictionary<string, SortedSet<string>> scriptTexts = [];  // and the texts they pass, by "function|parameter number"
 
     /// <summary>
     /// The classes whose objects only Volition's tools could make (their data isn't described: a logic handler's
@@ -399,6 +421,45 @@ public sealed class GameAssets
         return headers.Count == 0 ? null : Package("effects", headers, null, out _);
     }
 
+    /// <summary>
+    /// The animations these animated rigs (object_anim_rig's rig_name: anim_rig_objects.xtbl entries) play, those
+    /// <paramref name="present"/> says the level hasn't: every state's and action's file (x.animx, kept as x.anim_pc).
+    /// A level only has them where its world's containers do (Infestation's precache has the monoliths' and tentacles';
+    /// a Ruin level none), and a rig without them doesn't move. As a package to bring into a level's containers; null if
+    /// there is nothing to bring. <paramref name="missing"/> names the rigs it was for.
+    /// </summary>
+    public ChunkPackage? RigAnimationPackageFor(IEnumerable<string> rigs, Func<string, bool> present, out List<string> missing)
+    {
+        missing = [];
+        ReadAssetLists();
+        if (files == null || Table("anim_rig_objects.xtbl") is not { } table) return null;
+        var headers = new List<string>();
+        foreach (string rig in rigs.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (table.Entries.FirstOrDefault(e => XtblFile.EntryName(e).Equals(rig, StringComparison.OrdinalIgnoreCase)) is not { } entry) continue;
+            bool any = false;
+            foreach (string clip in RigFiles(entry).Where(f => f.EndsWith(".animx", StringComparison.OrdinalIgnoreCase)))
+            {
+                string header = Path.ChangeExtension(clip, ".anim_pc");
+                if (present(header) || headers.Contains(header, StringComparer.OrdinalIgnoreCase) || !files.ContainsKey(header)) continue;
+                headers.Add(header);
+                any = true;
+            }
+            if (any) missing.Add(rig);
+        }
+        return headers.Count == 0 ? null : Package("rig animations", headers, null, out _);
+    }
+
+    /// <summary>Every file an entry names (its Filename fields, at any depth).</summary>
+    static IEnumerable<string> RigFiles(XtblElement element)
+    {
+        foreach (XtblElement child in element.Elements)
+        {
+            if (child.Name.Equals("Filename", StringComparison.OrdinalIgnoreCase) && !child.HasElements && child.Value.Trim().Length > 0) yield return child.Value.Trim();
+            foreach (string inside in RigFiles(child)) yield return inside;
+        }
+    }
+
     /// <summary>The textures a version-36 effect file names (its bitmaps: a count at +0x1C, a list of their names' offsets at +0x20).</summary>
     static IEnumerable<string> EffectTextures(byte[] effect)
     {
@@ -437,6 +498,7 @@ public sealed class GameAssets
                 {
                     ".cchk_pc" or ".cstch_pc" => ((byte)2, (byte)1, (byte)6, (byte)0),
                     ".cefct_pc" => ((byte)13, (byte)1, (byte)6, (byte)0),
+                    ".anim_pc" => ((byte)16, (byte)1, (byte)2, (byte)0),
                     ".cpeg_pc" or ".cvbm_pc" => ((byte)1, (byte)1, (byte)6, (byte)1),
                     _ => ((byte)0, (byte)0, (byte)0, (byte)0),
                 };
@@ -479,6 +541,10 @@ public sealed class GameAssets
                            .OrderBy(f => f.Archive, StringComparer.OrdinalIgnoreCase).ThenBy(f => f.Container ?? "", StringComparer.OrdinalIgnoreCase)
                            .ToList();
         var own = new Workspace(workspace.GameFolder, workspace.ModFolder);
+        ZoneNames zoneNames = ZoneNames;                 // (read here, on the editor's thread)
+        LogicFunctions? functions = LogicFunctions;
+        uint handlerClass = NameHashes.ClassHash("object_logic_handler"), scriptProperty = NameHashes.PropertyHash("logic_handler_buffer");
+        var recipeKeys = new HashSet<string>(StringComparer.Ordinal);
         return placements = Task.Run(() =>
         {
             var found = new Dictionary<string, ChunkPlacement>(StringComparer.OrdinalIgnoreCase);
@@ -491,8 +557,15 @@ public sealed class GameAssets
                 {
                     Packfile pack = file.Container == null ? own.Archive(file.Archive) : own.Container(file.Archive, file.Container);
                     if (pack.Find(file.Name) is not { } entry) continue;
-                    foreach (ZoneObject obj in ZoneFile.Read(pack.Read(entry)).Objects)
+                    ZoneFile zoneFile = ZoneFile.Read(pack.Read(entry));
+                    Dictionary<uint, uint>? classOf = null;
+                    foreach (ZoneObject obj in zoneFile.Objects)
                     {
+                        if (obj.ClassHash == handlerClass && obj.Property(scriptProperty) is { } held && LogicScript.Read(held.Value) is { } script)
+                        {
+                            classOf ??= zoneFile.Objects.GroupBy(o => o.Handle).ToDictionary(g => g.Key, g => g.First().ClassHash);
+                            NoteScript(script, file, classOf, zoneNames, functions, recipeKeys);
+                        }
                         if (obj.Property(chunkName) is { Type: ZoneProperty.TextType } name)
                             found.TryAdd(Path.GetFileNameWithoutExtension(name.Text), new ChunkPlacement(file.Archive, file.Container, file.Name, obj.Handle));
                         if (!exampleClasses.TryGetValue(obj.ClassHash, out string? className)) continue;
@@ -509,6 +582,87 @@ public sealed class GameAssets
             }
             return found;
         });
+    }
+
+    /// <summary>
+    /// Every state machine of the game's scripts, each different one once (by what it does, whatever objects it
+    /// names), as recipes to add to a script (see <see cref="LogicRecipe.FromGame"/>). Found with
+    /// <see cref="ChunkPlacements"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<LogicRecipe>> GameRecipes()
+    {
+        await ChunkPlacements();
+        lock (gameRecipes) return gameRecipes.OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Texts for a function's text parameter: the names in the table it names (an explosion's in explosions.xtbl, an
+    /// objective's in mission_objectives.xtbl, ...), then those the game's scripts pass it (once they've been read,
+    /// see <see cref="ChunkPlacements"/>).
+    /// </summary>
+    public IReadOnlyList<string> ScriptTextChoices(string function, int parameter, string parameterName)
+    {
+        var choices = new List<string>();
+        if (TableForText(function, parameterName) is { } tableName && Table(tableName) is { } table)
+            choices.AddRange(table.Entries.Select(XtblFile.EntryName).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase));
+        lock (scriptTexts)
+            if (scriptTexts.TryGetValue($"{function}|{parameter}", out SortedSet<string>? used))
+                choices.AddRange(used.Where(u => !choices.Contains(u, StringComparer.OrdinalIgnoreCase)));
+        return choices;
+    }
+
+    /// <summary>The table whose entries' names a text parameter takes, by its name (and function); null if none.</summary>
+    static string? TableForText(string function, string parameterName)
+    {
+        string name = parameterName.Trim().ToLowerInvariant();
+        if (function.Contains("explosion", StringComparison.OrdinalIgnoreCase) && name is "name" or "explosion name" or "explosion") return "explosions.xtbl";
+        return name switch
+        {
+            "explosion name" => "explosions.xtbl",
+            "effect" or "effect name" => "effects.xtbl",
+            "objective" or "objective name" or "objective_name" => "mission_objectives.xtbl",
+            "persona" or "voice persona" => "audio_personas.xtbl",
+            "weapon" or "weapon name" or "weapon type" or "weapon_info" => "weapons.xtbl",
+            "item_type" => "items_3d.xtbl",
+            "orders type" => "orders_types.xtbl",
+            "mission" or "mission name" or "mission_name" => "missions.xtbl",
+            "projectile_info" => "projectiles.xtbl",
+            "shake style" => "camera_shake.xtbl",
+            "achievement" => "achievements.xtbl",
+            "audio log name" => "audio_logs.xtbl",
+            "anim action" or "action_name" or "action name" or "rig_action" or "human_action" => "anim_actions.xtbl",
+            "anim_state_name" or "anim state" => "anim_states.xtbl",
+            _ => null,
+        };
+    }
+
+    /// <summary>A script of the game's (read while looking through the levels): its state machines as recipes, its texts.</summary>
+    void NoteScript(LogicScript script, IndexedFile file, Dictionary<uint, uint> classOf, ZoneNames zoneNames, LogicFunctions? functions, HashSet<string> keys)
+    {
+        foreach (LogicCall call in script.Calls())
+            for (int i = 0; i < call.Arguments.Count; i++)
+                if (call.Arguments[i] is { Type: LogicValueType.String } text && text.Text.Text.Length > 0)
+                    lock (scriptTexts)
+                    {
+                        if (!scriptTexts.TryGetValue($"{call.Function}|{i}", out SortedSet<string>? set))
+                            scriptTexts[$"{call.Function}|{i}"] = set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                        set.Add(text.Text.Text);
+                    }
+        var describe = new LogicText(script, null, null);
+        string where = file.Container != null
+            ? $"{Path.GetFileNameWithoutExtension(file.Container)} / {Path.GetFileNameWithoutExtension(file.Name)}"
+            : Path.GetFileNameWithoutExtension(file.Name);
+        foreach (LogicObject machine in script.Objects)
+        {
+            // The same state machine naming other objects (a copy for each building, each squad) is one recipe.
+            string key = System.Text.RegularExpressions.Regex.Replace(describe.Describe(machine), @"\b[0-9A-F]{8}\b", "#");
+            lock (gameRecipes)
+            {
+                if (!keys.Add(key)) continue;
+                gameRecipes.Add(LogicRecipe.FromGame(script, machine, where, functions,
+                    h => classOf.TryGetValue(h, out uint c) ? zoneNames.Class(c) : null));
+            }
+        }
     }
 
     /// <summary>What tells an example object from others of its class: a rig's name, the first words in a handler's script.</summary>

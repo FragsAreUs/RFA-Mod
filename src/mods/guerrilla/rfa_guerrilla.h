@@ -51,6 +51,7 @@ bool Running();
 
 namespace guerrilla_vehicles {
 void Init();
+void Menu(const RFAMenu* menu);  // the flyer controls' item in F7 > Guerrilla (flyer_controls.cpp)
 bool Running();
 }  // namespace guerrilla_vehicles
 

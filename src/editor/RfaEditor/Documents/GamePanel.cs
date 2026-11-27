@@ -486,6 +486,25 @@ static class Native
         }
     }
 
+    /// <summary>
+    /// Does long work at the lowest processor priority but with the disk as usual: the game's index is read this
+    /// way, since Windows' background mode (<see cref="InBackground"/>) also gives the disk away, and while the
+    /// game loads it took minutes instead of one.
+    /// </summary>
+    public static T AtLowPriority<T>(Func<T> work)
+    {
+        const int THREAD_PRIORITY_LOWEST = -2, THREAD_PRIORITY_NORMAL = 0;
+        bool lowered = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+        try
+        {
+            return work();
+        }
+        finally
+        {
+            if (lowered) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+        }
+    }
+
     public static Saved Save(IntPtr window)
     {
         GetWindowRect(window, out RECT rect);

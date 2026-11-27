@@ -16,6 +16,8 @@
                             <TextBlock Text="Save" />
                         </StackPanel>
                     </Button>
+                    <CheckBox x:Name="LiveBox" DockPanel.Dock="Right" Content="Live" VerticalAlignment="Center" Margin="0,0,10,0"
+                              Checked="OnLiveChanged" Unchecked="OnLiveChanged" />
                     <TextBlock Text="{x:Static local:Icons.Info}" Style="{StaticResource Icon}" FontSize="11" Margin="0,0,7,0"
                                Foreground="{StaticResource DimTextBrush}" />
                     <TextBlock x:Name="SourceText" VerticalAlignment="Center" TextWrapping="Wrap" FontSize="11.5" Margin="0,0,10,0"

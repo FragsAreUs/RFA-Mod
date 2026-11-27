@@ -687,13 +687,13 @@ sealed class NewLevel
             report.Add("rf4_mp_pregame.xtbl: its row taken out");
         }
         // Its own spawn resources (as New level named them: as the level), only if no other level names them.
-        string spawn = Encoding.Latin1.GetString(workspace.Read(Tables, "spawn_resource.xtbl"));
-        if (resources.Append(name).Any(r => r.Equals(name, StringComparison.OrdinalIgnoreCase)) && !OthersUse(name))
-            if (LevelFiles.WithoutRow(spawn, "spawn_resource_entry", "Name", name) is { } left)
-            {
-                workspace.WriteOverride(Tables, "spawn_resource.xtbl", Encoding.Latin1.GetBytes(left));
-                report.Add($"spawn_resource.xtbl: its spawn resources \"{name}\" taken out");
-            }
+        string spawn = SpawnResourceFiles.Read(workspace);
+        if (resources.Append(name).Any(r => r.Equals(name, StringComparison.OrdinalIgnoreCase)) && !OthersUse(name) &&
+            LevelFiles.WithoutRow(spawn, "spawn_resource_entry", "Name", name) != null)
+        {
+            SpawnResourceFiles.Change(workspace, table => LevelFiles.WithoutRow(table, "spawn_resource_entry", "Name", name));
+            report.Add($"spawn_resource.xtbl: its spawn resources \"{name}\" taken out");
+        }
         // Its name in every language.
         string upper = name.ToUpperInvariant();
         string[] tags = ["RUIN_MAP_" + upper, "RUIN_MAP_" + upper + "_UC", "MP_" + upper + "_NAME", "MP_" + upper + "_NAME_UC"];
@@ -765,7 +765,7 @@ sealed class NewLevel
             if (SpawnResource.Read(resources, templateResources) is { } own)
             {
                 own.Name = name;
-                workspace.WriteOverride(Tables, "spawn_resource.xtbl", Encoding.Latin1.GetBytes(own.WriteTo(resources, templateResources)));
+                SpawnResourceFiles.Write(workspace, own, templateResources);
                 change["resource_reservation"] = name;
                 resourcesName = name;
                 report.Add($"spawn_resource.xtbl: its own spawn resources \"{name}\", to start with what {mode} levels spawn ({templateResources}'s); change them with Spawn resources");

@@ -27,6 +27,7 @@ sealed class LevelScene
     readonly Dictionary<ZoneObject, Model3DGroup> pieceOf = [];          // every object's own geometry, placed
     readonly Dictionary<ZoneObject, ObjectKind> kindOf = [];
     readonly HashSet<ZoneObject> drawnWithModel = [];
+    readonly Dictionary<ZoneObject, (ObjectKind Kind, string Parts)> drawnAs = [];  // what each object was drawn as (see Remodel)
     readonly HashSet<ZoneObject> loose = [];                             // drawn on their own (moved or added)
     readonly Dictionary<Model3D, ZoneObject> looseGeometry = [];         // a loose object's geometry -> the object
     readonly List<Batch> batches = [];
@@ -122,6 +123,7 @@ sealed class LevelScene
         var piece = new Model3DGroup();
         ObjectKind kind = ObjectKind.Of(names.Class(obj.ClassHash), ModelOf(obj) != null);
         var drawnWith = showModels ? modelOf(obj) : null;
+        drawnAs[obj] = (kind, PartsText(drawnWith));
         var parts = drawnWith?.Select(part => (part.Placement, Geometry: model(part.File, part.Uid))).ToList();
         if (parts != null && parts.Count > 0 && parts.All(p => p.Geometry != null))
         {
@@ -146,6 +148,26 @@ sealed class LevelScene
         pieceOf[obj] = piece;
         kindOf[obj] = kind;
         SetPlacement(obj);
+    }
+
+    /// <summary>The models an object is drawn with, as text to compare: each file, which object in it and where it goes.</summary>
+    static string PartsText(IReadOnlyList<ObjectPart>? parts) =>
+        parts == null ? "" : string.Join(";", parts.Select(p => $"{p.File}/{p.Uid}/{p.Placement}"));
+
+    /// <summary>
+    /// Draws an object anew if a property changed what it is drawn with (a squad spawn's squad, a vehicle
+    /// spawn's set, an item's type, a turret's...): its models are looked up again, and if they or its kind
+    /// differ from what it was drawn with, its piece is made again. True if it was.
+    /// </summary>
+    public bool Remodel(ZoneObject obj)
+    {
+        if (!drawnAs.TryGetValue(obj, out var was)) return false;
+        ObjectKind kind = ObjectKind.Of(names.Class(obj.ClassHash), ModelOf(obj) != null);
+        string parts = PartsText(showModels ? modelOf(obj) : null);
+        if (kind == was.Kind && parts == was.Parts) return false;
+        Remove(obj);
+        Add(obj);
+        return true;
     }
 
     /// <summary>Joins every object that isn't loose into batches: one per kind, way of drawing (models or cubes) and texture.</summary>
@@ -238,6 +260,7 @@ sealed class LevelScene
         pieceOf.Remove(obj);
         if (drawnWithModel.Remove(obj)) ModelsPlaced--;
         kindOf.Remove(obj);
+        drawnAs.Remove(obj);
     }
 
     /// <summary>The objects drawn with their models (not as cubes), where they are now, shown or not.</summary>

@@ -257,6 +257,18 @@ public partial class LevelEditor
         [NameHashes.ClassHash("object_squad_spawn_node"), NameHashes.ClassHash("object_vehicle_spawn_node"), NameHashes.ClassHash("object_exo_spawn_node")];
 
     /// <summary>Objects the game only puts down as the level loads (pickups, preplaced weapons, turrets): made live, then the level loaded again.</summary>
+    /// <summary>
+    /// An item whose items_3d.xtbl entry has inherit_bone_transforms: it takes its bones from what wears it (a character's
+    /// clothing, the player's coat, a monolith's or the queen's body, a banner hung on a rig), so the game can't make it
+    /// on its own. Other items, cloth ones too (banners, wires), are made live as any object.
+    /// </summary>
+    bool WornItem(ZoneObject obj) =>
+        obj.ClassHash == NameHashes.ClassHash("item") &&
+        obj.Property("item_type")?.Text is { Length: > 0 } type &&
+        SpawnTableEntry("items_3d.xtbl", type.Trim()) is { } entry &&
+        entry.ElementsNamed("Item_Flags").SelectMany(f => f.ElementsNamed("Flag"))
+             .Any(f => f.Value.Trim().Equals("inherit_bone_transforms", StringComparison.OrdinalIgnoreCase));
+
     static readonly HashSet<uint> ShownAfterReload =
         [NameHashes.ClassHash("item"), NameHashes.ClassHash("weapon"), NameHashes.ClassHash("object_turret_spawn_node")];
 
@@ -529,14 +541,30 @@ public partial class LevelEditor
                     at = made.FirstOrDefault(m => m.Handle == at.Parent);
                 return depth;
             }
-            foreach (ZoneObject obj in made.OrderBy(Depth)) lines.Add(gameLink.CreateCommand(obj.Handle, obj.ToBlock()));
+            foreach (ZoneObject obj in made.OrderBy(Depth))
+            {
+                // An item worn by something (see WornItem) isn't made on its own: the game couldn't finish making one,
+                // left it half-made, and ended a moment later (a pure virtual call as world::do_frame deleted it).
+                if (WornItem(obj)) continue;
+                // A spawn node's squad, vehicle or exo held in the spawn resources in force first (editor_reserve):
+                // the game spawns it once they have streamed in.
+                lines.AddRange(LiveReserveLines(obj));
+                lines.Add(gameLink.CreateCommand(obj.Handle, obj.ToBlock()));
+            }
         }
-        if (lines.Count == 0 && removed.Count == 0) return;
+        if (lines.Count == 0 && removed.Count == 0 && !made.Any(WornItem)) return;
         if (lines.Count > 0 && !gameLink.TrySend(lines)) return;  // the game hasn't taken the last ones yet: next time
         foreach (ZoneObject obj in moved) liveSent[obj.Handle] = obj.Placement;
         foreach (ZoneObject obj in made)
         {
             liveSent[obj.Handle] = obj.Placement;
+            if (WornItem(obj))
+            {
+                context.Log($"Live: {Label(obj)} isn't made in the running game: it's worn by a character or an animated rig (items_3d.xtbl " +
+                            "inherit_bone_transforms: clothing, the player's coat, a monolith's body, a banner on its rig), and on its own the game " +
+                            "can't finish making it (it ended the game). It may not load on its own after a reload either.");
+                continue;
+            }
             if (liveCreates++ < 20) context.Log($"Live: {Label(obj)} made in the game" +
                                                 (SpawnsLive.Contains(obj.ClassHash) ? ", and its squad, vehicle or exo spawned there." : "."));
             // Pickups and turrets are put down by the game as the level loads: they show once it is loaded again.

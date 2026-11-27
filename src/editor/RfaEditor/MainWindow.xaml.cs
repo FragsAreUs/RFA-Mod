@@ -226,19 +226,23 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     async Task BuildSearchIndexAsync()
     {
-        List<(string, Func<Packfile>)> archives = workspace.Archives().Select(archive => (archive, workspace.Open(archive))).ToList();
+        List<(string, string, Func<Packfile>)> archives = workspace.Archives().Select(archive => (archive, workspace.ArchivePath(archive), workspace.Open(archive))).ToList();
         var progress = new Progress<string>(text => StatusText.Text = text);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        // Reading the containers is disk work (a minute or so the first time; then only archives that changed
+        // are read again, see FileIndex). Done at the lowest processor priority (the disk as usual: Windows' background
+        // mode gave it away and, with the game loading beside it, the index took minutes); at normal priority while
+        // the game's main menu waits for it (Create level: its processing screen is up).
+        bool menuWaits = NewLevelAtStart != null || NewLevelMadeAtStart != null;
         try
         {
             searchIndex = await Task.Run(() => Native.InBackground(() => FileIndex.ArchiveFiles(archives)));
             StatusText.Text = $"{searchIndex.Count:N0} files in the archives. Reading the containers for search, models and textures...";
             var textures = new Dictionary<string, TextureRef>(StringComparer.OrdinalIgnoreCase);
-            // Reading every container takes a minute of disk work: done at background priority, so a
-            // game starting meanwhile (the Game panel) gets the disk first and doesn't stall.
-            List<IndexedFile> inContainers = await Task.Run(() => Native.InBackground(() => FileIndex.ContainerFiles(archives, progress, textures)));
+            List<IndexedFile> inContainers = await Task.Run(() => FileIndex.ContainerFiles(archives, progress, textures, background: !menuWaits));
             searchIndex = [.. searchIndex, .. inContainers];
             context.Assets.SetIndex(searchIndex, textures);
-            Log($"Ready: {searchIndex.Count:N0} files can be searched.");
+            Log($"Ready: {searchIndex.Count:N0} files can be searched (read in {started.Elapsed.TotalSeconds:0.0} s).");
             WriteNewLevelChoices();
             MakeLevelFromGameMenu();  // (its level made first, so the game's processing screen stays up while it is)
             // The game's main menu (Level editor > Create level) shows a popup until then: it waits for this.

@@ -77,6 +77,15 @@ local Rfa_experimentals = {
 		section = "GuerrillaWorld", key = "Brightness", default = 5},
 	{type = TYPE_SLIDER, label = "Clock speed", min = 0, max = 120, step = 4, current_value = 48,
 		section = "GuerrillaWorld", key = "ClockSpeed", default = 48},
+	-- Ruin levels made with the editor can have squads; the game turns enemies' hostility off in Ruin
+	-- (rfa_qol's ruin_ai), so they only fight with this on. It changes at once.
+	{type = TYPE_TOGGLE, label = "Enemies fight in Ruin", options = {"MENU_ENABLED", "MENU_DISABLED"}, current_value = 2,
+		section = "Ruin", key = "HostileAI", default = 0},
+	-- RFA-Mod's MCP servers (live_analysis_mcp.exe and the editor's RfaEditorMcp.exe, for an AI assistant):
+	-- [Mcp] Enabled, off by default. rfa_qol opens or closes the game's live analysis pipe at once; the servers
+	-- themselves read it as they start, so the program that runs them needs starting again after a change.
+	{type = TYPE_TOGGLE, label = "MCP servers", options = {"MENU_ENABLED", "MENU_DISABLED"}, current_value = 2,
+		section = "Mcp", key = "Enabled", default = 0},
 }
 -- [RFA] Options > Main Menu: how the main menu is laid out ([MainMenu] in rfa_mods.ini; ui_main_menu_pc.lua
 -- reads them each time it opens).
@@ -187,6 +196,19 @@ local function rfa_options_save()
 			end
 		end
 	end
+	-- [RFA] Main Menu's Style and Accent take effect at once: the shared colours (vdo_button_highlight.lua's
+	-- [RFA] rfa_theme_apply; what is drawn after takes them) and this page's own highlight.
+	local apply = _GetAnyGlobalSilent("rfa_theme_apply") -- [RFA]
+	if Rfa_page == "main_menu" and apply ~= nil then -- [RFA]
+		apply() -- [RFA]
+		local highlight = List.highlight -- [RFA]
+		if highlight ~= nil and highlight.left ~= nil then -- [RFA]
+			for i, part in ipairs({highlight.left, highlight.center, highlight.right}) do -- [RFA]
+				part:set_color(COLOR_HIGHLIGHT_BAR.R, COLOR_HIGHLIGHT_BAR.G, COLOR_HIGHLIGHT_BAR.B) -- [RFA]
+			end -- [RFA]
+			rfa_theme_highlight(highlight) -- [RFA]
+		end -- [RFA]
+	end -- [RFA]
 end
 
 -- As in the audio menu: an open slider shows its own confirm/cancel, so the hint bar hides.

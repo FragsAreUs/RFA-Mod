@@ -103,11 +103,15 @@ public partial class LevelEditor
             Redo: () => { if (removed != null) zone.PutBack(removed); foreach (ZoneObject copy in copies) scene?.Add(copy); },
             AddsOrRemoves: true));
         ObjectsChanged();
+        // The set's models (a monolith's claws and rocks, a tentacle's rocks) this zone's world hasn't: brought in on saving.
+        var needs = new List<string>();
+        NoteChunksToBring(copies, ChunkContainer()?.Container ?? zoneName, needs);
         ZoneObject picked = copies[Math.Max(0, group.ToList().IndexOf(original))];
         PickInOutliner(picked);
         context.Log($"Add: a copy of {place.Zone}'s {example.Class} ({example.Label})" +
                     (copies.Count > 1 ? $" with the {copies.Count - 1} object(s) of its set ({string.Join(", ", copies.Where(c => c != picked).GroupBy(c => names.Class(c.ClassHash)).Select(g => $"{g.Count()} {g.Key}"))})" : "") +
-                    $", where the view points; {renamed} handle(s) in their links and data changed to the copies'.");
+                    $", where the view points; {renamed} handle(s) in their links and data changed to the copies'." +
+                    (needs.Count > 0 ? $" Brought in on saving: {string.Join(", ", needs)}." : ""));
     }
 
     /// <summary>

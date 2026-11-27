@@ -68,6 +68,96 @@ interface IAssetSource
 }
 
 /// <summary>
+/// Where the Assets panel was: which folders are open, which is chosen, what Find has, the thing
+/// picked, and how far down each folder's list was scrolled. Shared by every level's panel (a level
+/// opened next starts where the last one was) and kept between runs in assets_panel.txt next to the
+/// editor (lines key=value: open=, chosen=, find=, picked=, scroll=offset|folder|find).
+/// </summary>
+static class AssetPlace
+{
+    static readonly string FilePath = System.IO.Path.Combine(AppContext.BaseDirectory, "assets_panel.txt");
+    const int MostScrolls = 200;
+
+    public static bool Known;                 // read from the file, or set since
+    public static HashSet<string> Open = [];
+    public static string? Chosen;
+    public static string Find = "";
+    public static string? Picked;             // the thing's name and detail
+    public static readonly Dictionary<string, double> Scroll = [];  // "folder\nfind" -> how far down
+    static DispatcherTimer? saveDelay;
+
+    static AssetPlace()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(FilePath)) return;
+            foreach (string line in System.IO.File.ReadAllLines(FilePath))
+            {
+                int eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                string key = line[..eq], value = line[(eq + 1)..];
+                switch (key)
+                {
+                    case "open": Open.Add(value); break;
+                    case "chosen": Chosen = value; break;
+                    case "find": Find = value; break;
+                    case "picked": Picked = value; break;
+                    case "scroll":
+                        string[] parts = value.Split('|', 3);
+                        if (parts.Length == 3 && double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double offset))
+                            Scroll[ScrollKey(parts[1], parts[2])] = offset;
+                        break;
+                }
+            }
+            Known = true;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            EditorLog.Write("The Assets panel's place couldn't be read: " + ex.Message);
+        }
+    }
+
+    public static string ScrollKey(string folder, string find) => folder + "\n" + find;
+
+    /// <summary>Something changed: written a moment later (not at every key typed in Find, every step of a scroll).</summary>
+    public static void Changed()
+    {
+        Known = true;
+        if (saveDelay == null)
+        {
+            saveDelay = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+            saveDelay.Tick += (_, _) => Save();
+            Dispatcher.CurrentDispatcher.ShutdownStarted += (_, _) => { if (saveDelay.IsEnabled) Save(); };
+        }
+        saveDelay.Stop();
+        saveDelay.Start();
+    }
+
+    static void Save()
+    {
+        saveDelay?.Stop();
+        try
+        {
+            var lines = new List<string> { "# Where the level editor's Assets panel was. The editor writes it." };
+            lines.AddRange(Open.Order().Select(k => "open=" + k));
+            if (Chosen != null) lines.Add("chosen=" + Chosen);
+            if (Find.Length > 0) lines.Add("find=" + Find);
+            if (Picked != null) lines.Add("picked=" + Picked);
+            foreach ((string key, double offset) in Scroll.Where(s => s.Value > 0).Take(MostScrolls))
+            {
+                string[] parts = key.Split("\n", 2);
+                lines.Add(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"scroll={offset}|{parts[0]}|{parts[1]}"));
+            }
+            System.IO.File.WriteAllLines(FilePath, lines);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            EditorLog.Write("The Assets panel's place couldn't be written: " + ex.Message);
+        }
+    }
+}
+
+/// <summary>
 /// The Assets panel of a document: folders of things to add on the left, the chosen folder's
 /// things in the middle (narrowed by Find), the picked one in 3D on the right. Double-click one
 /// or press Enter to add it where the middle of the view points, or drag it into the view to put
@@ -91,6 +181,9 @@ public partial class AssetBrowser : UserControl
     bool refreshQueued;
     Point? pressedAt;
     AssetItem? pressedItem;
+    bool restoring;           // the lists are being made again: what changes isn't the user moving
+    bool scrollPending;       // the list was filled anew and its place not put back yet
+    ScrollViewer? listScroll;
 
     internal AssetBrowser(IAssetSource source)
     {
@@ -99,6 +192,9 @@ public partial class AssetBrowser : UserControl
         preview = new ModelViewer(PreviewViewport, PreviewArea);
         previewDelay.Tick += (_, _) => { previewDelay.Stop(); ShowPreview(); };
         IsVisibleChanged += (_, _) => { if (IsVisible && stale) Refresh(); };
+        Sources.AddHandler(TreeViewItem.ExpandedEvent, new RoutedEventHandler(OnFolderOpenedOrClosed));
+        Sources.AddHandler(TreeViewItem.CollapsedEvent, new RoutedEventHandler(OnFolderOpenedOrClosed));
+        Items.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(OnListScrolled));
         ShowPreview();
     }
 
@@ -129,10 +225,29 @@ public partial class AssetBrowser : UserControl
     {
         stale = false;
         IReadOnlyList<AssetFolder> folders = source.AssetFolders();
-        // Which folders are open (at first, the top ones, so their ways of sorting show).
-        var open = new HashSet<string>(Sources.Items.Count == 0 ? folders.Select(f => f.Name) : OpenFolders());
-        string? chosen = (Sources.SelectedItem as TreeViewItem)?.Tag is FolderTag tag ? tag.Key : null;
+        // The first time, where the panel was last (in this level or another, this run or the last: see
+        // AssetPlace); after that, as it is now. (At the very first, the top folders are open, so their
+        // ways of sorting show.)
+        bool first = Sources.Items.Count == 0;
+        var open = new HashSet<string>(!first ? OpenFolders() : AssetPlace.Known ? AssetPlace.Open : folders.Select(f => f.Name));
+        string? chosen = !first ? ((Sources.SelectedItem as TreeViewItem)?.Tag is FolderTag tag ? tag.Key : null) : AssetPlace.Chosen;
         object? picked = (Items.SelectedItem as AssetItem)?.What;
+        string? pickedName = first ? AssetPlace.Picked : null;
+        restoring = true;
+        try
+        {
+            if (first && FindBox.Text.Length == 0 && AssetPlace.Find.Length > 0) FindBox.Text = AssetPlace.Find;
+            Rebuild(folders, open, chosen, picked, pickedName);
+        }
+        finally
+        {
+            restoring = false;
+        }
+        AssetPlace.Open = OpenFolders().ToHashSet();
+    }
+
+    void Rebuild(IReadOnlyList<AssetFolder> folders, HashSet<string> open, string? chosen, object? picked, string? pickedName)
+    {
 
         var everything = new AssetFolder("Everything", Icons.ShowAll, null, [], folders);
         Sources.Items.Clear();
@@ -142,11 +257,56 @@ public partial class AssetBrowser : UserControl
 
         TreeViewItem? again = chosen == null ? null : Find(Sources.Items, chosen);
         (again ?? (TreeViewItem)Sources.Items[Math.Min(1, Sources.Items.Count - 1)]).IsSelected = true;  // (lists it: OnSourceChosen)
-        if (picked != null && chosenItems.FirstOrDefault(i => i.What.Equals(picked)) is { } same && Items.Items.Contains(same))
+        AssetItem? same = picked != null ? chosenItems.FirstOrDefault(i => i.What.Equals(picked))
+                        : pickedName != null ? chosenItems.FirstOrDefault(i => NameOf(i) == pickedName) : null;
+        if (same != null && Items.Items.Contains(same))
         {
             Items.SelectedItem = same;
-            Items.ScrollIntoView(same);
+            // Where the list was scrolled is put back (ListChosen); with nowhere kept, the picked thing is shown.
+            if (!AssetPlace.Scroll.ContainsKey(CurrentScrollKey())) Items.ScrollIntoView(same);
         }
+    }
+
+    /// <summary>A thing as remembered between levels and runs (its object isn't the same one): its name and detail.</summary>
+    static string NameOf(AssetItem item) => item.Name + item.Detail;
+
+    string CurrentScrollKey() => AssetPlace.ScrollKey((Sources.SelectedItem as TreeViewItem)?.Tag is FolderTag tag ? tag.Key : "", FindBox.Text.Trim());
+
+    void OnFolderOpenedOrClosed(object sender, RoutedEventArgs e)
+    {
+        if (restoring) return;
+        AssetPlace.Open = OpenFolders().ToHashSet();
+        AssetPlace.Changed();
+    }
+
+    void OnListScrolled(object sender, ScrollChangedEventArgs e)
+    {
+        if (restoring || scrollPending || e.VerticalChange == 0) return;
+        AssetPlace.Scroll[CurrentScrollKey()] = e.VerticalOffset;
+        AssetPlace.Changed();
+    }
+
+    /// <summary>The list was filled anew: once it is laid out, it is scrolled to where it was for this folder and Find.</summary>
+    void PutBackScroll()
+    {
+        scrollPending = true;
+        Dispatcher.InvokeAsync(() =>
+        {
+            listScroll ??= Descendant<ScrollViewer>(Items);
+            if (listScroll != null && AssetPlace.Scroll.TryGetValue(CurrentScrollKey(), out double offset)) listScroll.ScrollToVerticalOffset(offset);
+            Dispatcher.InvokeAsync(() => scrollPending = false, DispatcherPriority.Background);
+        }, DispatcherPriority.Loaded);
+    }
+
+    static T? Descendant<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T found) return found;
+            if (Descendant<T>(child) is T inside) return inside;
+        }
+        return null;
     }
 
     /// <summary>A folder's row with its folders under it; its tag is the folder and its place (names joined by /).</summary>
@@ -196,7 +356,13 @@ public partial class AssetBrowser : UserControl
         return null;
     }
 
-    void OnSourceChosen(object sender, RoutedPropertyChangedEventArgs<object> e) => ListChosen();
+    void OnSourceChosen(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        ListChosen();
+        if (restoring || (Sources.SelectedItem as TreeViewItem)?.Tag is not FolderTag tag) return;
+        AssetPlace.Chosen = tag.Key;
+        AssetPlace.Changed();
+    }
 
     // ---- The list ------------------------------------------------------------------------------
 
@@ -226,6 +392,9 @@ public partial class AssetBrowser : UserControl
     {
         FindHint.Visibility = FindBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         ApplyFind();
+        if (restoring) return;
+        AssetPlace.Find = FindBox.Text;
+        AssetPlace.Changed();
     }
 
     void ApplyFind()
@@ -235,6 +404,7 @@ public partial class AssetBrowser : UserControl
             ? chosenItems
             : chosenItems.Where(i => i.Name.Contains(find, StringComparison.OrdinalIgnoreCase) || i.Detail.Contains(find, StringComparison.OrdinalIgnoreCase)).ToList();
         Items.ItemsSource = shown;
+        PutBackScroll();
         ListNote.Text = find.Length == 0
             ? $"{shown.Count:N0} in {chosenTitle}. Double-click one to add it where the view points, or drag it into the view."
             : $"{shown.Count:N0} of {chosenItems.Count:N0} in {chosenTitle} have \"{find}\" in their name.";
@@ -244,6 +414,9 @@ public partial class AssetBrowser : UserControl
     {
         previewDelay.Stop();
         previewDelay.Start();  // (a moment later, so stepping down the list with the keys stays quick)
+        if (restoring || Items.SelectedItem is not AssetItem item) return;
+        AssetPlace.Picked = NameOf(item);
+        AssetPlace.Changed();
     }
 
     AssetItem? ItemAt(object? hit) =>

@@ -522,15 +522,16 @@ public partial class MainWindow
                 string table = Encoding.Latin1.GetString(workspace.Read(TablesArchive, chosen.Table));
                 string changed = LevelFiles.WithRowValue(table, chosen.Row, chosen.KeyTag, chosen.Key, "resource_reservation", name)
                                  ?? throw new InvalidDataException($"{chosen.Table}'s row for {chosen.Key} couldn't be changed");
-                workspace.WriteOverride(TablesArchive, "spawn_resource.xtbl", Encoding.Latin1.GetBytes(made.WriteTo(resources, chosen.Entry)));
+                Log("Spawn resources: written" + SpawnResourceFiles.Write(workspace, made, chosen.Entry) + ".");
                 workspace.WriteOverride(TablesArchive, chosen.Table, Encoding.Latin1.GetBytes(changed));
                 Log($"Spawn resources: {chosen.Key} has its own now, \"{name}\" (from {chosen.Entry}; {chosen.Table} names it).");
             }
             else
             {
-                workspace.WriteOverride(TablesArchive, "spawn_resource.xtbl", Encoding.Latin1.GetBytes(made.WriteTo(resources)));
+                Log("Spawn resources: written" + SpawnResourceFiles.Write(workspace, made) + ".");
                 Log($"Spawn resources: {chosen.Entry} saved.");
             }
+            LevelEditor.MarkSpawnResourcesChosen(made.Name);  // (the level editor won't take any of it out)
             Log($"  {made.Characters.Count} characters, {made.Vehicles.Count} vehicles, {made.Exos.Count} exos{(made.PlayerLook != null ? ", the player as " + made.PlayerLook : "")}. " +
                 "The game reads its tables at start-up: restart it for them to apply.");
             RefreshOverrideMarks();

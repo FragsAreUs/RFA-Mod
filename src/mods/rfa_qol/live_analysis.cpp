@@ -209,6 +209,7 @@ struct LuaCommand {
     std::string* error = nullptr;
     HANDLE doneEvent = nullptr;
     bool completed = false;
+    bool console = false;  // code is a console command, run as it is (exec), not Lua
 };
 
 static std::mutex g_luaQueueMutex;
@@ -228,6 +229,13 @@ void __cdecl ProcessLuaCommandsCallback() {
     }
 
     for (auto& cmd : commandsToProcess) {
+        if (cmd.console) {  // exec: the console command itself, on the game's thread
+            RunCommand("%s", cmd.code.c_str());
+            if (cmd.result) *cmd.result = "OK: Executed '" + cmd.code + "' on the main thread";
+            cmd.completed = true;
+            if (cmd.doneEvent) SetEvent(cmd.doneEvent);
+            continue;
+        }
         // Execute via vint_lua console command on main thread
         std::string escaped = cmd.code;
         std::string resultStr;
@@ -305,7 +313,7 @@ bool ParseHexByte(const std::string& text, size_t at, BYTE& value) {
 
 // Helper to queue a Lua command for main thread execution
 // Returns the result string from the command
-static std::string QueueLuaCommand(const std::string& code, DWORD timeoutMs = 5000) {
+static std::string QueueLuaCommand(const std::string& code, DWORD timeoutMs = 5000, bool console = false) {
     std::string result;
     std::string error;
     HANDLE doneEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
@@ -316,6 +324,7 @@ static std::string QueueLuaCommand(const std::string& code, DWORD timeoutMs = 50
     cmd.result = &result;
     cmd.error = &error;
     cmd.doneEvent = doneEvent;
+    cmd.console = console;
 
     {
         std::lock_guard<std::mutex> lock(g_luaQueueMutex);
@@ -618,10 +627,9 @@ void PipeServerThread() {
                 std::getline(iss, command);
                 if (!command.empty() && command[0] == ' ') command.erase(0, 1);
                 if (!command.empty()) {
-                    RunCommand("%s", command.c_str());
-                    std::ostringstream oss;
-                    oss << "OK: Executed '" << command << "'";
-                    SendPipeResponse(pipe, oss.str());
+                    // On the game's own thread (the queue the Lua commands use): run from this pipe
+                    // thread, a command that touches the world (player_pathfind_to_camera) crashed the game.
+                    SendPipeResponse(pipe, QueueLuaCommand(command, 5000, true));
                 } else {
                     SendPipeResponse(pipe, "ERROR: Usage: exec <console_command>");
                 }

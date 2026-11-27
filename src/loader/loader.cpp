@@ -999,6 +999,8 @@ void ReadRuinMap(RuinMap* map, void* entry, int dlc) {
     map->nanoforgeAbility = ability ? FindNanoforgeAbility(ability) : 0;
 }
 
+extern "C" __declspec(dllexport) int __cdecl RFALoader_RescanOverrides();  // (below)
+
 // The loader's reader, in the game's reader's place: up to 32 maps, each started by its own
 // file_name. For the first five places it keeps what the game sets by place (the round times, the
 // scoreboard and the damage-to-score multiplier), so the game's five maps are as they always were.
@@ -1007,6 +1009,12 @@ void ReadRuinMap(RuinMap* map, void* entry, int dlc) {
 // score is beaten), which the five shipped maps don't do for a new one.
 void __cdecl ReadRuinMaps(void* table, int dlc) {
     if (!table) return;
+    // The list is read again each time Ruin's map list opens: a level the editor made since the game started has its
+    // archive in overrides\ now, which the file hooks must know of before the game looks for it (else the game says
+    // the storage device with its downloadable content was removed).
+    static bool readBefore = false;
+    if (readBefore) RFALoader_RescanOverrides();
+    readBefore = true;
     std::string leftOut;
     for (void* entry = FirstEntry(table, "wc_map_list"); entry; entry = NextEntry(table, entry, "wc_map_list")) {
         const int place = g_ruinMapCount;
@@ -1324,6 +1332,7 @@ unsigned __fastcall WorldLoadHook(void* world) {
     auto bytes = static_cast<const char*>(world);
     // (Not a load put off or called off: those return false too, with these set.)
     const bool real = *reinterpret_cast<const int*>(bytes + 0x23F4) == 0 && !(static_cast<BYTE>(bytes[0x2514]) & 0x24);
+    RFALoader_RescanOverrides();  // (a level made or saved since the game started is known before its archives are looked for)
     const unsigned loaded = g_worldLoad(world);
     if (real && !(loaded & 0xFF)) {
         char name[128];
@@ -1533,6 +1542,7 @@ HANDLE g_editorReady = nullptr;
 // true once it has, false if it closed first (or wasn't started).
 int __cdecl LuaLevelEditorReady(lua_State* L) {
     if (g_editorReady && WaitForSingleObject(g_editorReady, 0) == WAIT_OBJECT_0) {
+        RFALoader_RescanOverrides();  // the level it made is new in overrides\: known before the game looks for it
         rfa::game::lua_pushboolean(L, 1);
         return 1;
     }

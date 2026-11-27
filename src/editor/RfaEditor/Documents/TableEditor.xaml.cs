@@ -24,6 +24,7 @@ public partial class TableEditor : UserControl, IEditorDocument
     readonly FieldEditors editors;
     readonly Dictionary<string, IReadOnlyList<string>> referenceTargets = new(StringComparer.OrdinalIgnoreCase);
     string? overridePath;       // the override being edited; null until the first save if it came from the game
+    readonly string? guerrillaPath;  // the Guerrilla world's copy, which the game reads in its place while it starts (see GuerrillaTables)
     bool unsaved;
 
     internal TableEditor(EditorContext context, string archive, string fileName)
@@ -35,7 +36,19 @@ public partial class TableEditor : UserControl, IEditorDocument
         Outliner = DocumentParts.Detach(OutlinerPart);
         Inspector = DocumentParts.Detach(InspectorPart);
         overridePath = Workspace.OverrideFor(archive, fileName);
-        table = XtblFile.FromBytes(Workspace.Read(archive, fileName));
+        guerrillaPath = GuerrillaTables.CopyFor(Workspace, archive, fileName);
+        List<string> carried = [];
+        if (guerrillaPath == null) table = XtblFile.FromBytes(Workspace.Read(archive, fileName));
+        else
+        {
+            // The game starts with the Guerrilla world's table and reads the override only when told to read the
+            // table again: edit the Guerrilla world's, with any changes the override has made to Armageddon's.
+            byte[] theirs = File.ReadAllBytes(guerrillaPath);
+            table = XtblFile.FromBytes(theirs);
+            if (overridePath != null && !File.ReadAllBytes(overridePath).AsSpan().SequenceEqual(theirs))
+                carried = GuerrillaTables.CarryOver(table, XtblFile.FromBytes(Workspace.ReadOriginal(archive, fileName)),
+                                                    XtblFile.FromBytes(File.ReadAllBytes(overridePath)));
+        }
         editors = new FieldEditors(ReferenceTargets, OnChanged);
         PreviewKeyDown += (_, e) =>
         {
@@ -43,6 +56,20 @@ public partial class TableEditor : UserControl, IEditorDocument
             if (e.Key == Key.D && Keyboard.Modifiers == ModifierKeys.Control && CopyEntryButton.IsEnabled) { CopyEntry(); e.Handled = true; }
         };
         NewEntryButton.IsEnabled = table.Table != null && (table.Description != null || table.Entries.Any());
+        LiveBox.IsChecked = liveTables;
+        LiveBox.ToolTip = ReloadCommandFor(fileName) is { } command
+            ? $"While the game runs, each change is saved and the game reads {fileName} again ({command}) as you edit."
+            : $"While the game runs, each change is saved as you edit. The game reads {fileName} only when it starts, so it shows after a restart.";
+        if (guerrillaPath != null && overridePath != null && !File.ReadAllBytes(overridePath).AsSpan().SequenceEqual(File.ReadAllBytes(guerrillaPath)))
+        {
+            // The override differs from what the game starts with: saving makes them one (Save writes both).
+            unsaved = true;
+            SaveButton.IsEnabled = true;
+            context.Log($"{fileName}: your override isn't the table the game starts with (mods\\guerrilla_world\\{fileName}, the Guerrilla world's); " +
+                        "read again in the running game, it took out what that one has and it hasn't (made from Armageddon's own table, it lacks the Guerrilla world's entries). " +
+                        (carried.Count > 0 ? $"Its changes are carried into the Guerrilla world's table ({string.Join(", ", carried.Take(12))}{(carried.Count > 12 ? ", ..." : "")}). " : "") +
+                        "Save to write that table to both.");
+        }
         ShowSource();
         BuildEntryTree("");
     }
@@ -59,7 +86,10 @@ public partial class TableEditor : UserControl, IEditorDocument
     void ShowSource()
     {
         TitleChanged?.Invoke();
-        SourceText.Text = overridePath != null
+        SourceText.Text = guerrillaPath != null
+            ? $"The Guerrilla world's {fileName} (mods\\guerrilla_world\\), which the game reads in place of its own while it starts. " +
+              $"Saving writes it there and to overrides\\ (which the game reads when it reads the table again), the same in both; the game's file is never changed."
+            : overridePath != null
             ? $"Editing your override {Workspace.RelativeToMod(overridePath)}. The game uses it instead of its own {fileName}."
             : $"The game's own {fileName} (from {archive}). Saving puts your changes in overrides\\; the game's file is never changed.";
         TableTitle.Text = fileName;
@@ -348,27 +378,98 @@ public partial class TableEditor : UserControl, IEditorDocument
         }
         if (EntryTree.SelectedItem is TreeViewItem { Tag: XtblElement entry } selected && entry != table.Root)
             selected.Header = XtblFile.EntryName(entry);  // in case the Name field was edited
+        QueueLive();
     }
 
     void OnSave(object sender, RoutedEventArgs e) => Save();
 
     /// <summary>
-    /// The game's console commands that read a table again while it runs. Other tables are read once,
-    /// when the game starts or a level loads.
+    /// What has the running game read a table again: its own console command for the table (the game's
+    /// reload_ commands, each found in RedFactionArmageddon_DX11.exe with the tables its loader reads),
+    /// or the console mod's editor_reload_table for a table the game has no command for but whose loader
+    /// can run again (see console.cpp). A DLC copy (dlc01_vehicles.xtbl) is read by the same command.
+    /// Tables not here are read only when the game starts.
     /// </summary>
     static readonly Dictionary<string, string> ReloadCommands = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ai_properties.xtbl"] = "reload_ai_properties", ["leap_properties.xtbl"] = "reload_leap_properties",
-        ["explosions.xtbl"] = "reload_explosions", ["camera_shake.xtbl"] = "reload_camera_shakes", ["camera.xtbl"] = "reload_camera_view",
-        ["effects.xtbl"] = "reload_effects_table", ["difficulty.xtbl"] = "reload_difficulty", ["squads.xtbl"] = "reload_squads",
-        ["game_audio.xtbl"] = "reload_game_audio", ["game_audio_constants.xtbl"] = "reload_game_audio_constants",
-        ["audio_bink_volumes.xtbl"] = "reload_audio_bink_volumes", ["tweak_table.xtbl"] = "reload_tweak_table",
+        ["ai_properties.xtbl"] = "reload_ai_properties",
+        ["aim_drift.xtbl"] = "reload_aim_drift",
+        ["ambient_spawn_behavior.xtbl"] = "reload_ambient_spawn_behavior",
+        ["ambient_spawn_info.xtbl"] = "reload_ambient_spawn_info",
+        ["ammo.xtbl"] = "reload_ammo",
+        ["audio_bink_volumes.xtbl"] = "reload_audio_bink_volumes",
+        ["audio_bink_master_volumes.xtbl"] = "reload_audio_bink_volumes",
+        ["camera.xtbl"] = "reload_camera_view",
+        ["camera_shake.xtbl"] = "reload_camera_shakes",
+        ["character.xtbl"] = "reload_character",
+        ["character_patch.xtbl"] = "reload_character",
+        ["decal_info.xtbl"] = "decal_info_reload",
+        ["difficulty.xtbl"] = "reload_difficulty",
+        ["mp_difficulty_overrides.xtbl"] = "reload_difficulty",
+        ["effects.xtbl"] = "reload_effects_table",
+        ["effect_heartbeat.xtbl"] = "reload_heartbeat",
+        ["exo.xtbl"] = "reload_exos",
+        ["explosions.xtbl"] = "reload_explosions",
+        ["game_audio.xtbl"] = "reload_game_audio",
+        ["game_audio_constants.xtbl"] = "reload_game_audio_constants",
+        ["game_music_combat.xtbl"] = "gamemusic_tables_reload",
+        ["game_music_constants.xtbl"] = "gamemusic_tables_reload",
+        ["game_music_triggers.xtbl"] = "gamemusic_tables_reload",
+        ["gameplay_properties.xtbl"] = "reload_gameplay_properties",
+        ["glass.xtbl"] = "reload_glass_table",
+        ["leap_properties.xtbl"] = "reload_leap_properties",
+        ["lod_properties.xtbl"] = "reload_lod_properties",
+        ["matfx.xtbl"] = "material_effects_reload",
+        ["matfx_fades.xtbl"] = "material_effects_reload",
+        ["melee.xtbl"] = "reload_melee",
+        ["mp_badges.xtbl"] = "mp_badge_reload_table",
+        ["mp_character.xtbl"] = "reload_mp_character_table",
+        ["nanoforge_abilities.xtbl"] = "reload_nanoforge_abilities",
+        ["player_autoaim.xtbl"] = "reload_player_autoaim",
+        ["player_upgrades.xtbl"] = "reload_player_upgrades",
+        ["projectiles.xtbl"] = "reload_projectiles",
+        ["rfg_materials.xtbl"] = "reload_materials",
+        ["rfg_effect_materials.xtbl"] = "reload_materials",
+        ["rfg_bullet_groups.xtbl"] = "reload_materials",
+        ["rfg_melee_groups.xtbl"] = "reload_materials",
+        ["rfg_stress_controls.xtbl"] = "stress_evaluation_reload_table",
+        ["situational_lut.xtbl"] = "reload_situational_lut_table",
+        ["spawn_resource.xtbl"] = "editor_reload_table spawn_resource.xtbl",
+        ["squads.xtbl"] = "reload_squads",
+        ["turrets.xtbl"] = "reload_turrets",
+        ["tweak_table.xtbl"] = "reload_tweak_table",
+        ["vehicle_interactions.xtbl"] = "reload_vehicle_interactions",
+        ["vehicles.xtbl"] = "reload_vehicles",
+        ["weapon_firing_patterns.xtbl"] = "reload_weapon_firing_patterns",
+        ["weapons.xtbl"] = "reload_weapons",
+        ["wrecking_crew.xtbl"] = "reload_total_chaos_multipliers",
     };
 
-    /// <summary>Has the running game read the saved table again, if it has a command for this table. The command, or null.</summary>
+    /// <summary>The command that has the running game read a table again; null if it only reads it at its start.</summary>
+    static string? ReloadCommandFor(string fileName)
+    {
+        if (ReloadCommands.TryGetValue(fileName, out string? command)) return command;
+        Match dlc = Regex.Match(fileName, @"^dlc\d\d_(.+)$", RegexOptions.IgnoreCase);
+        if (dlc.Success && ReloadCommands.TryGetValue(dlc.Groups[1].Value, out command)) return command;
+        if (fileName.Contains("ragdoll", StringComparison.OrdinalIgnoreCase)) return "reload_ragdolls";
+        return null;
+    }
+
+    /// <summary>Whether the game is running with the console mod (and so reads what the editor sends it).</summary>
+    bool GameRunning()
+    {
+        try
+        {
+            using var link = new GameLink(context.Workspace.ModFolder);
+            return GameLink.IsRecent(link.Read());
+        }
+        catch (IOException) { return false; }
+    }
+
+    /// <summary>Has the running game read the saved table again, if it can. The command, or null.</summary>
     string? ReloadInGame()
     {
-        if (!ReloadCommands.TryGetValue(fileName, out string? command)) return null;
+        if (ReloadCommandFor(fileName) is not { } command) return null;
         try
         {
             using var link = new GameLink(context.Workspace.ModFolder);
@@ -379,7 +480,47 @@ public partial class TableEditor : UserControl, IEditorDocument
         catch (IOException) { return null; }
     }
 
-    bool Save()
+    // ---- Live: each change saved and read by the running game -------------------------------------
+
+    /// <summary>Whether changes go to the running game as they are made (shared by the table tabs, remembered).</summary>
+    static bool liveTables = LoadLiveSetting();
+    System.Windows.Threading.DispatcherTimer? liveTimer;
+
+    static string LiveSettingPath => Path.Combine(AppContext.BaseDirectory, "tables_live.txt");
+
+    static bool LoadLiveSetting()
+    {
+        try { return !File.Exists(LiveSettingPath) || File.ReadAllText(LiveSettingPath).Trim() != "0"; }
+        catch (IOException) { return true; }
+    }
+
+    void OnLiveChanged(object sender, RoutedEventArgs e)
+    {
+        liveTables = LiveBox.IsChecked == true;
+        try { File.WriteAllText(LiveSettingPath, liveTables ? "1" : "0"); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        if (liveTables && unsaved) QueueLive();
+    }
+
+    /// <summary>A change was made: with Live on and the game running, it is saved and sent to the game once typing pauses.</summary>
+    void QueueLive()
+    {
+        if (!liveTables) return;
+        if (liveTimer == null)
+        {
+            liveTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+            liveTimer.Tick += (_, _) =>
+            {
+                liveTimer.Stop();
+                if (unsaved && liveTables && GameRunning()) Save(live: true);
+            };
+        }
+        liveTimer.Stop();
+        liveTimer.Start();
+    }
+
+    bool Save() => Save(live: false);
+
+    bool Save(bool live)
     {
         if (!unsaved) return true;
         try
@@ -387,18 +528,22 @@ public partial class TableEditor : UserControl, IEditorDocument
             bool first = overridePath == null;
             string target = overridePath ?? Workspace.OverridePath(archive, fileName);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.WriteAllBytes(target, table.ToBytes());
+            byte[] bytes = table.ToBytes();
+            File.WriteAllBytes(target, bytes);
+            if (guerrillaPath != null) File.WriteAllBytes(guerrillaPath, bytes);  // what the game starts with
             overridePath = target;
             unsaved = false;
             SaveButton.IsEnabled = false;
             Workspace.RefreshOverrides();
             ShowSource();
             string? reloaded = ReloadInGame();
-            context.Log((first
+            string how = reloaded != null ? $" The running game was told to read it again ({reloaded})."
+                : ReloadCommandFor(fileName) == null && GameRunning()
+                    ? $" The game reads {fileName} only when it starts, so restart it to see this change."
+                    : first ? " The game uses it from its next start through RFAModLauncher." : "";
+            context.Log((live ? $"Live: {fileName} saved." : first
                 ? $"Saved {fileName} as a new override, {Workspace.RelativeToMod(target)}."
-                : $"Saved {Workspace.RelativeToMod(target)}.") +
-                (reloaded != null ? $" The running game was told to read it again ({reloaded})."
-                    : first ? " The game uses it from its next start through RFAModLauncher." : ""));
+                : $"Saved {Workspace.RelativeToMod(target)}.") + how);
             context.OverridesChanged();
             return true;
         }

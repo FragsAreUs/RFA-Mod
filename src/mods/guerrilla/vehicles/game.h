@@ -164,5 +164,7 @@ void StartRiders();      // riders.cpp (a log: shooting riders, getting into occ
 void RidersFrame();
 void StartFlyers();   // flyers.cpp (its own hook, on the vehicles' presim)
 bool FlyersFly();     // Guerrilla's flight model is on: NPCs can fly Guerrilla's flyers
+std::vector<std::string> GuerrillaFlyerNames();  // flyers.cpp: Guerrilla's flyers (flyers.txt)
+void FlyerControlsTick(BYTE* vehicle, bool playerFlies);  // flyer_controls.cpp: from the vehicles' presim, the game's thread
 
 }  // namespace gv

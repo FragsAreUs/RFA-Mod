@@ -3,7 +3,7 @@
 --
 -- Groups the top menu by game: Red Faction: Armageddon (Continue, New Game, New Game+, Load Game, the
 -- downloadable content, Infestation and Ruin) and Red Faction: Guerrilla (the Guerrilla world, and its
--- builder), then Level editor, Options, Extras and Quit; Options > Main Menu sets how ([MainMenu] in
+-- builder), then Level editor (Launch editor, Create level, Delete custom level), Options, Extras and Quit; Options > Main Menu sets how ([MainMenu] in
 -- rfa_mods.ini: the layout by game or the game's classic one, Continue at the top, which entries show,
 -- the descriptions, the decorations, opening where you left off, the style: Classic or Modern, a flat,
 -- sharp look in one accent colour, see rfa_modern_style). Adds Level editor (Create level: starts the editor; Delete custom level: deletes a Ruin level made
@@ -59,6 +59,7 @@ local DLC_SHOW_STORE_ID			= 303
 -- Level editor sub-menu -- [RFA]
 local LEVEL_CREATE_ID			= 501 -- [RFA]
 local LEVEL_DELETE_ID			= 502 -- [RFA]
+local LEVEL_LAUNCH_ID			= 503 -- [RFA]
 
 -- Extras sub-menu
 local EXTRAS_PLAYER_STATS_ID	= 401
@@ -169,6 +170,7 @@ local MENU_DATA = {
 	},
 	
 	LEVEL_EDITOR_SUB_MENU = { -- [RFA]
+		{label = "LAUNCH EDITOR",			id = LEVEL_LAUNCH_ID}, -- [RFA]
 		{label = "CREATE LEVEL",			id = LEVEL_CREATE_ID}, -- [RFA]
 		{label = "DELETE CUSTOM LEVEL",		id = LEVEL_DELETE_ID}, -- [RFA]
 	}, -- [RFA]
@@ -202,67 +204,17 @@ local Tween_done = true
 
 local Next_screen = nil
 
--- [RFA] Options > Main Menu > Style: Modern. The same elements as the game's menu, restyled from here
--- [RFA] (ui_main_menu.vint_doc, vdo_menu_list, vdo_menu_button): the scrolling numbers, tech graphics and
--- [RFA] the dotted bars behind the list go; the panel behind it turns into a dark, see-through slab; the
--- [RFA] buttons lose their boxes and the little text beside them; the list is sharp (no blur) and the
--- [RFA] highlighted entry is in the accent colour, without its glow; the title bar takes the accent too.
-local RFA_ACCENTS = { -- [RFA] Options > Main Menu > Accent, in its order
-	{R = 0.30, G = 0.72, B = 1.00}, -- blue
-	{R = 1.00, G = 0.55, B = 0.15}, -- orange
-	{R = 0.92, G = 0.22, B = 0.22}, -- red
-	{R = 0.35, G = 0.90, B = 0.55}, -- green
-	{R = 0.80, G = 0.45, B = 1.00}, -- violet
-	{R = 1.00, G = 1.00, B = 1.00}, -- white
-} -- [RFA]
+-- [RFA] Options > Main Menu > Style: Modern, and its Accent. The style is the whole interface's: it is in
+-- [RFA] vdo_button_highlight.lua (rfa_theme_*), which every menu loads. Here the main menu sets the game's shared
+-- [RFA] colours from the settings as it opens (rfa_theme_apply: every menu drawn after takes them, the pause menu
+-- [RFA] and the options too), restyles its own screen (rfa_theme_screen), and has the loader load the UI pack, the
+-- [RFA] style's pictures (rfa_load_ui_pack), which then stays loaded for the other menus.
 local Rfa_modern = false -- [RFA]
-local Rfa_accent = RFA_ACCENTS[1] -- [RFA]
-
-local function rfa_hide(name) -- [RFA]
-	local object = vint_object_find(name) -- [RFA]
-	if object ~= 0 then vint_set_property(object, "visible", false) end -- [RFA]
-end -- [RFA]
-
-local function rfa_modern_list(list) -- [RFA] a menu list (and its buttons, made again by each draw_items)
-	if not Rfa_modern or list == nil or list.handle == nil then return end -- [RFA]
-	local group = Vdo_base_object:new("list_group", list.handle) -- [RFA]
-	group:set_property("blur", 0) -- [RFA]
-	group:set_property("alpha", 0.85) -- [RFA]
-	Vdo_base_object:new("menu_list_button_text_2", list.handle):set_property("alpha", 0) -- [RFA] the glow
-	Vdo_base_object:new("menu_list_button_text", list.handle):set_color(Rfa_accent.R, Rfa_accent.G, Rfa_accent.B) -- [RFA]
-	Vdo_base_object:new("button_highlight", list.handle):set_color(Rfa_accent.R, Rfa_accent.G, Rfa_accent.B) -- [RFA]
-	if list.list_data ~= nil then -- [RFA]
-		for i, button in pairs(list.list_data.buttons) do -- [RFA]
-			Vdo_base_object:new("background", button.handle):set_property("alpha", 0) -- [RFA]
-			Vdo_base_object:new("techno_text", button.handle):set_property("alpha", 0) -- [RFA]
-		end -- [RFA]
-	end -- [RFA]
-end -- [RFA]
-
--- [RFA] The UI pack's pictures (RFA-Mod's rfa_ui_modern, which the editor makes): the highlight's ends and middle
--- [RFA] (a bar down its left, a light band, a line along its bottom, the right end fading) and the panel's
--- [RFA] corner rounded. Without the pack (not made yet, or made since the game started) the style does without.
-local RFA_UI_PACK = "rfa_ui_modern" -- [RFA]
-local function rfa_ui_pack_pictures() -- [RFA]
-	for i, list in ipairs({List, Sub_list}) do -- [RFA]
-		local highlight = list.highlight -- [RFA]
-		if highlight ~= nil and highlight.left ~= nil then -- [RFA]
-			highlight.left:set_property("image", "rfa_modern_hl_left") -- [RFA]
-			highlight.center:set_property("image", "rfa_modern_hl_center") -- [RFA]
-			highlight.right:set_property("image", "rfa_modern_hl_right") -- [RFA]
-			for j, part in ipairs({highlight.left, highlight.center, highlight.right}) do -- [RFA]
-				part:set_color(Rfa_accent.R, Rfa_accent.G, Rfa_accent.B) -- [RFA]
-			end -- [RFA]
-		end -- [RFA]
-	end -- [RFA]
-	local corner = vint_object_find("mask_corner") -- [RFA]
-	if corner ~= 0 then vint_set_property(corner, "image", "rfa_modern_corner") end -- [RFA]
-end -- [RFA]
 
 function ui_main_menu_rfa_ui_pack_wait() -- [RFA] while the pack's document loads (a few frames)
 	for i = 1, 600 do -- [RFA] (ten seconds at most)
-		if vint_document_find(RFA_UI_PACK) ~= 0 then -- [RFA]
-			rfa_ui_pack_pictures() -- [RFA]
+		if vint_document_find("rfa_ui_modern") ~= 0 then -- [RFA]
+			rfa_theme_screen({List, Sub_list}) -- [RFA] its pictures now
 			return -- [RFA]
 		end -- [RFA]
 		thread_yield() -- [RFA]
@@ -270,33 +222,14 @@ function ui_main_menu_rfa_ui_pack_wait() -- [RFA] while the pack's document load
 	rfa_log("UI pack: rfa_ui_modern didn't load; the Modern style does without its pictures") -- [RFA]
 end -- [RFA]
 
-local function rfa_modern_style() -- [RFA] the menu's own elements; the lists restyle themselves as they draw
-	local style = rfa_get_setting("MainMenu", "Style", 0) -- [RFA]
-	local accent = rfa_get_setting("MainMenu", "Accent", 0) + 1 -- [RFA]
-	Rfa_modern = (style == 1) -- [RFA]
-	Rfa_accent = RFA_ACCENTS[accent] or RFA_ACCENTS[1] -- [RFA]
+local function rfa_modern_style() -- [RFA]
+	local apply = _GetAnyGlobalSilent("rfa_theme_apply") -- [RFA] (vdo_button_highlight.lua's)
+	if apply == nil then return end -- [RFA]
+	Rfa_modern = apply() -- [RFA]
 	if not Rfa_modern then return end -- [RFA]
-	for i, name in ipairs({"techno_bits", "right_dags", "right_dags_1", "right_dags_1_1", "right_dags_1_2"}) do -- [RFA]
-		rfa_hide(name) -- [RFA]
-	end -- [RFA]
-	local panel = vint_object_find("menu_dag_group") -- [RFA]
-	if panel ~= 0 then vint_set_property(panel, "alpha", 0.6) end -- [RFA]
-	for i, name in ipairs({"mask_bg1", "mask_bg2", "mask_corner"}) do -- [RFA]
-		local object = vint_object_find(name) -- [RFA]
-		if object ~= 0 then vint_set_property(object, "tint", 0.03, 0.04, 0.06) end -- [RFA]
-	end -- [RFA]
-	for i, list in ipairs({List, Sub_list}) do -- [RFA] after each draw, its buttons too
-		local draw_items = list.draw_items -- [RFA]
-		list.draw_items = function(self, infos, current_option, width) -- [RFA]
-			draw_items(self, infos, current_option, width) -- [RFA]
-			rfa_modern_list(self) -- [RFA]
-		end -- [RFA]
-		rfa_modern_list(list) -- [RFA]
-	end -- [RFA]
-	Hint_bar:set_header("MENU_TITLE_UC", Rfa_accent) -- [RFA]
-	if vint_document_find(RFA_UI_PACK) ~= 0 then -- [RFA] the UI pack, loaded already
-		rfa_ui_pack_pictures() -- [RFA]
-	elseif rfa_load_ui_pack() then -- [RFA]
+	rfa_theme_screen({List, Sub_list}) -- [RFA]
+	Hint_bar:set_header("MENU_TITLE_UC", COLOR_HIGHLIGHT_BAR) -- [RFA] (the accent now)
+	if vint_document_find("rfa_ui_modern") == 0 and _GetAnyGlobalSilent("rfa_load_ui_pack") ~= nil and rfa_load_ui_pack() then -- [RFA]
 		thread_new("ui_main_menu_rfa_ui_pack_wait") -- [RFA]
 	end -- [RFA]
 end -- [RFA]
@@ -763,6 +696,9 @@ function ui_main_menu_set_screen_hint(new_tier)
 	elseif current_id == LEVEL_EDITOR_ID then -- [RFA]
 		Hint_bar:set_value("Make your own Ruin levels in RFA-Mod's level editor, or delete the ones you made") -- [RFA]
 
+	elseif current_id == LEVEL_LAUNCH_ID then -- [RFA]
+		Hint_bar:set_value("Open RFA-Mod's level editor with the game docked in it, to edit any level or table") -- [RFA]
+
 	elseif current_id == QUIT_GAME_ID then
 		Hint_bar:set_value("MENU_DESC_QUIT")
 	end
@@ -837,6 +773,9 @@ function ui_main_menu_button_a(event, acceleration)
 
 	elseif current_id == LEVEL_DELETE_ID then -- [RFA]
 		ui_main_menu_rfa_delete_level(1) -- [RFA]
+
+	elseif current_id == LEVEL_LAUNCH_ID then -- [RFA]
+		ui_main_menu_rfa_launch_editor() -- [RFA]
 
 	elseif current_id == NEW_GAME_ID then
 		-- Don't animate out, just start a new game
@@ -1113,7 +1052,7 @@ function ui_main_menu_rfa_failed_level_check() -- [RFA]
 	if name == nil then return end -- [RFA]
 	local message -- [RFA]
 	if custom then -- [RFA]
-		message = "FAILED TO LOAD CUSTOM LEVEL\n\n" .. name .. " couldn't be loaded: its files are missing or couldn't be read. A level deleted since the game started is still in its map list, and a level made since then needs the game restarted. logs\\rfa_mods.log says more." -- [RFA]
+		message = "FAILED TO LOAD CUSTOM LEVEL\n\n" .. name .. " couldn't be loaded: its files are missing or couldn't be read. logs\\rfa_mods.log says more." -- [RFA] (the popup takes 256 characters at most)
 	else -- [RFA]
 		message = "FAILED TO LOAD LEVEL\n\n" .. name .. " couldn't be loaded: its files are missing or couldn't be read. logs\\rfa_mods.log says more." -- [RFA]
 	end -- [RFA]
@@ -1137,6 +1076,18 @@ end -- [RFA]
 function ui_main_menu_rfa_create_failed() -- [RFA]
 	for i = 1, 10 do thread_yield() end -- [RFA]
 	rfa_popup(_GetAnyGlobalSilent("Rfa_create_message"), "ui_main_menu_rfa_popup_done", {"MENU_OK"}) -- [RFA]
+end -- [RFA]
+
+-- [RFA] Level editor > Launch editor: starts the level editor (or brings the open one forward) with this game docked
+-- [RFA] in its Game panel, on no level in particular: open one there, or make one with its New level.
+function ui_main_menu_rfa_launch_editor() -- [RFA]
+	if rfa_open_level_editor == nil then -- [RFA]
+		rfa_popup("The level editor needs RFA-Mod's loader (rfa_loader.dll).", "ui_main_menu_rfa_popup_done", {"MENU_OK"}) -- [RFA]
+	elseif rfa_open_level_editor() then -- [RFA]
+		rfa_popup("The level editor is starting. It docks the game in its Game panel; open a level there, or make one with its New level.", "ui_main_menu_rfa_popup_done", {"MENU_OK"}) -- [RFA]
+	else -- [RFA]
+		rfa_popup("The level editor couldn't be started: editor\\RfaEditor.exe wasn't found next to the mod. logs\\rfa_mods.log says more.", "ui_main_menu_rfa_popup_done", {"MENU_OK"}) -- [RFA]
+	end -- [RFA]
 end -- [RFA]
 
 function ui_main_menu_rfa_create_level() -- [RFA] asks which mode the new level is for

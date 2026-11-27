@@ -354,6 +354,8 @@
                 <Separator />
                 <MenuItem Header="_Add..." Click="OnAddClicked"
                           ToolTip="Add an object where the middle of the view points: a copy of one of this file's, a new one of any class in the game's schema, or any chunk of the game's" />
+                <MenuItem Header="Add _logic handler..." Click="OnAddLogicHandler"
+                          ToolTip="Add a script attached to the picked object (spawn a squad when the player walks into a trigger, objectives, checkpoints...)" />
                 <MenuItem x:Name="DuplicateButton" Header="_Duplicate" InputGestureText="Ctrl+D" Click="OnDuplicateClicked" IsEnabled="False"
                           ToolTip="Duplicate the picked object, beside it" />
                 <MenuItem x:Name="CopyPropertiesButton" Header="_Copy properties" InputGestureText="Ctrl+Shift+C" Click="OnCopyPropertiesClicked" IsEnabled="False"

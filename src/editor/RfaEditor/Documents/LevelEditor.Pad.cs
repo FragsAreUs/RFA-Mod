@@ -589,7 +589,7 @@ public partial class LevelEditor
                         "(too steep left out). Saving writes it.");
             return true;
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or System.IO.InvalidDataException)
         {
             context.Log($"NavMesh: couldn't be made over the ground: {ex.Message}.");
             return false;

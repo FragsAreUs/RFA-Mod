@@ -96,17 +96,17 @@ rem live_analysis_mcp.exe: standalone MCP server for live analysis
 cl %CFLAGS% "%ROOT%src\mods\rfa_qol\live_analysis_mcp.cpp" /Fe"%OUT%\live_analysis_mcp.exe" >> "%LOG%" 2>&1 || goto :fail
 rem rfa_guerrilla.dll: the mods for Guerrilla's world and campaign, nine parts in one DLL (src\mods\guerrilla\:
 rem campaign, gear, hud, kiosks, people, save, vehicles, voices, world). Each part compiles into a folder of its
-rem own as it did when it was a DLL of its own (two parts have a tables.cpp), gear and hud with ImGui for their
+rem own as it did when it was a DLL of its own (two parts have a tables.cpp), gear, hud and vehicles with ImGui for their
 rem F7 windows; then one link, with ImGui's core files once. The loader skips the parts' old DLLs
 rem (guerrilla_world.dll, ...) if an older build left them in bin\mods.
 set "GUERRILLA=%ROOT%src\mods\guerrilla"
 set "GOBJ=%OBJ%\rfa_guerrilla"
 if exist "%GOBJ%" rd /s /q "%GOBJ%"
-for %%p in (campaign kiosks people save vehicles voices world) do (
+for %%p in (campaign kiosks people save voices world) do (
     mkdir "%GOBJ%\%%p"
     cl %CFLAGS% /I"%GUERRILLA%" /c "%GUERRILLA%\%%p\*.cpp" /Fo"%GOBJ%\%%p\\" >> "%LOG%" 2>&1 || goto :fail
 )
-for %%p in (gear hud) do (
+for %%p in (gear hud vehicles) do (
     mkdir "%GOBJ%\%%p"
     cl %CFLAGS% /DNDEBUG /I"%IMGUI%" /I"%GUERRILLA%" /c "%GUERRILLA%\%%p\*.cpp" /Fo"%GOBJ%\%%p\\" >> "%LOG%" 2>&1 || goto :fail
 )

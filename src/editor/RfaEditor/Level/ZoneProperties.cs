@@ -33,13 +33,25 @@ sealed class ZonePropertyRows
     readonly ZoneNames names;
     readonly ZoneSchema? schema;
     readonly Func<SchemaPopulate, IReadOnlyList<string>> choicesOf;
+    readonly Func<LogicFunctions?>? logicFunctions;
+    readonly Func<uint, string?>? objectName;
+    readonly Action<ZoneObject>? editScript;
+    readonly Action<ZoneObject>? addLogicHandler;
 
     /// <param name="choicesOf">An enum's choices from the table it names (see <see cref="SchemaPopulate"/>).</param>
-    public ZonePropertyRows(ZoneNames names, ZoneSchema? schema, Func<SchemaPopulate, IReadOnlyList<string>> choicesOf)
+    /// <param name="logicFunctions">The game's script functions, for showing logic handlers' scripts with their names.</param>
+    /// <param name="objectName">What an object in the zone is, by its handle (null if it isn't in the zone).</param>
+    public ZonePropertyRows(ZoneNames names, ZoneSchema? schema, Func<SchemaPopulate, IReadOnlyList<string>> choicesOf,
+                            Func<LogicFunctions?>? logicFunctions = null, Func<uint, string?>? objectName = null,
+                            Action<ZoneObject>? editScript = null, Action<ZoneObject>? addLogicHandler = null)
     {
+        this.editScript = editScript;
+        this.addLogicHandler = addLogicHandler;
         this.names = names;
         this.schema = schema;
         this.choicesOf = choicesOf;
+        this.logicFunctions = logicFunctions;
+        this.objectName = objectName;
     }
 
     /// <param name="showAll">Show HIDDEN properties too, and let HIDDEN and READ_ONLY ones be changed.</param>
@@ -73,6 +85,18 @@ sealed class ZonePropertyRows
         foreach (var (property, value) in described.Where(d => !listed.Contains(d.Key)))
             if (showAll || !property.Hidden) yield return row.Described(property, value, showAll || !(property.ReadOnly || property.Hidden));
         foreach (ZoneProperty property in undescribed) yield return row.Undescribed(property);
+
+        if (addLogicHandler != null && names.Class(obj.ClassHash) != "object_logic_handler")
+        {
+            var add = new Button
+            {
+                Content = "Add logic handler...", HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 2, 10, 2),
+                Margin = new Thickness(0, 8, 0, 0),
+                ToolTip = "A script attached to this object (its \"self\"): spawn squads when the player walks in, objectives, checkpoints...",
+            };
+            add.Click += (_, _) => addLogicHandler(obj);
+            yield return add;
+        }
 
         if (showAll && type != null && type.Properties.Where(p => p.EditorOnly).Select(p => p.Name).ToList() is { Count: > 0 } editorOnly)
             yield return new TextBlock
@@ -579,15 +603,9 @@ sealed class ZonePropertyRows
                         navpointTypeProp ??= rows.schema?.Base?.Property(NameHashes.PropertyHash("navpoint_type"));
                         return NavpointEditor(property, navpoint, navpointTypeProp);
                     }
-                    // Road/spline editors for object_path_road and object_spline (from RFG PDB cross-decompilation)
-                    if (name.Equals("path_road_data", StringComparison.OrdinalIgnoreCase) && RoadData.FromBytes(property.Value) is { } roadData)
-                    {
-                        return RoadEditor(property, roadData);
-                    }
-                    if (name.Equals("object_spline_data", StringComparison.OrdinalIgnoreCase) && SplineData.FromBytes(property.Value) is { } splineData)
-                    {
-                        return SplineEditor(property, splineData);
-                    }
+                    // A road's and a spline's packed data (path_road_data, object_spline_data) go to the hex editor below:
+                    // RoadEditor and SplineEditor guessed at layouts that aren't the game's (a Guerrilla road's spline type
+                    // read as -1003239117 crashed the inspector), and wrote back 8 or 16 bytes over the whole of it.
                     // Specific link/logic editors (from RFG PDB cross-decompilation)
                     if (name.Equals("obj_links", StringComparison.OrdinalIgnoreCase))
                     {
@@ -886,59 +904,62 @@ sealed class ZonePropertyRows
         }
 
         /// <summary>
-        /// A logic handler's script buffer (logic_handler_buffer): shows extracted script text and allows editing.
-        /// From RFG.exe cross-decompilation - the buffer contains compiled script bytecode with embedded strings.
+        /// A logic handler's script (logic_handler_buffer, see <see cref="LogicScript"/>): its state machines,
+        /// the calls each state makes and the conditions that move it on, written out with the function
+        /// tables' names. The raw bytes are under it, editable as before.
         /// </summary>
         FrameworkElement LogicHandlerEditor(ZoneProperty property)
         {
             byte[] value = property.Value;
             var panel = new StackPanel();
 
-            // Extract readable strings from the buffer
-            string bufferText = System.Text.Encoding.Latin1.GetString(value);
-            var strings = System.Text.RegularExpressions.Regex.Matches(bufferText, "[ -~]{4,}")
-                .Select(m => m.Value)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .ToList();
-
-            // Show extracted strings
-            if (strings.Count > 0)
+            if (LogicScript.Read(value) is { } script)
             {
+                var edit = new Button
+                {
+                    Content = "Edit script...", HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(0, 0, 0, 4),
+                    ToolTip = "Change its state machines, states, calls, edges and variables.",
+                };
+                edit.Click += (_, _) => rows.editScript?.Invoke(obj);
+                edit.IsEnabled = rows.editScript != null;
+                panel.Children.Add(edit);
+                int states = script.Objects.Sum(o => o.States.Count);
                 panel.Children.Add(new TextBlock
                 {
-                    Text = "Extracted strings from script buffer:",
+                    Text = $"{script.Objects.Count} state machine(s), {states} state(s), {script.Variables.Count} variable(s), {script.Arrays.Count} array(s)",
                     Foreground = Theme.Brush("DimTextBrush"),
-                    FontWeight = FontWeights.Bold,
-                    Margin = new Thickness(0, 0, 0, 4)
+                    Margin = new Thickness(0, 0, 0, 4),
                 });
-                var stringsBox = new TextBox
+                panel.Children.Add(new TextBox
                 {
-                    Text = string.Join("\n", strings.Take(50)),
+                    Text = script.ToText(rows.logicFunctions?.Invoke(), rows.objectName),
                     FontFamily = new FontFamily("Consolas"),
                     FontSize = 11,
                     IsReadOnly = true,
-                    TextWrapping = TextWrapping.Wrap,
+                    TextWrapping = TextWrapping.NoWrap,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                     VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    MaxHeight = 200,
-                    Background = Theme.Brush("BackgroundBrush"),
+                    MaxHeight = 420,
+                    Background = Theme.Brush("InputBrush"),
+                    Foreground = Theme.Brush("TextBrush"),
                     BorderBrush = Theme.Brush("StrongBorderBrush"),
-                    BorderThickness = new Thickness(1)
-                };
-                panel.Children.Add(stringsBox);
-                panel.Children.Add(new TextBlock { Text = "", Height = 4 }); // spacer
+                    BorderThickness = new Thickness(1),
+                    ToolTip = "The handler's script as the game reads it (read-only for now). Handles are objects' handles in hex.",
+                });
+            }
+            else
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = "This script isn't in a form the editor can read; its bytes are below.",
+                    Foreground = Theme.Brush("DimTextBrush"),
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 0, 0, 4),
+                });
             }
 
-            // Hex editor for the raw buffer
-            panel.Children.Add(new TextBlock
-            {
-                Text = $"Raw buffer ({value.Length} bytes, hex):",
-                Foreground = Theme.Brush("DimTextBrush"),
-                FontWeight = FontWeights.Bold,
-                Margin = new Thickness(0, 0, 0, 4)
-            });
-
             TextBox hexBox = TextBoxEditor(Convert.ToHexString(value),
-                "The logic handler's compiled script buffer. Edit the hex directly; Volition's tools made this.",
+                "The logic handler's compiled script, in hex. Edit the hex directly (the size has to stay the same).",
                 entered =>
                 {
                     string hex = new(entered.Where(Uri.IsHexDigit).ToArray());
@@ -951,7 +972,7 @@ sealed class ZonePropertyRows
             hexBox.TextWrapping = TextWrapping.Wrap;
             hexBox.MaxHeight = 120;
             hexBox.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-            panel.Children.Add(hexBox);
+            panel.Children.Add(new Expander { Header = $"Bytes ({value.Length})", Content = hexBox, Margin = new Thickness(0, 4, 0, 0) });
 
             return panel;
         }

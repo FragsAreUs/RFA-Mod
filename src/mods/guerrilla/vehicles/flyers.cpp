@@ -361,10 +361,15 @@ PresimFn g_presim;
 
 void __cdecl Presim(BYTE* vehicle) {
     g_presim(vehicle);
-    if (!vehicle || VehicleSubtype(vehicle, nullptr) != kFlyer) return;
+    if (!vehicle) return;
+    if (VehicleSubtype(vehicle, nullptr) != kFlyer) {
+        FlyerControlsTick(nullptr, false);  // a choice made in the F7 menu (flyer_controls.cpp)
+        return;
+    }
     const Model* model = ModelOf(vehicle);
-    if (!model) return;
     BYTE* pilot = SeatOccupant(vehicle, 0);
+    FlyerControlsTick(vehicle, model && pilot && pilot == Player());
+    if (!model) return;
     if (pilot && pilot == Player()) return;  // the player's flight is Armageddon's
     // Its Havok body, looked up as the game does (0x778440: the handle at +0x4C, or null for −1). A vehicle
     // without one yet (or any more) still gets its presim, with −1 there; update_flight_info then reads its mass
@@ -408,6 +413,12 @@ bool ReadModels() {
 }  // namespace
 
 bool FlyersFly() { return g_on; }
+
+std::vector<std::string> GuerrillaFlyerNames() {
+    std::vector<std::string> names;
+    for (const auto& [name, model] : g_models) names.push_back(name);
+    return names;
+}
 
 void StartFlyers() {
     if (!rfa::IniInt(L"GuerrillaVehicles", L"NpcFlight", 1)) { rfa::LogDetail("Flyers: Guerrilla's flight model off ([GuerrillaVehicles] NpcFlight=0)"); return; }
