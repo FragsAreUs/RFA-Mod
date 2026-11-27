@@ -1,19 +1,28 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- RfaEditorMcp.exe: starts the editor's MCP server (..\RfaEditorMcp.Server\) from memory, so a Claude
+       session that keeps it running never holds bin\editor's libraries open (see Launcher.cs). The
+       reference below only builds the server and copies it, RfaFormats and RfaEditor next to this exe;
+       this program never uses their code directly. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows7.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>RfaEditorMcp</RootNamespace>
+    <RootNamespace>RfaEditorMcpLauncher</RootNamespace>
     <AssemblyName>RfaEditorMcp</AssemblyName>
+    <!-- The server uses the editor's WPF and Windows Forms code, so this program runs on the same frameworks. -->
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
+    <!-- No .pdb: its id, written into RfaEditorMcp.dll, changes with the build folder and with every build of
+         the server and the editor. Without it this dll comes out the same from every build until Launcher.cs
+         changes, so copying a new build into bin\editor doesn't have to replace the one file a running
+         server holds open. -->
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RfaFormats\RfaFormats.csproj" />
-    <ProjectReference Include="..\RfaEditor\RfaEditor.csproj" />
+    <ProjectReference Include="..\RfaEditorMcp.Server\RfaEditorMcp.Server.csproj" />
   </ItemGroup>
 
 </Project>

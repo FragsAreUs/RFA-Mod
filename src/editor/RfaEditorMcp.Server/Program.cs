@@ -18,8 +18,10 @@ namespace RfaEditorMcp;
 
 /// <summary>
 /// MCP Server for the RFA Editor - exposes editor functionality over JSON-RPC 2.0 via stdio.
+/// RfaEditorMcp.exe (src\editor\RfaEditorMcp\) starts it: it reads this library and the editor's from
+/// bin\editor\ into memory and calls Run, so those files are never held open while the server runs.
 /// </summary>
-sealed class Program
+public sealed class Program
 {
     static EditorContext? _context;
     static GameLink? _gameLink;
@@ -27,7 +29,7 @@ sealed class Program
     static GameAssets? _assets;
     static bool _liveEditingEnabled = false;
 
-    static async Task<int> Main(string[] args)
+    public static async Task<int> Run(string[] args)
     {
         // Try to find mod/game folders, but don't fail if not found - tools can set up workspace
         // --game <folder> and --mod <folder> (or RFA_GAME_DIR / RFA_MOD_DIR) override what's found from where the exe is.

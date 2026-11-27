@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The editor's MCP server itself: tools that work on the game's files (tables, levels, archives) and
+       talk to the running game. A library: RfaEditorMcp.exe (..\RfaEditorMcp\) loads it from memory. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RfaEditorMcp</RootNamespace>
+    <AssemblyName>RfaEditorMcp.Server</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RfaFormats\RfaFormats.csproj" />
+    <ProjectReference Include="..\RfaEditor\RfaEditor.csproj" />
+  </ItemGroup>
+
+</Project>
