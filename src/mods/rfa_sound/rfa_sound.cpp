@@ -1,7 +1,20 @@
 // rfa_sound.dll: RFA-Mod's own sound engine in the game (src\audio\, on OpenAL Soft), playing the sound banks named in
 // [Audio] Banks= (ours, rfg*, by default) while Wwise goes on playing every other one as before. It is off unless
 // [Audio] OwnPlayer=1: then nothing of the game's is touched. The plan is in docs\game-notes.md, "Wwise → OpenAL Soft:
-// the hybrid's build plan" (this is its step 2) and "the plan widened to Armageddon's own sounds".
+// the hybrid's build plan" (this is its step 2), "the plan widened to Armageddon's own sounds" and "B1 built".
+//
+// Banks= names our banks (loose in overrides\build\pc\cache\) and Armageddon's own sound effects' banks too (B1): those
+// are read as the game reads them, from the game's build\pc\cache\sounds.vpp_pc, with an override of a bank or of its
+// media (overrides\build\pc\cache\sounds.vpp_pc\ or soundboot.vpp_pc\) read instead. Its music banks (mus_*) stay on
+// Wwise until step M, and its voices until step D.
+//
+// Which engine an event goes to (worked out once, for every loaded event, before the hooks route to our player):
+//   - one that only stops, pauses, mutes, sets volumes or states (no play): both. Wwise does it to its sounds, ours to
+//     its own; the game's play is Wwise's.
+//   - one of our banks' that plays: ours alone. But one that also acts on what Wwise plays (a bus, a state, a switch,
+//     everything playing, or another bank's sound that is Wwise's), or plays something our player can't yet
+//     (synthesized sounds, music, dialogue, or something missing), is played by Wwise, its other actions by ours too.
+//   - one of the other banks' that plays: Wwise; its other actions on ours too when they reach what ours plays.
 //
 // The game reaches Wwise only through Volition's audiolib_wwise layer. Its functions this wraps (each is cdecl):
 //
@@ -16,6 +29,11 @@
 //   0xB98190  the listener (front, top, place)        the same
 //   0xB8AB30, 0xB8ABA0, 0xB8ABF0  pause, resume and stop the game's sounds (effects, music)   the same, for effects
 //   0xB98A20  Wwise's callback (type, info): the end of one of Armageddon's events (for the mirror, below)
+//   0xB98110  unload a bank (the bank manager's record; its id at +0x40)   Wwise as before; our player stops its sounds
+//
+// Nothing in this build seeks (0xB84EF0, the only function that asks 0xB98C30 to, has no caller) or calls StopAll
+// (0xB97430). The one source plug-in the game stops itself (0xB95F60) is Wwise's Audio Input (0xC8), which stays on
+// Wwise as every synthesized sound does.
 //
 // The mirror ([Audio] MirrorWwise=1): Armageddon's own sounds still play on Wwise, but its voice lines and the like must
 // duck ours as they duck its own (init.bnk's ducking). Its banks are loaded here for reference only, never played: an
@@ -53,7 +71,7 @@ namespace {
 
 // ---- The game's side ---------------------------------------------------------------------------------------------
 
-constexpr DWORD kCallback = 0xB98A20;
+constexpr DWORD kCallback = 0xB98A20, kUnloadBank = 0xB98110;
 constexpr DWORD kPost = 0xB98A70, kStop = 0xB98DA0, kPause = 0xB98CD0, kSwitch = 0xB990A0, kParameter = 0xB98F10,
                 kState = 0xB996A0, kUnregister = 0xB98990, kPlaces = 0xB981C0, kListener = 0xB98190,
                 kPauseSounds = 0xB8AB30, kResumeSounds = 0xB8ABA0, kStopSounds = 0xB8ABF0;
@@ -81,7 +99,7 @@ PauseFn g_pause;
 SwitchFn g_switch;
 ParameterFn g_parameter;
 StateFn g_state;
-ObjectFn g_unregister, g_places;
+ObjectFn g_unregister, g_places, g_unloadBank;
 ListenerFn g_listener;
 SoundsFn g_pauseSounds, g_resumeSounds, g_stopSounds;
 CallbackFn g_callback;
@@ -103,7 +121,17 @@ bool WwiseStarted() { return *reinterpret_cast<const uint8_t*>(kWwiseStarted) !=
 // ---- Our player's side -------------------------------------------------------------------------------------------
 
 std::atomic<bool> g_ready{false};        // the engine is open and the banks loaded: the hooks route to it
-std::unordered_set<uint32_t> g_events;   // our banks' events (filled before g_ready, read only after)
+
+// Where each loaded event goes (see the top); one not loaded goes to Wwise. Filled before g_ready, read only after.
+enum class Route : uint8_t { Wwise, Ours, Both, WwiseAndControls };
+std::unordered_map<uint32_t, Route> g_routes;
+std::unordered_set<uint32_t> g_ownedBanks;  // the banks Banks= names (filled before g_ready, read only after)
+
+Route RouteFor(uint32_t eventId)
+{
+    auto it = g_routes.find(eventId);
+    return it == g_routes.end() ? Route::Wwise : it->second;
+}
 
 std::mutex g_playsLock;                  // our plays' cookies; taken before the engine's lock, never inside it
 struct OurPlay {
@@ -117,6 +145,32 @@ std::unordered_set<uintptr_t> g_objects;
 float g_listenerPlace[3] = {};
 
 bool Ready() { return g_ready.load(std::memory_order_acquire); }
+
+// Our engine opens at once, its banks take a while (half a minute with Armageddon's): what the game sets meanwhile
+// (switches, game parameters, states, the listener) is passed on from when it is open, and the global game parameters
+// and states set before that (the options' volume categories at start-up, RF4_STATES) are kept and passed on when it
+// opens. The game sends them only when they change, so they would be missing for good. g_globalsLock is taken before
+// the engine's lock, never inside it.
+std::atomic<bool> g_open{false};
+std::mutex g_globalsLock;
+std::unordered_map<uint32_t, float> g_earlyParameters;
+std::unordered_map<uint32_t, uint32_t> g_earlyStates;
+
+bool Open() { return g_open.load(std::memory_order_acquire); }
+
+// Our engine is open: what was kept goes to it, and from now on everything goes straight to it.
+void PassOnEarlyGlobals()
+{
+    std::lock_guard<std::mutex> hold(g_globalsLock);
+    for (auto& [id, value] : g_earlyParameters) rfa_audio_set_parameter(0, id, value);
+    for (auto& [group, state] : g_earlyStates) rfa_audio_set_state(group, state);
+    if (!g_earlyParameters.empty() || !g_earlyStates.empty())
+        rfa::LogDetail("Passed on %zu game parameters and %zu states the game set before our engine opened", g_earlyParameters.size(),
+                       g_earlyStates.size());
+    g_earlyParameters.clear();
+    g_earlyStates.clear();
+    g_open.store(true, std::memory_order_release);
+}
 
 // The mirror (see the top): each of Armageddon's events posted to Wwise that plays through a ducking bus, by its
 // play's cookie, with those buses and when to let it go (0: when it ends; a loop).
@@ -213,7 +267,7 @@ void SendPlace(const uint8_t* object)
 }
 
 // A play of ours ended by itself (from the engine's thread, outside its lock): the game hears it as from Wwise.
-void OnEnd(uint32_t playingId, uint32_t, uint64_t, int, void*)
+void OnEnd(uint32_t playingId, uint32_t eventId, uint64_t, int voices, void*)
 {
     uint32_t cookie = 0;
     bool tell = false;
@@ -225,8 +279,23 @@ void OnEnd(uint32_t playingId, uint32_t, uint64_t, int, void*)
         tell = !it->second.stoppedByGame;
         g_plays.erase(it);
     }
+    if (voices == 0 && rfa::DetailLog()) {
+        // Each event once, the first 60: what made no sound at all (refused by a limit, a switch with nothing for its
+        // value, nothing it can play; one too quiet is written by the engine with its level's parts).
+        static std::mutex lock;
+        static std::unordered_set<uint32_t> told;
+        bool first;
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            first = told.size() < 60 && told.insert(eventId).second;
+        }
+        if (first) rfa::LogDetail("Our event %08X ended without starting a voice (a limit, or a switch with nothing for its value)", eventId);
+    }
     if (tell) PostGameMessage(kEnded, cookie);
 }
+
+// The engine's own lines (with Log=1): each voice ended too quiet to hear, with its level's parts.
+void EngineLine(const char* line, void*) { rfa::LogDetail("%s", line); }
 
 // ---- The hooks ---------------------------------------------------------------------------------------------------
 
@@ -234,10 +303,16 @@ int __cdecl PostHook(uint8_t* object, uint8_t* play)
 {
     if (!Ready() || !play || !WwiseStarted()) return g_post(object, play);
     uint32_t eventId = U32(play, 8), cookie = U32(play, 4);
-    if (!eventId || !g_events.count(eventId)) {
-        // Armageddon's own, on Wwise: mirrored for ducking once Wwise has taken it.
+    const Route route = eventId ? RouteFor(eventId) : Route::Wwise;
+    if (route != Route::Ours) {
+        // On Wwise (the play is its): mirrored for ducking once Wwise has taken it; its stops, pauses, mutes and states
+        // done by our player too, for its own sounds, whatever Wwise made of it.
         int result = g_post(object, play);
         if (result == 0 && U32(play, 0xC) && g_mirror) Mirror(eventId, cookie);
+        if (route != Route::Wwise) {
+            RFA_LOG_DETAIL_FIRST(1, "the first event for both engines posted (%08X)", eventId);
+            rfa_audio_post_controls(eventId, reinterpret_cast<uintptr_t>(object));
+        }
         return result;
     }
     RFA_LOG_DETAIL_FIRST(1, "the first event of ours posted (on thread %lu)", GetCurrentThreadId());
@@ -256,7 +331,7 @@ int __cdecl PostHook(uint8_t* object, uint8_t* play)
         playingId = rfa_audio_post(eventId, id);
         if (playingId) g_plays[playingId] = {cookie, false};
     }
-    if (!playingId) return g_post(object, play);  // not loaded after all: Wwise plays it (it has our banks too)
+    if (!playingId) return g_post(object, play);  // not loaded after all: Wwise plays it (it has every bank the game loaded)
     *reinterpret_cast<uint32_t*>(play + 0xC) = playingId;
     play[0x1E] = 1;
     PostGameMessage(kPosted, cookie);
@@ -291,28 +366,38 @@ int __cdecl PauseHook(uint8_t* object, uint8_t* play, uint32_t pause)
 int __cdecl SwitchHook(uint8_t* object, uint32_t group, uint32_t value)
 {
     int result = g_switch(object, group, value);
-    if (Ready() && object) rfa_audio_set_switch(reinterpret_cast<uintptr_t>(object), group, value);
+    if (Open() && object) rfa_audio_set_switch(reinterpret_cast<uintptr_t>(object), group, value);
     return result;
 }
 
 int __cdecl ParameterHook(uint8_t* object, uint32_t id, float value)
 {
     int result = g_parameter(object, id, value);
-    if (Ready() && id != kGameDistance) rfa_audio_set_parameter(reinterpret_cast<uintptr_t>(object), id, value);
+    if (id == kGameDistance) return result;
+    if (!object) {
+        // A global one: kept until our engine opens, passed on in order after.
+        std::lock_guard<std::mutex> hold(g_globalsLock);
+        if (Open()) rfa_audio_set_parameter(0, id, value);
+        else g_earlyParameters[id] = value;
+    } else if (Open()) {
+        rfa_audio_set_parameter(reinterpret_cast<uintptr_t>(object), id, value);
+    }
     return result;
 }
 
 int __cdecl StateHook(uint32_t group, uint32_t state)
 {
     int result = g_state(group, state);
-    if (Ready()) rfa_audio_set_state(group, state);
+    std::lock_guard<std::mutex> hold(g_globalsLock);
+    if (Open()) rfa_audio_set_state(group, state);
+    else g_earlyStates[group] = state;
     return result;
 }
 
 int __cdecl UnregisterHook(uint8_t* object)
 {
     int result = g_unregister(object);
-    if (Ready() && object) {
+    if (Open() && object) {
         {
             std::lock_guard<std::mutex> hold(g_objectsLock);
             g_objects.erase(reinterpret_cast<uintptr_t>(object));
@@ -340,13 +425,22 @@ int __cdecl PlacesHook(uint8_t* object)
 int __cdecl ListenerHook(const float* listener)
 {
     int result = g_listener(listener);
-    if (Ready() && listener) {
+    if (Open() && listener) {
         {
             std::lock_guard<std::mutex> hold(g_objectsLock);
             memcpy(g_listenerPlace, listener + 6, sizeof g_listenerPlace);
         }
         rfa_audio_set_listener(listener + 6, listener, listener + 3);
     }
+    return result;
+}
+
+// The game unloads a bank (its record: the bank's id at +0x40): Wwise stops what plays from it, and so does our player
+// (which keeps the bank loaded: a bank the game loads again is ready at once).
+int __cdecl UnloadBankHook(uint8_t* record)
+{
+    int result = g_unloadBank(record);
+    if (Ready() && record) rfa_audio_stop_bank(U32(record, 0x40), 10);
     return result;
 }
 
@@ -429,6 +523,92 @@ std::string Narrow(const std::wstring& w)
     return s;
 }
 
+bool Wanted(const std::wstring& name, const Settings& settings)
+{
+    for (const auto& pattern : settings.banks)
+        if (Matches(name.c_str(), pattern.c_str())) return true;
+    return false;
+}
+
+// The game's own build\pc\cache\ (beside its installed exe), where its archives are. The game may run from the launcher's
+// large-address-aware copy of its exe (in the mod folder's large_address\): the installed exe is then the one the
+// launcher names (rfa::game::InstalledExePath).
+std::wstring GameCache()
+{
+    std::wstring folder = rfa::game::InstalledExePath();
+    return folder.substr(0, folder.find_last_of(L"\\/") + 1) + L"build\\pc\\cache\\";
+}
+
+void LogProblems(uint32_t bank, const char* name)
+{
+    if (!rfa::DetailLog()) return;
+    char problems[1024] = {};
+    if (rfa_audio_bank_problems(bank, problems, sizeof problems) > 0) rfa::LogDetail("%s: %s", name, problems);
+}
+
+// Armageddon's banks that Banks= names, from the game's sounds.vpp_pc as the game reads them: an override of a bank or
+// of its media (overrides\build\pc\cache\sounds.vpp_pc\, or soundboot.vpp_pc\, which holds copies of some) first. Its
+// music banks stay on Wwise (step M); init.bnk_pc is loaded apart, for the buses.
+int LoadArmageddonBanks(const Settings& settings, const std::wstring& overrides, int& failed)
+{
+    const std::wstring archive = GameCache() + L"sounds.vpp_pc";
+    const int size = rfa_audio_archive_bank_names(archive.c_str(), nullptr, 0);
+    if (size < 0) {
+        rfa::Log("The game's build\\pc\\cache\\sounds.vpp_pc can't be read: Armageddon's sounds stay on Wwise");
+        return 0;
+    }
+    std::string list(static_cast<size_t>(size) + 1, '\0');
+    rfa_audio_archive_bank_names(archive.c_str(), list.data(), size + 1);
+    list.resize(static_cast<size_t>(size));
+    const std::wstring sounds = overrides + L"sounds.vpp_pc\\", boot = overrides + L"soundboot.vpp_pc\\";
+    const wchar_t* folders[] = {sounds.c_str(), boot.c_str()};
+    int loaded = 0;
+    std::vector<std::string> music;
+    for (size_t start = 0; start < list.size();) {
+        size_t end = list.find('\n', start);
+        if (end == std::string::npos) end = list.size();
+        const std::string name = list.substr(start, end - start);
+        start = end + 1;
+        if (name.empty() || name == "init" || !Wanted(std::wstring(name.begin(), name.end()), settings)) continue;
+        if (name.rfind("mus_", 0) == 0) {
+            music.push_back(name);
+            continue;
+        }
+        char error[512] = {};
+        const uint32_t bank = rfa_audio_load_game_bank(archive.c_str(), folders, 2, name.c_str(), error, sizeof error);
+        if (!bank) {
+            rfa::Log("Armageddon's %s.bnk_pc didn't load (%s): its sounds stay on Wwise", name.c_str(), error);
+            failed++;
+            continue;
+        }
+        g_ownedBanks.insert(bank);
+        loaded++;
+        LogProblems(bank, (name + ".bnk_pc").c_str());
+    }
+    if (!music.empty())
+        rfa::LogDetail("[Audio] Banks= names %zu of Armageddon's music banks (%s first): music stays on Wwise until step M",
+                       music.size(), music.front().c_str());
+    return loaded;
+}
+
+// Every loaded event's route (see the top; the engine works it out from what each event's actions reach).
+void WorkOutRoutes(int& ours, int& both, int& wwiseAndControls)
+{
+    const std::vector<uint32_t> here(g_ownedBanks.begin(), g_ownedBanks.end());
+    const int count = std::max(0, rfa_audio_event_routes(here.data(), static_cast<int>(here.size()), nullptr, nullptr, 0));
+    std::vector<uint32_t> events(static_cast<size_t>(count));
+    std::vector<int> routes(static_cast<size_t>(count));
+    const int filled = std::min(count, rfa_audio_event_routes(here.data(), static_cast<int>(here.size()), events.data(), routes.data(), count));
+    for (int i = 0; i < filled; i++) {
+        switch (routes[i]) {
+        case RFA_AUDIO_ROUTE_HERE: g_routes[events[i]] = Route::Ours; ours++; break;
+        case RFA_AUDIO_ROUTE_BOTH: g_routes[events[i]] = Route::Both; both++; break;
+        case RFA_AUDIO_ROUTE_ELSEWHERE_AND_CONTROLS: g_routes[events[i]] = Route::WwiseAndControls; wwiseAndControls++; break;
+        default: break;  // Wwise alone, as for an event not loaded
+        }
+    }
+}
+
 // Opens the engine and loads the banks, on a thread of its own (the game starts meanwhile, on Wwise alone). The
 // hooks route to our player once this is done; if anything fails, every sound stays on Wwise.
 void Start(Settings settings)
@@ -446,6 +626,7 @@ void Start(Settings settings)
         rfa::Log("Our sound engine didn't start (%s): every sound stays on Wwise", error);
         return;
     }
+    PassOnEarlyGlobals();
     // Armageddon's init.bnk_pc, as the game reads it (our override of it), for the volumes of the buses our sounds go to.
     std::wstring init = cache + L"soundboot.vpp_pc\\init.bnk_pc";
     if (GetFileAttributesW(init.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -454,8 +635,8 @@ void Start(Settings settings)
     } else {
         rfa::LogDetail("No init.bnk_pc override in overrides\\build\\pc\\cache\\soundboot.vpp_pc\\: the buses' volumes count as 0 dB");
     }
+    // Ours: the banks Banks= names among those loose in overrides\build\pc\cache\ (the Guerrilla world's, rfg*).
     int banks = 0, failed = 0;
-    std::vector<uint32_t> ids;
     WIN32_FIND_DATAW found;
     HANDLE find = FindFirstFileW((cache + L"*.bnk_pc").c_str(), &found);
     if (find != INVALID_HANDLE_VALUE) {
@@ -463,10 +644,7 @@ void Start(Settings settings)
             if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             std::wstring file = found.cFileName, name = Lower(file.substr(0, file.size() - 7));
             if (name.size() > 6 && name.compare(name.size() - 6, 6, L"_media") == 0) continue;
-            bool wanted = false;
-            for (const auto& pattern : settings.banks)
-                if (Matches(name.c_str(), pattern.c_str())) wanted = true;
-            if (!wanted) continue;
+            if (!Wanted(name, settings)) continue;
             std::wstring media = cache + file.substr(0, file.size() - 7) + L"_media.bnk_pc";
             uint32_t bank = rfa_audio_load_bank((cache + file).c_str(), media.c_str(), error, sizeof error);
             if (!bank) {
@@ -475,37 +653,30 @@ void Start(Settings settings)
                 continue;
             }
             banks++;
-            int count = rfa_audio_bank_events(bank, nullptr, 0);
-            ids.resize(static_cast<size_t>(count));
-            rfa_audio_bank_events(bank, ids.data(), count);
-            g_events.insert(ids.begin(), ids.end());
-            if (rfa::DetailLog()) {
-                char problems[1024] = {};
-                if (rfa_audio_bank_problems(bank, problems, sizeof problems) > 0)
-                    rfa::LogDetail("%ls: %s", file.c_str(), problems);
-            }
+            g_ownedBanks.insert(bank);
+            LogProblems(bank, Narrow(file).c_str());
         } while (FindNextFileW(find, &found));
         FindClose(find);
     }
+    // Armageddon's own that Banks= names (B1).
+    const int armageddons = LoadArmageddonBanks(settings, cache, failed);
+    banks += armageddons;
     rfa_audio_set_end_callback(OnEnd, nullptr);
+    if (rfa::DetailLog()) rfa_audio_set_log_callback(EngineLine, nullptr, 60);
     char device[256] = {};
     rfa_audio_device_info(device, sizeof device);
     if (!banks) {
-        rfa::Log("No sound bank matched [Audio] Banks= in overrides\\build\\pc\\cache\\: every sound stays on Wwise");
+        rfa::Log("No sound bank matched [Audio] Banks= (in overrides\\build\\pc\\cache\\ or the game's sounds.vpp_pc): every sound "
+                 "stays on Wwise");
         return;
     }
-    g_ready.store(true, std::memory_order_release);
-    rfa::LogInfo("Our sound engine plays %d banks (%zu events) on %s%s", banks, g_events.size(), device,
-                 failed ? "; some banks didn't load (above)" : "");
-    // The mirror: Armageddon's own banks, from the game's archives beside its exe, for reference only.
+    // The rest of Armageddon's banks, from the game's archives beside its exe, for reference only: never played, but its
+    // events on Wwise duck ours as its own (the mirror), and their stops, pauses, mutes and states reach ours. A bank
+    // loaded above is kept as it is.
     if (settings.mirror) {
-        wchar_t exe[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        std::wstring folder = exe;
-        folder = folder.substr(0, folder.find_last_of(L"\\/") + 1) + L"build\\pc\\cache\\";
         int reference = 0;
         for (const wchar_t* archive : {L"sounds.vpp_pc", L"voices.vpp_pc"}) {
-            int n = rfa_audio_load_archive_banks((folder + archive).c_str(), error, sizeof error);
+            int n = rfa_audio_load_archive_banks((GameCache() + archive).c_str(), error, sizeof error);
             if (n < 0) rfa::Log("%ls can't be read (%s): Armageddon's sounds don't duck ours", archive, error);
             else reference += n;
         }
@@ -514,6 +685,12 @@ void Start(Settings settings)
             rfa::LogDetail("Read %d of Armageddon's banks for reference: its sounds on Wwise duck ours as its own", reference);
         }
     }
+    int ours = 0, both = 0, wwiseAndControls = 0;
+    WorkOutRoutes(ours, both, wwiseAndControls);
+    g_ready.store(true, std::memory_order_release);
+    rfa::LogInfo("Our sound engine plays %d banks (%d of them Armageddon's) on %s: %d events on ours alone, %d on both engines "
+                 "(stops, pauses, mutes, states), %d played by Wwise with their other actions on ours too%s",
+                 banks, armageddons, device, ours, both, wwiseAndControls, failed ? "; some banks didn't load (above)" : "");
 }
 
 // With Log=1: what our player is doing, every 10 s.
@@ -530,10 +707,11 @@ void StatusLoop()
             plays = g_plays.size();
         }
         rfa::LogDetail("Playing %d (%zu the game knows), voices %d (%d virtual, %d streamed), sources %d of %d, cache %.1f MB; "
-                       "so far %lld refused by their limits, %lld ended too quiet, %lld gave up their source, %lld stream underruns",
+                       "so far %lld refused by their limits, %lld ended too quiet, %lld gave up their source, %lld found none free, "
+                       "%lld stream underruns",
                        s.playing, plays, s.voices, s.virtual_voices, s.streams, s.sources_used, s.sources, s.cache_bytes / 1048576.0,
                        static_cast<long long>(s.voices_refused), static_cast<long long>(s.voices_ended_quiet),
-                       static_cast<long long>(s.voices_stolen), static_cast<long long>(s.underruns));
+                       static_cast<long long>(s.voices_stolen), static_cast<long long>(s.voices_no_source), static_cast<long long>(s.underruns));
     }
 }
 
@@ -558,6 +736,8 @@ bool InstallHooks()
          reinterpret_cast<void*>(StopSoundsHook), reinterpret_cast<void**>(&g_stopSounds)},
         {"Wwise's callback", kCallback, 6, {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08}, reinterpret_cast<void*>(CallbackHook),
          reinterpret_cast<void**>(&g_callback)},
+        {"unload a bank", kUnloadBank, 11, {0x55, 0x8B, 0xEC, 0x51, 0x0F, 0xB6, 0x05, 0x29, 0x55, 0x74, 0x02},
+         reinterpret_cast<void*>(UnloadBankHook), reinterpret_cast<void**>(&g_unloadBank)},
     };
     // Every one checked before any is changed: all or none.
     for (const Hook& h : hooks)

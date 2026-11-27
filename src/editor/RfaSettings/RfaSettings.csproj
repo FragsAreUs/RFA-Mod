@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- RfaSettings.exe: a window for rfa_mods.ini, each setting with its explanation from the file's
+       comments, a switch, number or text box, what you changed from the defaults, and Save. Built
+       into bin\editor\ by build.cmd; the editor's top bar opens it too. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RfaSettings</RootNamespace>
+    <AssemblyName>RfaSettings</AssemblyName>
+    <!-- 64-bit, as the editor and the Guerrilla builder next to it -->
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- Program.cs has its own Main: a command (describe, set) runs without the window -->
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RfaFormats\RfaFormats.csproj" />
+  </ItemGroup>
+
+  <!-- The editor's Fluent look (WPF UI, MIT, with the editor's theme on top), as the Guerrilla builder has it -->
+  <ItemGroup>
+    <Page Include="..\RfaEditor\Theme.xaml" Link="Theme.xaml" />
+    <Compile Include="..\RfaEditor\DarkTitleBar.cs" Link="DarkTitleBar.cs" />
+    <Compile Include="..\RfaEditor\FluentLook.cs" Link="FluentLook.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>

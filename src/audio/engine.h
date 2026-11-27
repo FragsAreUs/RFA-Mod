@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rfa_audio {
@@ -61,6 +62,7 @@ struct Voice {
     double length = 0;                 // one pass, in seconds
     double startedAt = 0;              // when it started (again)
     bool virtualVoice = false, ended = false, everPlayed = false;
+    double quietGraceUntil = 0;        // too quiet at its start: it waits, virtual, till then for its place (0: none)
     float levelDb = -999, distance = 0;
     int priority = 50;
     WhenQuiet whenQuiet = WhenQuiet::PlayOn;
@@ -104,6 +106,18 @@ struct Play {
     bool ended = false;
     bool paused = false;               // paused on its own (rfa_audio_pause_playing): its time stands still
     double pausedAt = 0;
+    bool controlsOnly = false;         // its event's plays left out (rfa_audio_post_controls): another engine plays them
+};
+
+// What OpenAL Soft's panning loses for a mono sound (dB, all outputs' power against the sound's), on a grid of
+// directions around the listener: 24 azimuths (every 15 degrees from ahead, clockwise) by 7 elevations (every 30 degrees
+// from below to above); and for one in the middle, not spatialized (a 2D voice). Measured at opening (MeasurePanning).
+struct PanningLoss {
+    static constexpr int Azimuths = 24, Elevations = 7;
+    float db[Elevations][Azimuths] = {};
+    float centre = 0;
+    bool valid = false;
+    float At(const Vec3& place) const;
 };
 
 struct PendingAction {
@@ -125,6 +139,10 @@ public:
     Library library;
     OpenAl al;
     rfa_audio_end_callback endCallback = nullptr;
+    rfa_audio_log_callback logCallback = nullptr;  // (rfa_audio_set_log_callback)
+    void* logUser = nullptr;
+    int quietLogsLeft = 0;
+    std::unordered_set<uint32_t> quietLogged;     // the events already written as ended too quiet
     void* endUser = nullptr;
 
     bool Open(const rfa_audio_settings& settings, std::string& why);
@@ -133,10 +151,14 @@ public:
     std::string DeviceInfo() const;
 
     uint32_t LoadBank(const std::wstring& bank, const std::wstring& media, std::string& why);
-    uint32_t LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why);
+    // One of Armageddon's banks from an archive, its loose overrides (bank, media) read instead where given; one loaded
+    // already is loaded again, or kept as it is (keepLoaded).
+    uint32_t LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why, const std::wstring& looseBank = L"",
+                                 const std::wstring& looseMedia = L"", bool keepLoaded = false);
     void UnloadBank(uint32_t bankId);
+    void StopBank(uint32_t bankId, int fadeMs);
 
-    uint32_t Post(uint32_t eventId, uint64_t object);
+    uint32_t Post(uint32_t eventId, uint64_t object, bool controlsOnly = false);
     uint32_t PlayNode(uint32_t nodeId, uint64_t object);
     uint32_t PlayMedium(uint32_t bankId, uint32_t mediumId, bool loop, uint64_t object);
     uint32_t PlaySamples(const int16_t* samples, int frames, int channels, int rate, bool loop, int loopStart, float volumeDb,
@@ -180,6 +202,10 @@ public:
     void EventInfo(uint32_t eventId, rfa_audio_event_info& out);
     // The buses an event's plays go through that duck other buses (for the hybrid's mirror of Wwise's sounds).
     std::vector<uint32_t> EventDuckingBuses(uint32_t eventId) const;
+    // What an event's actions act on (RFA_AUDIO_REACH_*), and from it where the hybrid sends it (RFA_AUDIO_ROUTE_*),
+    // the banks `here` played by this engine.
+    int EventReach(uint32_t eventId) const;
+    int EventRoute(uint32_t eventId, uint32_t bankId, const std::unordered_set<uint32_t>& here);
     std::string Describe(uint32_t id);
     bool MediumSeconds(const Node& sound, double& seconds, std::string& why);
 
@@ -221,6 +247,8 @@ private:
     };
     Level LevelOf(const Instance& in, const GameObject& object) const;
     float ParameterValue(const GameObject& object, uint32_t parameter, float distance) const;
+    // A voice ended too quiet, written to the log callback with its level's parts (once an event).
+    void LogQuiet(const Instance& in, const GameObject& object, float levelDb);
     bool AcquireSource(Voice& voice, ALuint& source);
     void ReleaseSource(Voice& voice);
     bool BeginOnSource(Voice& voice);
@@ -246,6 +274,9 @@ private:
     bool loopback = false, ownThread = false;
     bool inlineReads = false;  // media read here, under the lock (a loopback device, the check); else by the worker
     int sampleRate = 48000, maxSources = 128;
+    int directChannels = 0;        // AL_DIRECT_CHANNELS_SOFT's value for a 2D stereo voice (0: OpenAL Soft can't)
+    bool canUnspatialize = false;  // AL_SOURCE_SPATIALIZE_SOFT is there (2D mono voices aren't panned)
+    PanningLoss panning;           // what OpenAL Soft's panning loses for a mono voice, by direction (made up for)
     float threshold = Silent;
     double now = 0;
     int64_t renderedFrames = 0;
@@ -318,7 +349,7 @@ private:
     std::vector<int16_t> streamScratch;
 
     // Counts for the status
-    int64_t refused = 0, endedQuiet = 0, stolen = 0, underruns = 0, mediaFailed = 0;
+    int64_t refused = 0, endedQuiet = 0, stolen = 0, underruns = 0, mediaFailed = 0, noSource = 0;
 };
 
 Engine& TheEngine();

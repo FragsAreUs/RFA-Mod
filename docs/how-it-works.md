@@ -74,6 +74,31 @@ mark) come through as they were. A setting deleted from a file comes back with t
 the next time: in `rfa_mods.ini` that is the mod's own default anyway, but in `console.ini` it is
 applied again, so change a command's value there rather than deleting it.
 
+**The settings window.** `editor\RfaSettings.exe` (`src\editor\RfaSettings\`, with the reading and
+writing in `src\editor\RfaFormats\ModSettings.cs`) shows `rfa_mods.ini` built from the template's
+comments, so a setting you add to `config\rfa_mods.ini` shows in it with no code. Write its comments
+the way the file already does and the window picks them up:
+- the comment lines just above a setting are its explanation; a setting right under another with
+  none of its own shares that one's (`TextScale`, `InputScale`);
+- `; --- Name` heads a group, and the lines between two `; ----` rules above a `[section]` are its
+  title;
+- a value of 0 or 1 gets a switch, unless the explanation makes it a number ("times this", "how
+  far ...", "1, 2, ..."); any other number gets a number box, a `...Dir` setting about a folder a
+  folder picker, and `N = meaning` (or `Empty = meaning`) in the explanation adds N to a list of
+  values to pick from;
+- a range such as `30-170` or `0 to 255` warns when a value is outside it;
+- `(live)` at the start marks a setting the game takes as the file is saved; "read when the game
+  starts" (or "at start-up") one it takes when it starts, "load the level again" one it takes when a
+  level loads, and "the rest are read when the game starts" in a section's first comments covers the
+  unmarked ones of that section.
+
+Saving reads the file again and changes only the values given, each line keeping everything before
+its value, so comments, order, line breaks, encoding, settings the template doesn't have and values
+the game wrote meanwhile all stay. A setting the file lacks is added after its section's last, with
+the template's comments. The new file is read back and compared with what was meant before it
+replaces the old one. `RfaSettings.exe describe [file]` lists how the window reads each setting, and
+`RfaSettings.exe set <file> Section.Key=value ...` saves the same way (both write to a pipe or file).
+
 ## Project layout
 
 ```
@@ -89,6 +114,8 @@ src\editor\RfaFormats\    C# library that reads and writes the game's file forma
 src\editor\RfaEditor\     the editor (C#, WPF desktop app); built into bin\editor\
 src\editor\GuerrillaBuilder\ GuerrillaBuilder.exe: makes Guerrilla's world, HUD, vehicles, weapons, people and
                           cloth usable, from your copy of Guerrilla; built into bin\editor\
+src\editor\RfaSettings\   RfaSettings.exe: the window for rfa_mods.ini, built from its comments; built into
+                          bin\editor\
 config\rfa_mods.ini       the settings template (to bin\ when missing, always to bin\defaults\)
 config\console.ini        console settings template (to bin\ when missing, always to bin\defaults\)
 docs\editor-guide.md      how to use the editor

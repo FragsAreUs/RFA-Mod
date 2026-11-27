@@ -23,6 +23,7 @@ namespace {
 
 constexpr int RenderPiece = 480;                        // loopback: an update every 10 ms of sound at 48 kHz
 constexpr uint32_t FirstPlayingId = 0x80000000u;        // ours never meet Wwise's (the hybrid's step 2)
+constexpr double QuietGraceSeconds = 0.25;              // how long a voice too quiet at its start waits for its place
 
 float DbToGain(float db) { return db <= -200 ? 0.0f : std::pow(10.0f, db / 20.0f); }
 
@@ -44,6 +45,86 @@ Vec3 Normalized(const Vec3& a, const Vec3& fallback)
 {
     float l = Length(a);
     return l > 1e-6f ? Vec3{a.x / l, a.y / l, a.z / l} : fallback;
+}
+
+// How much level OpenAL Soft's panning loses for a mono sound in each direction, measured on a loopback device of the
+// given layout (and HRTF): noise played from each direction of a grid, and the output's power (all channels) against
+// the noise's. Wwise pans at a constant power (the channels' powers add up to the sound's, whichever way it comes from);
+// OpenAL Soft's stereo pair loses 1.5 dB ahead and 5 dB behind, more with HRTF (tools\research\audio_hrtf_test.cpp).
+// False if it can't be measured: then nothing is made up.
+bool MeasurePanning(OpenAl& al, ALCint channels, int rate, bool hrtf, PanningLoss& out)
+{
+    if (!al.alcLoopbackOpenDeviceSOFT || !al.alcRenderSamplesSOFT) return false;
+    ALCdevice* device = al.alcLoopbackOpenDeviceSOFT(nullptr);
+    if (!device) return false;
+    const ALCint attributes[] = {ALC_FORMAT_CHANNELS_SOFT, channels, ALC_FORMAT_TYPE_SOFT, ALC_FLOAT_SOFT, ALC_FREQUENCY, rate,
+                                 ALC_HRTF_SOFT, hrtf ? ALC_TRUE : ALC_FALSE, 0};
+    ALCcontext* context = al.alcCreateContext(device, attributes);
+    if (!context) {
+        al.alcCloseDevice(device);
+        return false;
+    }
+    al.alcMakeContextCurrent(context);
+    ALCint hrtfOn = 0, outputs = 2;
+    al.alcGetIntegerv(device, ALC_HRTF_SOFT, 1, &hrtfOn);
+    switch (channels) {
+    case ALC_QUAD_SOFT: outputs = 4; break;
+    case ALC_5POINT1_SOFT: outputs = 6; break;
+    case ALC_6POINT1_SOFT: outputs = 7; break;
+    case ALC_7POINT1_SOFT: outputs = 8; break;
+    default: outputs = 2; break;
+    }
+    bool ok = (hrtfOn != 0) == hrtf;
+    // White noise, looping, its power known.
+    std::vector<int16_t> noise(4096);
+    uint32_t seed = 12345;
+    double inPower = 0;
+    for (auto& v : noise) {
+        seed = seed * 1664525u + 1013904223u;
+        v = static_cast<int16_t>((static_cast<int32_t>(seed >> 16) - 32768) / 4);
+        inPower += (v / 32768.0) * (v / 32768.0);
+    }
+    inPower /= noise.size();
+    ALuint buffer = 0, source = 0;
+    al.alGenBuffers(1, &buffer);
+    al.alBufferData(buffer, AL_FORMAT_MONO16, noise.data(), static_cast<ALsizei>(noise.size() * 2), rate);
+    al.alGenSources(1, &source);
+    al.alDistanceModel(AL_NONE);
+    al.alSourcei(source, AL_BUFFER, static_cast<ALint>(buffer));
+    al.alSourcei(source, AL_LOOPING, AL_TRUE);
+    al.alSourcei(source, AL_SOURCE_RELATIVE, AL_TRUE);
+    std::vector<float> rendered(static_cast<size_t>(outputs) * 2048);
+    // The loss (dB) of the source at a place (or unspatialized in the middle).
+    auto loss = [&](float x, float y, float z, bool spatialized) {
+        if (al.alIsExtensionPresent("AL_SOFT_source_spatialize")) al.alSourcei(source, AL_SOURCE_SPATIALIZE_SOFT, spatialized ? AL_TRUE : AL_FALSE);
+        al.alSource3f(source, AL_POSITION, x, y, z);
+        al.alSourcePlay(source);
+        al.alcRenderSamplesSOFT(device, rendered.data(), 512);  // settles (HRTF's filters fade between directions)
+        al.alcRenderSamplesSOFT(device, rendered.data(), 2048);
+        al.alSourceStop(source);
+        double power = 0;
+        for (size_t i = 0; i < 2048u * outputs; i++) power += static_cast<double>(rendered[i]) * rendered[i];
+        power /= 2048.0;
+        return power > 0 ? static_cast<float>(-10.0 * std::log10(power / inPower)) : 0.0f;
+    };
+    if (ok) {
+        out.centre = loss(0, 0, 0, false);
+        for (int e = 0; e < PanningLoss::Elevations; e++)
+            for (int a = 0; a < PanningLoss::Azimuths; a++) {
+                double elevation = (-90.0 + 180.0 * e / (PanningLoss::Elevations - 1)) * 3.14159265358979 / 180.0;
+                double azimuth = 360.0 * a / PanningLoss::Azimuths * 3.14159265358979 / 180.0;  // 0 ahead, clockwise (right)
+                float x = static_cast<float>(std::cos(elevation) * std::sin(azimuth)), y = static_cast<float>(std::sin(elevation)),
+                      z = static_cast<float>(-std::cos(elevation) * std::cos(azimuth));
+                out.db[e][a] = loss(5 * x, 5 * y, 5 * z, true);
+            }
+        out.valid = true;
+    }
+    al.alDeleteSources(1, &source);
+    al.alDeleteBuffers(1, &buffer);
+    al.alcMakeContextCurrent(nullptr);
+    al.alcDestroyContext(context);
+    al.alcCloseDevice(device);
+    return ok;
 }
 
 std::string Hex(uint32_t v)
@@ -139,6 +220,19 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
     // The listener stays at the origin facing -z; voices are placed relative to it (ToListener).
     al.alDistanceModel(AL_NONE);
     al.alDopplerFactor(0.0f);
+    // A 2D sound as Wwise plays it: straight to the speakers, not panned (nor through HRTF), where OpenAL Soft can.
+    directChannels = al.alIsExtensionPresent("AL_SOFT_direct_channels_remix") ? AL_REMIX_UNMATCHED_SOFT
+                   : al.alIsExtensionPresent("AL_SOFT_direct_channels") ? AL_TRUE : 0;
+    canUnspatialize = al.alIsExtensionPresent("AL_SOFT_source_spatialize") != AL_FALSE;
+    // What OpenAL Soft's panning loses in each direction, against Wwise's constant power: made up for each voice
+    // (ApplySource). Measured on a loopback device of this one's layout, with HRTF if this one has it.
+    ALCint hrtfOn = 0, mode = 0;
+    al.alcGetIntegerv(device, ALC_HRTF_SOFT, 1, &hrtfOn);
+    if (al.alcIsExtensionPresent(device, "ALC_SOFT_output_mode")) al.alcGetIntegerv(device, ALC_OUTPUT_MODE_SOFT, 1, &mode);
+    ALCint layout = mode == ALC_QUAD_SOFT || mode == ALC_5POINT1_SOFT || mode == ALC_6POINT1_SOFT || mode == ALC_7POINT1_SOFT ? mode : ALC_STEREO_SOFT;
+    panning = PanningLoss{};
+    MeasurePanning(al, layout, sampleRate, hrtfOn != 0, panning);
+    al.alcMakeContextCurrent(context);
     cache.Init(&al, cacheBytes);
     random.seed(loopback ? 12345u : GetTickCount());
     LARGE_INTEGER counter, frequency;
@@ -265,29 +359,63 @@ uint32_t Engine::LoadBank(const std::wstring& bankPath, const std::wstring& medi
     return bank ? bank->id : 0;
 }
 
-uint32_t Engine::LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why)
+uint32_t Engine::LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why, const std::wstring& looseBank,
+                                     const std::wstring& looseMedia, bool keepLoaded)
 {
     if (!context) {
         why = "the engine isn't open";
         return 0;
     }
-    // One loaded already (by its header's id) is unloaded first, its sounds stopped.
+    // One loaded already (by its header's id) is unloaded first, its sounds stopped; or kept, if asked.
     std::string lower;
     for (char c : name) lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    std::vector<ArchiveFile> found;
-    std::vector<bool> present;
-    if (FindInArchive(archive, {lower + ".bnk_pc"}, found, present, why) && present[0] && !found[0].compressed) {
-        MediaFile file;
-        uint8_t head[16];
-        std::string ignored;
-        if (file.Open(archive, ignored) && file.ReadAt(found[0].offset, head, sizeof head) && memcmp(head, "BKHD", 4) == 0) {
-            uint32_t id;
-            memcpy(&id, head + 12, 4);
-            UnloadBank(id);
+    MediaFile file;
+    uint64_t at = 0;
+    std::string ignored;
+    bool open = false;
+    if (!looseBank.empty()) {
+        open = file.Open(looseBank, ignored);
+    } else {
+        std::vector<ArchiveFile> found;
+        std::vector<bool> present;
+        if (FindInArchive(archive, {lower + ".bnk_pc"}, found, present, why) && present[0] && !found[0].compressed) {
+            open = file.Open(archive, ignored);
+            at = found[0].offset;
         }
     }
-    Bank* bank = library.LoadFromArchive(archive, name, why);
+    uint8_t head[16];
+    if (open && file.ReadAt(at, head, sizeof head) && memcmp(head, "BKHD", 4) == 0) {
+        uint32_t id;
+        memcpy(&id, head + 12, 4);
+        if (keepLoaded && library.FindBank(id)) return id;
+        UnloadBank(id);
+    }
+    Bank* bank = library.LoadFromArchive(archive, name, why, looseBank, looseMedia);
     return bank ? bank->id : 0;
+}
+
+void Engine::StopBank(uint32_t bankId, int fadeMs)
+{
+    // Its sounds playing, as Wwise stops them when the game unloads the bank (the bank itself stays loaded here).
+    std::function<void(Instance&)> stop = [&](Instance& in) {
+        if (in.finished) return;
+        if (in.node && in.node->bankId == bankId) StopInstance(in, fadeMs);
+        else
+            for (auto& c : in.children) stop(*c);
+    };
+    for (auto& [id, play] : plays)
+        for (auto& root : play->roots) stop(*root);
+    // Its events' waiting actions, and waiting plays of its sounds, go.
+    for (auto it = pending.begin(); it != pending.end();) {
+        const Node* target = it->action->Kind() == ActionPlay ? library.FindNode(it->action->target) : nullptr;
+        if (it->action->bankId == bankId || (target && target->bankId == bankId)) {
+            if (Play* p = FindPlay(it->playingId)) p->pendingActions--;
+            it = pending.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    Sweep();
 }
 
 void Engine::UnloadBank(uint32_t bankId)
@@ -336,15 +464,16 @@ Play* Engine::FindPlay(uint32_t playingId) const
     return it == plays.end() ? nullptr : it->second.get();
 }
 
-uint32_t Engine::Post(uint32_t eventId, uint64_t object)
+uint32_t Engine::Post(uint32_t eventId, uint64_t object, bool controlsOnly)
 {
     const Event* event = library.FindEvent(eventId);
     if (!context || !event) return 0;
     uint32_t id = NewPlay(eventId, object);
     Play& play = *plays[id];
+    play.controlsOnly = controlsOnly;
     for (uint32_t actionId : event->actions) {
         const Action* action = library.FindAction(actionId);
-        if (!action) continue;
+        if (!action || (controlsOnly && action->Kind() == ActionPlay)) continue;
         if (action->delayMs > 0) {
             pending.push_back({now + action->delayMs / 1000.0, id, action});
             play.pendingActions++;
@@ -425,6 +554,7 @@ uint32_t Engine::PlaySamples(const int16_t* samples, int frames, int channels, i
     voice->channels = channels;
     voice->rate = rate;
     voice->codec = 3;
+    voice->threeD = in->ownThreeD;
     voice->length = decoded->Seconds();
     voice->owner = in.get();
     in->voice = std::move(voice);
@@ -465,6 +595,7 @@ void Engine::Execute(const Action& action, Play& play)
     bool everywhere = action.Scope() == ScopeEverywhere;
     switch (action.Kind()) {
     case ActionPlay:
+        if (play.controlsOnly) break;  // its plays are another engine's (Post queues none; this guards)
         if (const Node* node = library.FindNode(action.target))
             if (auto in = Start(node, play, nullptr, action.fadeMs)) play.roots.push_back(std::move(in));
         break;
@@ -498,7 +629,7 @@ void Engine::Execute(const Action& action, Play& play)
         // Another event posted on the same object (Armageddon's music banks do it), with a guard against a loop.
         if (postDepth < 8 && library.FindEvent(action.target)) {
             postDepth++;
-            Post(action.target, play.object);
+            Post(action.target, play.object, play.controlsOnly);
             postDepth--;
         }
         break;
@@ -975,8 +1106,14 @@ bool Engine::BeginVoice(Instance& in, bool counted)
     };
     if (level.db < threshold) {
         if (level.whenQuiet == WhenQuiet::End) {
-            endedQuiet++;
-            return false;
+            // Not ended yet: its object's place may not have come. The game places a sound object at its next update
+            // (every 33 ms, a person's only while something plays on it) and Wwise starts a voice at its next render,
+            // after that; here a voice starts at once, from the place the object last had. It waits a moment, virtual,
+            // making no sound and ducking nothing, then ends if it is still too quiet.
+            v.virtualVoice = true;
+            v.quietGraceUntil = now + QuietGraceSeconds;
+            count();
+            return true;
         }
         if (level.whenQuiet == WhenQuiet::Virtual) {
             v.virtualVoice = true;
@@ -993,8 +1130,9 @@ bool Engine::BeginVoice(Instance& in, bool counted)
         }
     }
     if (!BeginOnSource(v)) {
-        if (v.whenQuiet != WhenQuiet::Virtual) return false;
-        v.virtualVoice = true;  // no source free: it waits, virtual, for one
+        noSource++;
+        if (v.whenQuiet != WhenQuiet::Virtual && v.loopCount != 0) return false;
+        v.virtualVoice = true;  // no source free: it waits, virtual, for one (a loop too: it mustn't be lost)
         count();
         return true;
     }
@@ -1022,15 +1160,23 @@ bool Engine::AcquireSource(Voice& voice, ALuint& source)
         }
         maxSources = sourcesMade;  // OpenAL has no more
     }
-    // None free: the voice of the lowest priority (the quietest of those) gives its up, if lower than this one.
+    // None free: the quietest voice (of those as quiet, the lowest priority) gives its up, if it is at least 6 dB quieter
+    // than this one, or of a lower priority and no louder. Wwise mixes every voice, with no such cap, and its priorities
+    // only choose within its voice limits: here, a world full of far loops (our ambience has priority 78, the voices'
+    // lines 50) mustn't keep a near sound from being heard. The margin keeps two voices of about one level from taking
+    // turns.
     Voice* victim = nullptr;
     for (Voice* v : liveVoices)
-        if (v->source && v != &voice && (!victim || v->priority < victim->priority || (v->priority == victim->priority && v->levelDb < victim->levelDb)))
+        if (v->source && v != &voice && (!victim || v->levelDb < victim->levelDb - 0.5f ||
+                                          (v->levelDb <= victim->levelDb + 0.5f && v->priority < victim->priority)))
             victim = v;
-    if (!victim || victim->priority >= voice.priority) return false;
+    if (!victim || !(victim->levelDb + 6.0f < voice.levelDb || (victim->priority < voice.priority && victim->levelDb <= voice.levelDb)))
+        return false;
     stolen++;
     ReleaseSource(*victim);
-    if (victim->whenQuiet == WhenQuiet::Virtual) victim->virtualVoice = true;
+    // It goes on in silence, keeping its time, to come back when a source is free; or ends, if it would end when too
+    // quiet to hear anyway and isn't a loop.
+    if (victim->whenQuiet == WhenQuiet::Virtual || victim->loopCount == 0) victim->virtualVoice = true;
     else victim->ended = true;
     source = freeSources.back();
     freeSources.pop_back();
@@ -1065,6 +1211,10 @@ bool Engine::BeginOnSource(Voice& v)
     al.alSourcei(source, AL_SOURCE_RELATIVE, AL_TRUE);
     al.alSourcef(source, AL_ROLLOFF_FACTOR, 0.0f);
     al.alSourcef(source, AL_MAX_GAIN, 16.0f);
+    // 2D: a stereo sound's channels go straight to the speakers' (HRTF on, OpenAL Soft would place them at ±30° and
+    // filter them: 2.5 dB quieter than Wwise), a mono one isn't spatialized. 3D: placed (and through HRTF if it is on).
+    if (directChannels) al.alSourcei(source, AL_DIRECT_CHANNELS_SOFT, !v.threeD && v.channels > 1 ? directChannels : AL_FALSE);
+    if (canUnspatialize) al.alSourcei(source, AL_SOURCE_SPATIALIZE_SOFT, v.threeD ? AL_TRUE : AL_FALSE);
     if (v.decoded) {
         al.alSourcei(source, AL_BUFFER, static_cast<ALint>(v.decoded->buffer));
         al.alSourcei(source, AL_LOOPING, v.loopCount == 0 ? AL_TRUE : AL_FALSE);
@@ -1100,6 +1250,7 @@ bool Engine::BeginOnSource(Voice& v)
         v.streamStarted = v.spare.size() < 4;
     }
     v.virtualVoice = false;
+    v.quietGraceUntil = 0;
     v.everPlayed = true;
     v.startedAt = now;
     return true;
@@ -1171,15 +1322,34 @@ Vec3 Engine::ToListener(const Vec3& position) const
     return {Dot(relative, right), Dot(relative, up), -Dot(relative, front)};
 }
 
+// The loss for a place relative to the listener (OpenAL's: x right, y up, -z ahead), between the grid's directions.
+float PanningLoss::At(const Vec3& p) const
+{
+    float horizontal = std::sqrt(p.x * p.x + p.z * p.z);
+    if (horizontal < 1e-6f && std::abs(p.y) < 1e-6f) return centre;
+    float azimuth = std::atan2(p.x, -p.z) * 180.0f / 3.14159265f;  // 0 ahead, 90 right
+    if (azimuth < 0) azimuth += 360.0f;
+    float elevation = std::atan2(p.y, horizontal) * 180.0f / 3.14159265f;
+    float a = azimuth / 360.0f * Azimuths, e = (elevation + 90.0f) / 180.0f * (Elevations - 1);
+    int a0 = static_cast<int>(a) % Azimuths, a1 = (a0 + 1) % Azimuths, e0 = std::clamp(static_cast<int>(e), 0, Elevations - 1),
+        e1 = std::min(e0 + 1, Elevations - 1);
+    float ta = a - std::floor(a), te = std::clamp(e - e0, 0.0f, 1.0f);
+    float low = db[e0][a0] + (db[e0][a1] - db[e0][a0]) * ta, high = db[e1][a0] + (db[e1][a1] - db[e1][a0]) * ta;
+    return low + (high - low) * te;
+}
+
 void Engine::ApplySource(Voice& v, const Level& level, const GameObject& object)
 {
     if (!v.source) return;
-    float gain = DbToGain(level.db) * level.fadeGain;
+    const bool centred = !(level.threeD && v.channels == 1 && object.placed);  // played at the listener: in the middle
+    // What OpenAL Soft's panning loses for a mono voice, where it is (MeasurePanning), made up as Wwise pans.
+    const Vec3 place = centred ? Vec3{} : ToListener(object.position);
+    float makeUp = v.channels != 1 || !panning.valid ? 0.0f : centred ? panning.centre : panning.At(place);
+    float gain = DbToGain(level.db + std::clamp(makeUp, 0.0f, 12.0f)) * level.fadeGain;
     al.alSourcef(v.source, AL_GAIN, std::min(gain, 16.0f));
     al.alSourcef(v.source, AL_PITCH, std::clamp(std::pow(2.0f, level.pitchCents / 1200.0f), 0.05f, 8.0f));
-    if (level.threeD && v.channels == 1 && object.placed) {
-        Vec3 p = ToListener(object.position);
-        al.alSource3f(v.source, AL_POSITION, p.x, p.y, p.z);
+    if (!centred) {
+        al.alSource3f(v.source, AL_POSITION, place.x, place.y, place.z);
     } else {
         al.alSource3f(v.source, AL_POSITION, 0.0f, 0.0f, 0.0f);
     }
@@ -1199,6 +1369,53 @@ void Engine::ApplySource(Voice& v, const Level& level, const GameObject& object)
         }
         v.appliedLowPass = level.lowPass;
     }
+}
+
+void Engine::LogQuiet(const Instance& in, const GameObject& object, float levelDb)
+{
+    if (!logCallback || quietLogsLeft <= 0 || !in.play || !quietLogged.insert(in.play->eventId).second) return;
+    quietLogsLeft--;
+    const float distance = object.placed ? Length(Minus(object.position, listenerPosition)) : 0.0f;
+    std::string text = "Ended too quiet: event " + Hex(in.play->eventId) + ", sound " + (in.node ? Hex(in.node->id) : std::string("?")) + ", " +
+                       Number(levelDb) + " dB (below " + Number(threshold) + "), " + Number(distance) + " m from the listener";
+    text += object.placed ? " (its object at " + Number(object.position.x) + ", " + Number(object.position.y) + ", " + Number(object.position.z) + ")"
+                          : " (its object never placed)";
+    text += "; the listener at " + Number(listenerPosition.x) + ", " + Number(listenerPosition.y) + ", " + Number(listenerPosition.z) + ". Nodes:";
+    uint32_t bus = 0;
+    for (const Node* n = in.node; n; n = n->parent ? library.FindNode(n->parent) : nullptr) {
+        text += " " + Hex(n->id) + " " + Number(n->volume);
+        for (const Curve& c : n->curves)
+            if (c.property == PropertyVolume) {
+                float x = ParameterValue(object, c.parameter, distance);
+                text += " [" + Hex(c.parameter) + " at " + Number(x, 2) + ": " + Number(GainToDb(c.GainAt(x))) + "]";
+            }
+        if (n->stateGroup) text += " (state group " + Hex(n->stateGroup) + ")";
+        for (uint64_t on : {object.id, uint64_t(0)})
+            if (auto set = actionValues.find(ActionKey(n->id, on)); set != actionValues.end())
+                text += " (set " + Number(set->second.volume) + (set->second.muted ? ", muted" : "") + ")";
+        if (!n->parent) bus = n->bus;
+    }
+    text += ". Buses:";
+    for (uint32_t id : BusChain(bus)) {
+        const Bus* b = library.FindBus(id);
+        if (!b) {
+            text += " " + Hex(id) + " (not loaded)";
+            continue;
+        }
+        text += " " + Hex(id) + " " + Number(b->volume);
+        for (const Curve& c : b->curves)
+            if (c.property == PropertyVolume) {
+                float x = GlobalParameter(c.parameter);
+                text += " [" + Hex(c.parameter) + " at " + Number(x, 2) + ": " + Number(GainToDb(c.GainAt(x))) + "]";
+            }
+        if (b->stateGroup)
+            if (auto state = states.find(b->stateGroup); state != states.end())
+                text += " (state " + Hex(state->second) + ": " + Number(StateValuesFor(b->stateGroup, state->second, b).volume) + ")";
+        if (auto set = busActionValues.find(id); set != busActionValues.end())
+            text += " (set " + Number(set->second.volume) + (set->second.muted ? ", muted" : "") + ")";
+        if (auto duck = busDuckDb.find(id); duck != busDuckDb.end()) text += " (ducked " + Number(duck->second) + ")";
+    }
+    logCallback(text.c_str(), logUser);
 }
 
 float Engine::ParameterValue(const GameObject& object, uint32_t parameter, float distance) const
@@ -1320,6 +1537,7 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
     if (v.source) {
         if (quiet && v.whenQuiet == WhenQuiet::End) {
             endedQuiet++;
+            LogQuiet(in, object, v.levelDb);
             v.ended = true;
             ReleaseSource(v);
             return;
@@ -1338,6 +1556,12 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
             ServiceStream(v);
         }
     } else if (v.virtualVoice) {
+        if (v.quietGraceUntil > 0 && quiet && now >= v.quietGraceUntil) {
+            endedQuiet++;  // still too quiet once its place has come
+            LogQuiet(in, object, v.levelDb);
+            v.ended = true;
+            return;
+        }
         float pitch = std::clamp(std::pow(2.0f, level.pitchCents / 1200.0f), 0.05f, 8.0f);
         if (v.loopCount != 0 && now - v.startedAt >= v.length * std::max(1, v.loopCount) / pitch) {
             v.ended = true;
@@ -1789,7 +2013,7 @@ void Engine::UpdateMix()
     lastMixAt = now;
     std::unordered_map<uint32_t, int> on = externalOn;
     for (const Voice* v : liveVoices)
-        if (!v->ended && !v->silence && v->bus)
+        if (!v->ended && !v->silence && v->bus && !(v->virtualVoice && v->quietGraceUntil > 0))  // (one waiting for its place: Wwise wouldn't have started it)
             for (uint32_t id : BusChain(v->bus)) on[id]++;
     busDuckDb.clear();
     for (const auto& [id, bus] : library.AllBuses()) {
@@ -1927,6 +2151,7 @@ void Engine::Status(rfa_audio_status& out)
     out.voices_stolen = stolen;
     out.underruns = underruns;
     out.media_failed = mediaFailed;
+    out.voices_no_source = noSource;
 }
 
 // ---- Looking at a bank's tree ------------------------------------------------------------------------
@@ -1958,6 +2183,74 @@ std::vector<uint32_t> Engine::EventDuckingBuses(uint32_t eventId) const
     return found;
 }
 
+int Engine::EventReach(uint32_t eventId) const
+{
+    const Event* event = library.FindEvent(eventId);
+    if (!event) return 0;
+    int reach = RFA_AUDIO_REACH_FOUND;
+    for (uint32_t actionId : event->actions) {
+        const Action* a = library.FindAction(actionId);
+        if (!a) continue;
+        const uint32_t kind = a->Kind(), scope = a->Scope();
+        const bool plays = kind == ActionPlay || kind == ActionPostEvent;
+        if (plays) reach |= RFA_AUDIO_REACH_PLAYS;
+        if (kind == ActionSetState) {
+            reach |= RFA_AUDIO_REACH_STATES;
+            continue;
+        }
+        if (kind == ActionSetSwitch) {
+            reach |= RFA_AUDIO_REACH_SWITCHES;
+            continue;
+        }
+        if (!plays && (scope == ScopeAll || scope == ScopeAllBut)) {
+            reach |= RFA_AUDIO_REACH_ALL;  // everything playing, whatever the target
+            continue;
+        }
+        if (!plays && scope == ScopeEverywhere) reach |= RFA_AUDIO_REACH_EVERY_OBJECT;
+        if (!a->target) continue;
+        // Its target: a bus (every sound through it), or an object of another bank (or of none loaded, or not read).
+        bool elsewhere;
+        if (library.FindBus(a->target)) {
+            reach |= RFA_AUDIO_REACH_BUSES;
+            continue;
+        } else if (kind == ActionPostEvent) {
+            const Event* other = library.FindEvent(a->target);
+            elsewhere = !other || other->bankId != event->bankId;
+        } else {
+            const Node* node = library.FindNode(a->target);
+            elsewhere = !node || node->bankId != event->bankId;
+        }
+        if (elsewhere) reach |= plays ? RFA_AUDIO_REACH_PLAYS_OTHER_BANKS : RFA_AUDIO_REACH_ACTS_OTHER_BANKS;
+    }
+    return reach;
+}
+
+int Engine::EventRoute(uint32_t eventId, uint32_t bankId, const std::unordered_set<uint32_t>& here)
+{
+    const Event* event = library.FindEvent(eventId);
+    const int reach = EventReach(eventId);
+    if (!event || !(reach & RFA_AUDIO_REACH_FOUND)) return RFA_AUDIO_ROUTE_ELSEWHERE;
+    if (!(reach & RFA_AUDIO_REACH_PLAYS)) return RFA_AUDIO_ROUTE_BOTH;
+    const bool isHere = here.count(bankId) != 0;  // the bank it goes by (an event may be in several)
+    bool reachesOther = (reach & (RFA_AUDIO_REACH_ALL | RFA_AUDIO_REACH_BUSES | RFA_AUDIO_REACH_STATES | RFA_AUDIO_REACH_SWITCHES)) != 0;
+    if (!reachesOther && (reach & RFA_AUDIO_REACH_ACTS_OTHER_BANKS)) {
+        // A stop, pause, mute or the like on another bank's sound: the other engine's, unless that bank is on this one.
+        for (uint32_t actionId : event->actions) {
+            const Action* a = library.FindAction(actionId);
+            if (!a || !a->target) continue;
+            const uint32_t kind = a->Kind();
+            if (kind == ActionPlay || kind == ActionPostEvent || kind == ActionSetState || kind == ActionSetSwitch) continue;
+            const Node* node = library.FindNode(a->target);
+            if (!node || (here.count(node->bankId) != 0) != isHere) reachesOther = true;
+        }
+    }
+    if (!isHere) return reachesOther ? RFA_AUDIO_ROUTE_ELSEWHERE_AND_CONTROLS : RFA_AUDIO_ROUTE_ELSEWHERE;
+    rfa_audio_event_info info{};
+    EventInfo(eventId, info);
+    const bool playable = !info.synthesized && !info.not_read && !info.missing;
+    return playable && !reachesOther ? RFA_AUDIO_ROUTE_HERE : RFA_AUDIO_ROUTE_ELSEWHERE_AND_CONTROLS;
+}
+
 void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
 {
     out = rfa_audio_event_info{};
@@ -1983,8 +2276,13 @@ void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
             if (n.loopCount == 0) out.loops = 1;
             double seconds = 0;
             std::string why;
-            if (MediumSeconds(n, seconds, why)) longest = std::max(longest, delay + seconds * std::max<int>(1, n.loopCount));
-            else {
+            if (n.IsSourcePlugin()) {
+                // No medium: Wwise's silence lasts its length; a synthesized source isn't played yet.
+                if (n.IsSilence()) longest = std::max(longest, delay + n.silenceSeconds * std::max<int>(1, n.loopCount));
+                else out.synthesized++;
+            } else if (MediumSeconds(n, seconds, why)) {
+                longest = std::max(longest, delay + seconds * std::max<int>(1, n.loopCount));
+            } else {
                 out.missing++;
                 unknownLength = true;
             }
@@ -1993,6 +2291,7 @@ void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
         if (n.type == TypeSwitch && !out.switch_group) out.switch_group = n.group;
         for (uint32_t child : n.children) {
             if (const Node* c = library.FindNode(child)) visit(*c, threeD, delay, depth + 1);
+            else if (library.UnreadType(child)) out.not_read++;
             else out.missing++;
         }
     };
@@ -2007,7 +2306,8 @@ void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
             out.plays++;
             const Node* target = library.FindNode(a->target);
             if (!target) {
-                out.missing++;
+                if (library.UnreadType(a->target)) out.not_read++;  // music or dialogue: in its bank, not read yet
+                else out.missing++;
                 break;
             }
             // Placing and fades come down from the target's parents too.
@@ -2037,13 +2337,15 @@ void Engine::DescribeNode(const Node& n, int depth, std::string& text)
 {
     std::string indent(2 * depth + 2, ' ');
     text += indent + TypeName(n.type) + " " + Hex(n.id);
-    if (n.type == TypeSound) {
+    if (n.type == TypeSound && n.IsSourcePlugin()) {
+        text += n.IsSilence() ? ": silence, " + Number(n.silenceSeconds, 2) + " s" : ": a synthesized source (plug-in " + Hex(n.codec) + "; not played yet)";
+    } else if (n.type == TypeSound) {
         Bank* bank = library.FindBank(n.bankId);
         MediumInfo info;
         std::string why;
         if (bank && cache.Info(*bank, n.source, info, why)) {
             const WemFormat& f = info.format;
-            text += ": medium " + Hex(n.source) + " (" + (f.IsAdpcm() ? "Wwise ADPCM" : "PCM") + ", " + std::to_string(f.channels) +
+            text += ": medium " + Hex(n.source) + " (" + (f.IsVorbis() ? "Wwise Vorbis" : f.IsAdpcm() ? "Wwise ADPCM" : "PCM") + ", " + std::to_string(f.channels) +
                     (f.channels == 1 ? " channel, " : " channels, ") + std::to_string(f.rate) + " Hz, " + Number(info.Seconds(), 2) + " s";
             if (f.hasLoop) text += ", loop " + Number(static_cast<double>(f.loopStart) / f.rate, 2) + "-" + Number(static_cast<double>(f.loopEnd + 1) / f.rate, 2) + " s";
             text += ")";

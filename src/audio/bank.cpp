@@ -418,6 +418,7 @@ bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Ba
     }
     default:
         bank.unknownObjects++;
+        bank.unread.emplace_back(id, type);
         r.Skip(r.Left());
         break;
     }
@@ -729,34 +730,51 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
     return Parse(bytes, bankPath, mediaPath, std::move(media), mediaProblem, why);
 }
 
-Bank* Library::LoadFromArchive(const std::wstring& archive, const std::string& name, std::string& why)
+Bank* Library::LoadFromArchive(const std::wstring& archive, const std::string& name, std::string& why,
+                               const std::wstring& looseBank, const std::wstring& looseMedia)
 {
     std::string lower;
     for (char c : name) lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    std::wstring wideName(name.begin(), name.end());
     std::vector<ArchiveFile> found;
     std::vector<bool> present;
     if (!FindInArchive(archive, {lower + ".bnk_pc", lower + "_media.bnk_pc"}, found, present, why)) return nullptr;
-    if (!present[0]) {
-        why = name + ".bnk_pc isn't in that archive";
-        return nullptr;
-    }
-    if (found[0].compressed) {
-        why = "that archive is compressed (its banks are read from a copy, and their media aren't in it)";
-        return nullptr;
-    }
-    if (found[0].size > (64u << 20)) {
-        why = "too big for a bank";
-        return nullptr;
-    }
-    std::vector<uint8_t> bytes(static_cast<size_t>(found[0].size));
-    MediaFile whole;
-    if (!whole.Open(archive, why) || (!bytes.empty() && !whole.ReadAt(found[0].offset, bytes.data(), static_cast<uint32_t>(bytes.size())))) {
-        why = "its bytes can't be read from the archive";
-        return nullptr;
+    std::vector<uint8_t> bytes;
+    if (!looseBank.empty()) {
+        if (!ReadWholeFile(looseBank, bytes, why)) {
+            why = "its override " + Narrow(looseBank) + ": " + why;
+            return nullptr;
+        }
+    } else {
+        if (!present[0]) {
+            why = name + ".bnk_pc isn't in that archive";
+            return nullptr;
+        }
+        if (found[0].compressed) {
+            why = "that archive is compressed (its banks are read from a copy, and their media aren't in it)";
+            return nullptr;
+        }
+        if (found[0].size > (64u << 20)) {
+            why = "too big for a bank";
+            return nullptr;
+        }
+        bytes.resize(static_cast<size_t>(found[0].size));
+        MediaFile whole;
+        if (!whole.Open(archive, why) || (!bytes.empty() && !whole.ReadAt(found[0].offset, bytes.data(), static_cast<uint32_t>(bytes.size())))) {
+            why = "its bytes can't be read from the archive";
+            return nullptr;
+        }
     }
     std::unique_ptr<MediaFile> media;
     std::string mediaProblem;
-    if (present[1] && !found[1].compressed) {
+    if (!looseMedia.empty()) {
+        media = std::make_unique<MediaFile>();
+        std::string problem;
+        if (!media->Open(looseMedia, problem)) {
+            media.reset();
+            mediaProblem = "its media file's override: " + problem;
+        }
+    } else if (present[1] && !found[1].compressed) {
         media = std::make_unique<MediaFile>();
         std::string problem;
         if (!media->OpenPart(archive, found[1].offset, found[1].size, problem)) {
@@ -766,9 +784,8 @@ Bank* Library::LoadFromArchive(const std::wstring& archive, const std::string& n
     } else {
         mediaProblem = present[1] ? "its media file is compressed in the archive" : "no media file beside it in the archive";
     }
-    std::wstring wideName(name.begin(), name.end());
-    Bank* bank = Parse(bytes, archive + L"\\" + wideName + L".bnk_pc", archive + L"\\" + wideName + L"_media.bnk_pc", std::move(media),
-                       mediaProblem, why);
+    Bank* bank = Parse(bytes, looseBank.empty() ? archive + L"\\" + wideName + L".bnk_pc" : looseBank,
+                       looseMedia.empty() ? archive + L"\\" + wideName + L"_media.bnk_pc" : looseMedia, std::move(media), mediaProblem, why);
     if (bank) bank->armageddons = true;
     return bank;
 }
@@ -931,6 +948,7 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
     for (auto& b : newBuses) { bank->buses.push_back(b->id); buses[b->id] = std::move(b); }
     for (auto& a : newAttenuations) attenuations[a->id] = std::move(a);
     for (auto& [id, v] : newStates) stateObjects[id] = v;
+    for (auto& [id, type] : bank->unread) unreadObjects[id] = type;
     if (sawGlobals) {
         volumeThreshold = newThreshold;
         parameterDefaults = std::move(newDefaults);
@@ -945,7 +963,7 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
 // What the bank refers to that isn't loaded: children, parents, targets, media.
 void Library::CheckLinks(Bank& bank)
 {
-    int missingMedia = 0, inBank = 0;
+    int missingMedia = 0, inBank = 0, plugins = 0, synthesized = 0;
     std::string firstMissing;
     for (uint32_t id : bank.nodes) {
         const Node& n = *nodes[id];
@@ -953,7 +971,10 @@ void Library::CheckLinks(Bank& bank)
             if (!FindNode(child)) bank.problems.push_back("node " + Hex(id) + "'s child " + Hex(child) + " isn't loaded");
         if (n.parent && !FindNode(n.parent)) bank.problems.push_back("node " + Hex(id) + "'s parent " + Hex(n.parent) + " isn't loaded");
         if (n.IsSound()) {
-            if (n.streamType != 1) inBank++;
+            if (n.IsSourcePlugin()) {
+                plugins++;
+                if (!n.IsSilence()) synthesized++;
+            } else if (n.streamType != 1) inBank++;
             else if (!bank.media.count(n.source)) {
                 if (missingMedia++ == 0) firstMissing = Hex(n.source);
             }
@@ -961,6 +982,7 @@ void Library::CheckLinks(Bank& bank)
     }
     if (missingMedia) bank.problems.push_back(std::to_string(missingMedia) + " sounds' media aren't in the media file (the first " + firstMissing + ")");
     if (inBank) bank.problems.push_back(std::to_string(inBank) + " sounds keep their media in the bank (not read)");
+    if (synthesized) bank.problems.push_back(std::to_string(synthesized) + " of its " + std::to_string(plugins) + " source plug-in sounds are synthesized (tone, synthesis): not played yet");
     for (uint32_t id : bank.actions) {
         const Action& a = *actions[id];
         if (a.target && !FindNode(a.target) && a.Scope() == ScopeGameObject)
@@ -982,6 +1004,7 @@ void Library::Unload(uint32_t bankId)
     for (uint32_t id : bank.buses) buses.erase(id);
     for (uint32_t id : bank.attenuations) attenuations.erase(id);
     for (uint32_t id : bank.stateObjects) stateObjects.erase(id);
+    for (auto& [id, type] : bank.unread) unreadObjects.erase(id);
     banks.erase(it);
 }
 
@@ -994,6 +1017,7 @@ void Library::Clear()
     buses.clear();
     attenuations.clear();
     stateObjects.clear();
+    unreadObjects.clear();
     parameterDefaults.clear();
     stateGroups.clear();
     volumeThreshold = 0;
@@ -1009,6 +1033,12 @@ float Library::ParameterDefault(uint32_t parameter) const
 {
     auto it = parameterDefaults.find(parameter);
     return it == parameterDefaults.end() ? 0.0f : it->second;
+}
+
+uint32_t Library::UnreadType(uint32_t id) const
+{
+    auto it = unreadObjects.find(id);
+    return it == unreadObjects.end() ? 0 : it->second;
 }
 
 const StateValues* Library::FindStateObject(uint32_t id) const

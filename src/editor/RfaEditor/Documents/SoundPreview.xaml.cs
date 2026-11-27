@@ -36,6 +36,7 @@ public partial class SoundPreview : UserControl
     readonly Dictionary<uint, List<(uint Event, int FadeMs)>> stopsOf = [];
     readonly Dictionary<uint, uint> playing = [];          // our playing ids → their events
     readonly List<(Slider Slider, CheckBox Sweep, double Min, double Max)> sliders = [];
+    readonly List<Action> renames = [];                   // the parameters' and switches' labels named again once names are found
     readonly Random random = new();
     float padX, padZ;                                      // the sound's place: metres right of the listener, and ahead
     float range = 50;
@@ -85,6 +86,7 @@ public partial class SoundPreview : UserControl
         ParameterPanel.Children.Clear();
         SwitchPanel.Children.Clear();
         sliders.Clear();
+        renames.Clear();
         if (!OpenEngine(out string why))
         {
             StatusText.Text = why;
@@ -146,6 +148,7 @@ public partial class SoundPreview : UserControl
         bankId = 0;
         playing.Clear();
         VoiceList.ItemsSource = null;
+        recentVoices.Clear();
     }
 
     static bool OpenEngine(out string why)
@@ -242,6 +245,8 @@ public partial class SoundPreview : UserControl
         CountText.Text = $"{events.Length:N0} events" + (unsearched.Count > 0 ? "; finding their names ..." : "");
         Task.Run(() =>
         {
+            // (Armageddon's own tables, read the first time: they name its switches and parameters too.)
+            SoundEventNames.GameNames(SoundEventNames.GameFolderOf(folder));
             var found = unsearched.Count > 0 ? SoundEventNames.Find(folder, unsearched) : [];
             var tags = new Dictionary<uint, string>();
             foreach (uint e in events)
@@ -253,6 +258,8 @@ public partial class SoundPreview : UserControl
                 if (info.Loops != 0) words.Add("loop");
                 if (info.ThreeD != 0) words.Add("3D");
                 if (info.SwitchGroup != 0) words.Add("switch");
+                if (info.Synthesized != 0) words.Add("synth");
+                if (info.NotRead != 0) words.Add("music/dialogue");
                 if (info.Missing != 0) words.Add("missing!");
                 tags[e] = string.Join(" ", words);
             }
@@ -262,6 +269,7 @@ public partial class SoundPreview : UserControl
             if (t.IsFaulted || forBank != generation || !t.Result.Item3) return;
             foreach (var (id, name) in t.Result.found) namesFound[id] = name;
             foreach (uint e in unsearched) namesSearched.Add(e);
+            foreach (var rename in renames) rename();
             var tags = t.Result.tags;
             uint? selected = (EventList.SelectedItem as EventItem)?.Id;
             allEvents = [.. events.Select(e => new EventItem(e, NameOf(e), tags.GetValueOrDefault(e, "")))
@@ -292,6 +300,7 @@ public partial class SoundPreview : UserControl
             if (max <= min) max = min + 1;
             var row = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
             var name = new TextBlock { Text = SoundEventNames.NameOf(parameter), Width = 110, VerticalAlignment = VerticalAlignment.Center };
+            renames.Add(() => name.Text = SoundEventNames.NameOf(parameter));
             var value = new TextBlock { Width = 56, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right, Margin = new Thickness(6, 0, 6, 0) };
             var sweep = new CheckBox { Content = "Sweep", VerticalAlignment = VerticalAlignment.Center, ToolTip = "Move it from one end to the other and back, over 8 s" };
             var slider = new Slider { Minimum = min, Maximum = max, Value = min, VerticalAlignment = VerticalAlignment.Center, MinWidth = 120 };
@@ -322,9 +331,15 @@ public partial class SoundPreview : UserControl
         {
             var row = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
             var name = new TextBlock { Text = SoundEventNames.NameOf(group), Width = 160, VerticalAlignment = VerticalAlignment.Center };
+            renames.Add(() => name.Text = SoundEventNames.NameOf(group));
             var list = new ComboBox { MinWidth = 140 };
             list.Items.Add(new ComboBoxItem { Content = "(not set: its default)", Tag = 0u });
-            foreach (uint value in RfaAudio.BankSwitchValues(bankId, group)) list.Items.Add(new ComboBoxItem { Content = SoundEventNames.NameOf(value), Tag = value });
+            foreach (uint value in RfaAudio.BankSwitchValues(bankId, group))
+            {
+                var item = new ComboBoxItem { Content = SoundEventNames.NameOf(value), Tag = value };
+                renames.Add(() => item.Content = SoundEventNames.NameOf(value));
+                list.Items.Add(item);
+            }
             list.SelectionChanged += (_, _) =>
             {
                 if (list.SelectedItem is ComboBoxItem { Tag: uint value }) RfaAudio.SetSwitch(SoundObject, group, value);
@@ -356,6 +371,8 @@ public partial class SoundPreview : UserControl
         if (info.FarthestMetres > 0) what.Add($"fades out by {info.FarthestMetres:0.#} m");
         if (info.LongestSeconds > 0) what.Add($"its longest medium {info.LongestSeconds:0.##} s");
         if (info.SwitchGroup != 0) what.Add($"on the switch {SoundEventNames.NameOf(info.SwitchGroup)}");
+        if (info.Synthesized > 0) what.Add($"{info.Synthesized} synthesized sounds (not played yet)");
+        if (info.NotRead > 0) what.Add($"{info.NotRead} music or dialogue objects (not played yet)");
         if (info.Missing > 0) what.Add($"{info.Missing} objects or media missing");
         lines.Add(string.Join("; ", what) + ".");
         var stops = StopEventsOf(item.Id);
@@ -388,7 +405,7 @@ public partial class SoundPreview : UserControl
     static string Named(string text) => Regex.Replace(text, @"\b[0-9A-F]{8}\b", m =>
     {
         uint id = uint.Parse(m.Value, System.Globalization.NumberStyles.HexNumber);
-        return namesFound.TryGetValue(id, out var n) ? n : SoundEventNames.Known.TryGetValue(id, out var k) ? k : m.Value;
+        return namesFound.TryGetValue(id, out var n) ? n : SoundEventNames.TryName(id, out var k) ? k : m.Value;
     });
 
     void OnEventDoubleClick(object sender, MouseButtonEventArgs e) => OnPlay(sender, e);
@@ -704,15 +721,30 @@ public partial class SoundPreview : UserControl
         foreach (uint id in playing.Keys.ToList())
             if (!RfaAudio.IsPlaying(id)) playing.Remove(id);
         var rows = new List<VoiceRow>();
+        var now = DateTime.UtcNow;
+        var seen = new HashSet<(uint, uint)>();
         foreach (var v in RfaAudio.Voices().Where(v => v.GameObject is SoundObject or OriginalObject))
         {
             string what = v.Codec == 3 ? "Guerrilla's original" : NameOf(v.EventId) + (v.SoundId != 0 ? $" / {v.SoundId:X8}" : "");
             string codec = v.Codec switch { 1 => "PCM", 2 => "ADPCM", 3 => "XACT", 4 => "Vorbis", _ => "?" };
             string state = (v.IsVirtual != 0 ? "virtual" : v.Streamed != 0 ? "streamed" : "whole") + (v.ThreeD != 0 ? ", 3D" : ", 2D");
-            rows.Add(new VoiceRow(what, codec, $"{v.Channels} ch {v.Rate / 1000.0:0.#} kHz", v.Loops != 0 ? "yes" : "",
-                                  v.LevelDb < -200 ? "silent" : $"{v.LevelDb:0.0} dB", $"{v.Distance:0.0} m",
-                                  $"{v.PositionSeconds:0.00} / {v.LengthSeconds:0.00}", state));
+            var row = new VoiceRow(what, codec, $"{v.Channels} ch {v.Rate / 1000.0:0.#} kHz", v.Loops != 0 ? "yes" : "",
+                                   v.LevelDb < -200 ? "silent" : $"{v.LevelDb:0.0} dB", $"{v.Distance:0.0} m",
+                                   $"{v.PositionSeconds:0.00} / {v.LengthSeconds:0.00}", state);
+            rows.Add(row);
+            seen.Add((v.PlayingId, v.SoundId));
+            recentVoices[(v.PlayingId, v.SoundId)] = (row, now);
+        }
+        // A short sound (a pickup, a click) is over before the list's next look: kept 2 s after its end, marked so.
+        foreach (var (key, (row, last)) in recentVoices.ToList())
+        {
+            if (seen.Contains(key)) continue;
+            if ((now - last).TotalSeconds > 2) recentVoices.Remove(key);
+            else rows.Add(row with { State = "ended" });
         }
         VoiceList.ItemsSource = rows;
     }
+
+    // The voices seen in the last moments (by playing id and sound), with their last row and when they were last seen.
+    readonly Dictionary<(uint, uint), (VoiceRow Row, DateTime Seen)> recentVoices = [];
 }

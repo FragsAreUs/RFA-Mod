@@ -20,6 +20,13 @@
                         <TextBlock Text="Overrides folder" />
                     </StackPanel>
                 </Button>
+                <Button DockPanel.Dock="Right" Click="OnModSettings" Margin="0,0,8,0"
+                        ToolTip="RFA-Mod's settings (rfa_mods.ini), each with its explanation: opens editor\RfaSettings.exe">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="Settings20" FontSize="13" Margin="0,0,6,0" />
+                        <TextBlock Text="Mod settings" />
+                    </StackPanel>
+                </Button>
                 <Button DockPanel.Dock="Right" Click="OnMcpServers" Margin="0,0,8,0"
                         ToolTip="The MCP servers Claude runs for this mod (editor and live analysis): close either or both">
                     <StackPanel Orientation="Horizontal">

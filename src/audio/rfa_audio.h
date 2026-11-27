@@ -74,8 +74,18 @@ RFA_AUDIO_API uint32_t rfa_audio_load_bank(const wchar_t* bank_path, const wchar
    Returns the bank's id, or 0 with why in error. */
 RFA_AUDIO_API uint32_t rfa_audio_load_bank_from_archive(const wchar_t* archive, const char* bank_name, char* error, int error_size);
 
+/* The same, as the game reads it: <bank_name>.bnk_pc and <bank_name>_media.bnk_pc each from the first of the folders
+   (each ending in a backslash) that holds it as a loose file (the loader's overrides), else from the archive. A bank
+   loaded already is loaded again. Returns the bank's id, or 0 with why in error. */
+RFA_AUDIO_API uint32_t rfa_audio_load_game_bank(const wchar_t* archive, const wchar_t* const* folders, int folder_count, const char* bank_name,
+                                                char* error, int error_size);
+
 /* Unloads a bank: its sounds stop first. */
 RFA_AUDIO_API void rfa_audio_unload_bank(uint32_t bank_id);
+
+/* Stops what plays from a bank (its sounds, and its events' waiting actions), as Wwise does when the game unloads it;
+   the bank stays loaded. */
+RFA_AUDIO_API void rfa_audio_stop_bank(uint32_t bank_id, int fade_ms);
 
 /* The ids of a bank's events (its object type 4). Returns how many there are (fills at most max). */
 RFA_AUDIO_API int rfa_audio_bank_events(uint32_t bank_id, uint32_t* ids, int max);
@@ -127,6 +137,8 @@ typedef struct rfa_audio_event_info {
     float longest_s;       /* how long its longest medium is (one pass), with the delays; -1 if unknown */
     float farthest_m;      /* where its fade with distance ends (the last point of a curve on game_distance); 0 if none */
     uint32_t switch_group; /* the first switch group it depends on (0: none) */
+    int synthesized;       /* sounds it plays that are synthesized (Wwise's tone and synthesis plug-ins): not played yet */
+    int not_read;          /* objects it plays of kinds not read yet (music, dialogue): in a loaded bank, not played */
 } rfa_audio_event_info;
 
 RFA_AUDIO_API int rfa_audio_get_event_info(uint32_t event_id, rfa_audio_event_info* out);
@@ -165,8 +177,61 @@ RFA_AUDIO_API void rfa_audio_pause_playing(uint32_t playing_id, int pause);
 RFA_AUDIO_API void rfa_audio_pause_all(int pause);
 
 /* Every bank in one of the game's archives that holds them uncompressed (sounds.vpp_pc, voices.vpp_pc), loaded in
-   place: returns how many (-1 if it isn't such an archive, with why in error). */
+   place; a bank loaded already (from an override, say) is kept as it is. Returns how many it holds that are loaded now
+   (-1 if it isn't such an archive, with why in error). */
 RFA_AUDIO_API int rfa_audio_load_archive_banks(const wchar_t* archive, char* error, int error_size);
+
+/* What an event's actions act on, for a caller that plays some banks here and the rest elsewhere (the game's hybrid,
+   where Wwise plays the others): 0 if the event isn't loaded. "Another bank's" includes objects not loaded, or of kinds
+   not read yet (music, dialogue). */
+#define RFA_AUDIO_REACH_FOUND 1               /* the event is loaded */
+#define RFA_AUDIO_REACH_PLAYS 2               /* it plays something (a play, or another event posted) */
+#define RFA_AUDIO_REACH_PLAYS_OTHER_BANKS 4   /* something it plays is another bank's */
+#define RFA_AUDIO_REACH_EVERY_OBJECT 8        /* it stops, pauses, mutes or sets something on every object, not only its own */
+#define RFA_AUDIO_REACH_ALL 16                /* it stops, pauses or resumes everything playing (all, or all but one) */
+#define RFA_AUDIO_REACH_BUSES 32              /* it acts on a bus: every sound through it */
+#define RFA_AUDIO_REACH_STATES 64             /* it sets a state */
+#define RFA_AUDIO_REACH_SWITCHES 128          /* it sets a switch (on its object) */
+#define RFA_AUDIO_REACH_ACTS_OTHER_BANKS 256  /* it stops, pauses, mutes or sets something of another bank's */
+RFA_AUDIO_API int rfa_audio_event_reach(uint32_t event_id);
+
+/* Where each loaded event goes in such a hybrid, the banks banks_here played by this engine and every other by the
+   other one (Wwise, which has every bank the game loaded):
+   - an event that plays nothing goes to both: each does its stops, pauses, mutes, volumes and states to its own sounds;
+   - one of banks_here that plays goes here, unless it also acts on what the other plays (a bus, a state, a switch,
+     everything playing, or a sound of a bank that isn't here) or plays something not played here yet (synthesized
+     sounds, music, dialogue, or something missing): then the other plays it, and its other actions are done here too;
+   - one of another bank that plays goes to the other, its other actions here too when they reach what plays here.
+   Fills events and routes (RFA_AUDIO_ROUTE_*) for at most max; returns how many loaded events there are. An event in
+   several banks goes by the first of banks_here that holds it, else by any. */
+#define RFA_AUDIO_ROUTE_ELSEWHERE 0                /* the other engine alone */
+#define RFA_AUDIO_ROUTE_HERE 1                     /* this one alone */
+#define RFA_AUDIO_ROUTE_BOTH 2                     /* both: it plays nothing */
+#define RFA_AUDIO_ROUTE_ELSEWHERE_AND_CONTROLS 3   /* the other plays it; its other actions here too (rfa_audio_post_controls) */
+RFA_AUDIO_API int rfa_audio_event_routes(const uint32_t* banks_here, int count, uint32_t* events, int* routes, int max);
+
+/* Posts only an event's other actions, none of its plays (another event it posts, the same way): its stops, pauses,
+   mutes, volumes, states and switches act on what plays here, while another engine plays its sounds. Returns its
+   playing id (0 if the event isn't loaded); its end is reported as any other's. */
+RFA_AUDIO_API uint32_t rfa_audio_post_controls(uint32_t event_id, uint64_t object);
+
+/* Every id of the loaded banks that Wwise made from a name (rfa_audio_id of it), for finding those names: the kind of
+   each in kinds. Sounds' and containers' ids aren't names, so they aren't listed. An id may be listed under two kinds.
+   Returns how many there are (fills at most max). */
+#define RFA_AUDIO_NAMED_BANK 1
+#define RFA_AUDIO_NAMED_EVENT 2
+#define RFA_AUDIO_NAMED_DIALOGUE 3       /* a dialogue event (a voice line's persona and line) */
+#define RFA_AUDIO_NAMED_BUS 4
+#define RFA_AUDIO_NAMED_SWITCH_GROUP 5
+#define RFA_AUDIO_NAMED_SWITCH 6         /* a switch group's value */
+#define RFA_AUDIO_NAMED_STATE_GROUP 7
+#define RFA_AUDIO_NAMED_STATE 8
+#define RFA_AUDIO_NAMED_PARAMETER 9      /* a game parameter */
+RFA_AUDIO_API int rfa_audio_named_ids(uint32_t* ids, int* kinds, int max);
+
+/* The banks an archive holds (their names without .bnk_pc, a line each; their media files left out). Returns the
+   text's length (text gets as much as fits), or -1 if it isn't one of the game's archives. */
+RFA_AUDIO_API int rfa_audio_archive_bank_names(const wchar_t* archive, char* text, int size);
 
 /* The buses an event's plays go through that duck other buses. Returns how many (fills at most max). */
 RFA_AUDIO_API int rfa_audio_event_ducking_buses(uint32_t event_id, uint32_t* buses, int max);
@@ -239,9 +304,17 @@ typedef struct rfa_audio_status {
     int64_t voices_refused;   /* by a voice limit (refuse the newest) */
     int64_t voices_ended_quiet, voices_stolen, underruns;
     int64_t media_failed;     /* voices that didn't start: their medium couldn't be read or decoded */
+    int64_t voices_no_source; /* voices that didn't start, or went on in silence: no OpenAL source was free */
 } rfa_audio_status;
 
 RFA_AUDIO_API int rfa_audio_get_status(rfa_audio_status* out);
+
+/* Lines on what the engine does, for a log: each voice that ends too quiet to hear, with its level's parts (its nodes'
+   volumes, their curves with their game parameters' values, its buses' volumes, curves, states and ducking, and where
+   its object and the listener are), each event once, at most `most` of them. Called inside the engine's lock: the
+   callback mustn't call the engine. Null stops them. */
+typedef void (*rfa_audio_log_callback)(const char* line, void* user);
+RFA_AUDIO_API void rfa_audio_set_log_callback(rfa_audio_log_callback callback, void* user, int most);
 
 /* ---- Ids ------------------------------------------------------------------------------------------ */
 

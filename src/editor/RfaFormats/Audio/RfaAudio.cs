@@ -71,6 +71,22 @@ public static class RfaAudio
     public static ObjectInfo[] BankObjects(uint bank) => Items<ObjectInfo>(n => rfa_audio_bank_objects(bank, null, 0), a => rfa_audio_bank_objects(bank, a, a.Length));
     public static uint[] BankParameters(uint bank) => Items<uint>(n => rfa_audio_bank_parameters(bank, null, 0), a => rfa_audio_bank_parameters(bank, a, a.Length));
     public static uint[] BankSwitchGroups(uint bank) => Items<uint>(n => rfa_audio_bank_switch_groups(bank, null, 0), a => rfa_audio_bank_switch_groups(bank, a, a.Length));
+    /// <summary>
+    /// Every id of the loaded banks that Wwise made from a name (events, banks, dialogue events, buses, switch groups and
+    /// values, state groups and states, game parameters), with its kind: what a name can be found for.
+    /// </summary>
+    public static (uint Id, NamedKind Kind)[] NamedIds()
+    {
+        int n = rfa_audio_named_ids(null, null, 0);
+        var ids = new uint[n];
+        var kinds = new int[n];
+        int got = n > 0 ? Math.Min(n, rfa_audio_named_ids(ids, kinds, n)) : 0;
+        return [.. Enumerable.Range(0, got).Select(i => (ids[i], (NamedKind)kinds[i]))];
+    }
+
+    /// <summary>The kinds of <see cref="NamedIds"/> (rfa_audio.h's RFA_AUDIO_NAMED_*).</summary>
+    public enum NamedKind { Bank = 1, Event, Dialogue, Bus, SwitchGroup, Switch, StateGroup, State, Parameter }
+
     public static uint[] BankSwitchValues(uint bank, uint group) =>
         Items<uint>(n => rfa_audio_bank_switch_values(bank, group, null, 0), a => rfa_audio_bank_switch_values(bank, group, a, a.Length));
     public static ActionInfo[] EventActions(uint eventId) => Items<ActionInfo>(n => rfa_audio_event_actions(eventId, null, 0), a => rfa_audio_event_actions(eventId, a, a.Length));
@@ -200,6 +216,10 @@ public static class RfaAudio
         /// <summary>Where its fade with distance ends (m); 0 if it has none.</summary>
         public float FarthestMetres;
         public uint SwitchGroup;
+        /// <summary>Sounds it plays that are synthesized (Wwise's tone and synthesis plug-ins): not played yet.</summary>
+        public int Synthesized;
+        /// <summary>Objects it plays of kinds not read yet (music, dialogue): in a loaded bank, but not played.</summary>
+        public int NotRead;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -223,6 +243,7 @@ public static class RfaAudio
         public int Banks;
         public long VoicesRefused, VoicesEndedQuiet, VoicesStolen, Underruns;
         public long MediaFailed;  // voices that didn't start: their medium couldn't be read or decoded
+        public long VoicesNoSource;  // voices that didn't start, or went on in silence: no OpenAL source was free
     }
 
     // ---- Helpers ----
@@ -270,6 +291,7 @@ public static class RfaAudio
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_parameters(uint bank, [Out] uint[]? ids, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_switch_groups(uint bank, [Out] uint[]? ids, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_switch_values(uint bank, uint group, [Out] uint[]? ids, int max);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_named_ids([Out] uint[]? ids, [Out] int[]? kinds, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_parameter_range(uint bank, uint parameter, out float min, out float max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_problems(uint bank, byte[] text, int size);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_event_actions(uint eventId, [Out] ActionInfo[]? info, int max);

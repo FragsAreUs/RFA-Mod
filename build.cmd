@@ -195,6 +195,8 @@ rem GuerrillaBuilder.exe, next to the editor: makes Guerrilla's world, HUD, vehi
 rem usable from your copy of Guerrilla. It took the place of four programs, whose files go from bin\editor.
 for %%t in (GuerrillaWorld GuerrillaHud GuerrillaArsenal GuerrillaPeople) do for %%e in (exe dll deps.json runtimeconfig.json pdb) do if exist "%OUT%\editor\%%t.%%e" del /q "%OUT%\editor\%%t.%%e"
 dotnet build "%ROOT%src\editor\GuerrillaBuilder\GuerrillaBuilder.csproj" -c Release -o "%OUT%\editor" --artifacts-path "%OBJ%\editor" -v q -nologo -nodeReuse:false >> "%LOG%" 2>&1 || goto :fail_unpopped
+rem RfaSettings.exe, next to the editor: a window for rfa_mods.ini, built from the file's own comments
+dotnet build "%ROOT%src\editor\RfaSettings\RfaSettings.csproj" -c Release -o "%OUT%\editor" --artifacts-path "%OBJ%\editor" -v q -nologo -nodeReuse:false >> "%LOG%" 2>&1 || goto :fail_unpopped
 rem RfaEditorMcp.exe: MCP server for the editor
 dotnet build "%ROOT%src\editor\RfaEditorMcp\RfaEditorMcp.csproj" -c Release -o "%OUT%\editor" --artifacts-path "%OBJ%\editor" -v q -nologo -nodeReuse:false >> "%LOG%" 2>&1 || goto :fail_unpopped
 

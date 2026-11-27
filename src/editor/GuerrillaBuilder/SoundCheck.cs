@@ -77,7 +77,7 @@ static class SoundCheck
             foreach (string p in RfaAudio.BankProblems(id)) problems.Add($"{name}: {p}");
             foreach (uint e in RfaAudio.BankEvents(id)) events.Add((name, id, e));
         }
-        var names = SoundEventNames.Find(setup.ModFolder, events.Select(e => e.Event));
+        var names = SoundEventNames.Find(setup.ModFolder, events.Select(e => e.Event), setup.Game);
         string Name(uint id) => SoundEventNames.NameOf(id, names);
 
         // When each play ends, and how many voices it started.
@@ -242,6 +242,7 @@ static class SoundCheck
         }
         var events = new List<uint>();
         var banks = new List<uint>();
+        var namedBefore = RfaAudio.NamedIds().Select(n => n.Id).ToHashSet();  // our banks', checked above
         foreach (string file in names)
         {
             string bank = file[..^".bnk_pc".Length];
@@ -279,11 +280,22 @@ static class SoundCheck
         }
         long failed = RfaAudio.GetStatus().MediaFailed - failedBefore;
         if (failed > 0) problems.Add($"{failed} voices didn't start: their media couldn't be read or decoded");
+        // How many of their ids Armageddon's own tables name (the editor's preview shows those names): its events, and the
+        // banks, switches, states and game parameters its banks add to ours.
+        var game = SoundEventNames.GameNames(setup.Game);
+        var distinctEvents = events.ToHashSet();
+        int eventsNamed = distinctEvents.Count(game.ContainsKey);
+        var added = RfaAudio.NamedIds().Where(n => n.Kind != RfaAudio.NamedKind.Event && !namedBefore.Contains(n.Id)).ToList();
+        var others = added.Where(n => n.Kind != RfaAudio.NamedKind.Bus).Select(n => n.Id).ToHashSet();
+        int othersNamed = others.Count(game.ContainsKey);
+        int buses = added.Where(n => n.Kind == RfaAudio.NamedKind.Bus).Select(n => n.Id).Distinct().Count();
         foreach (uint id in banks) RfaAudio.UnloadBank(id);
         RfaAudio.OnEnded(null);
         log.Line($"Sound check of Armageddon's banks: {banks.Count} banks in sounds.vpp_pc, {events.Count:N0} events: {sounded:N0} made sound, " +
                  $"{silent:N0} none yet (music, dialogue, states, synthesized sounds and switches the check doesn't set aren't played yet); " +
-                 $"{rendered:N0} s of sound rendered in {(DateTime.UtcNow - started).TotalSeconds:0} s");
+                 $"{rendered:N0} s of sound rendered in {(DateTime.UtcNow - started).TotalSeconds:0} s; its tables name {eventsNamed:N0} of the " +
+                 $"{distinctEvents.Count:N0} events and {othersNamed:N0} of {others.Count:N0} other ids (banks, switches, states, game parameters), " +
+                 $"not its {buses} buses (in none of its files)");
         foreach (string p in problems.Take(MostListed)) log.Line("Sound check of Armageddon's banks: " + p);
         return problems.Count == 0;
     }

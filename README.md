@@ -138,6 +138,26 @@ Guerrilla. If you leave the old files, they're skipped, and your settings for th
 
 ## Settings
 
+The easy way to change them: run `editor\RfaSettings.exe` (or click **Mod settings** in the
+editor's top bar). It needs the same .NET 10 Desktop Runtime as the editor.
+
+1. Pick a section on the left, or type in the search box to find a setting anywhere: by its name,
+   a word from its explanation, or its value.
+2. Each setting shows its explanation from the file and a control: a switch for on/off, a box for
+   a number or a name, **Browse…** for a folder, and a list where the explanation names the values.
+3. A setting you've moved away from the default is marked **Differs from the default**, and the
+   arrow next to it puts the default back. Tick **Only what differs from the defaults** to see just
+   those.
+4. Click **Save** (or press Ctrl+S). Only the values you changed are written: the file's comments,
+   order and any settings of your own stay as they are.
+
+Settings marked **Live** change in the running game as soon as you save. Ones marked **When the
+game starts** need the game started again, and **When the level loads** needs the level loaded
+again. If the game changes a setting itself while the window is open (from its own menus, say),
+the window shows the new value, and your unsaved changes are kept.
+
+You can still edit the file in any text editor (**Open in a text editor** opens it):
+
 - **`rfa_mods.ini`**, next to the launcher, holds every setting, each explained in the file:
   - `[Launcher]`: where your games are (`GameDir=`, and `GuerrillaDir=` for the Guerrilla tools),
     and `LargeAddressAware=` (set it to `0` to start the game's own program, with 2 GB);

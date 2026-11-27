@@ -20,7 +20,7 @@ $bin = Join-Path $root 'bin'
 
 # Not the editor's MCP server (RfaEditorMcp, which "RfaEditor" would match too): it holds no library open,
 # and build.cmd closes it before it builds into bin\.
-$running = @(Get-Process | Where-Object { $_.ProcessName -match '^(RedFactionArmageddon|RFAModLauncher|RfaEditor|GuerrillaBuilder)' -and $_.ProcessName -ne 'RfaEditorMcp' })
+$running = @(Get-Process | Where-Object { $_.ProcessName -match '^(RedFactionArmageddon|RFAModLauncher|RfaEditor|GuerrillaBuilder|RfaSettings)' -and $_.ProcessName -ne 'RfaEditorMcp' })
 if ($running.Count -gt 0) {
     Write-Host "Not installing: close these first: $(($running | ForEach-Object { "$($_.ProcessName) ($($_.Id))" }) -join ', ')"
     exit 1

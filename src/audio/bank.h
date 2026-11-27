@@ -252,6 +252,7 @@ struct Bank {
     std::vector<std::string> problems;
     int unknownObjects = 0;
     std::vector<uint32_t> stateObjects;
+    std::vector<std::pair<uint32_t, uint32_t>> unread;  // objects of kinds not read (id, type): music, dialogue
     bool armageddons = false;  // read from one of the game's archives: Armageddon's own (its buses' voice limits apply)
 };
 
@@ -261,8 +262,10 @@ public:
     // Reads a bank file and its media file. Returns the bank (kept here) or null with why.
     Bank* Load(const std::wstring& bankPath, const std::wstring& mediaPath, std::string& why);
     // A bank of Armageddon's own and its media, read in place from an archive that holds them uncompressed
-    // (sounds.vpp_pc, voices.vpp_pc): `name` without its .bnk_pc. Null with why.
-    Bank* LoadFromArchive(const std::wstring& archive, const std::string& name, std::string& why);
+    // (sounds.vpp_pc, voices.vpp_pc): `name` without its .bnk_pc. Null with why. A loose file given for the bank or
+    // its media (an override of the game's copy) is read instead of the archive's.
+    Bank* LoadFromArchive(const std::wstring& archive, const std::string& name, std::string& why,
+                          const std::wstring& looseBank = L"", const std::wstring& looseMedia = L"");
     void Unload(uint32_t bankId);
     void Clear();
 
@@ -282,7 +285,11 @@ public:
     const StateGroup* FindStateGroup(uint32_t id) const;
     // A state object (type 1): the values a node or bus uses for one state instead of the group's.
     const StateValues* FindStateObject(uint32_t id) const;
+    // An object of a kind not read (music, dialogue) in a loaded bank: its type; 0 if none is.
+    uint32_t UnreadType(uint32_t id) const;
     const std::unordered_map<uint32_t, std::unique_ptr<Bus>>& AllBuses() const { return buses; }
+    const std::unordered_map<uint32_t, StateGroup>& StateGroups() const { return stateGroups; }
+    const std::unordered_map<uint32_t, float>& ParameterDefaults() const { return parameterDefaults; }
     float VolumeThreshold() const { return volumeThreshold; }
 private:
     void CheckLinks(Bank& bank);
@@ -296,6 +303,7 @@ private:
     std::unordered_map<uint32_t, std::unique_ptr<Bus>> buses;
     std::unordered_map<uint32_t, std::unique_ptr<Attenuation>> attenuations;
     std::unordered_map<uint32_t, StateValues> stateObjects;
+    std::unordered_map<uint32_t, uint32_t> unreadObjects;
     std::unordered_map<uint32_t, float> parameterDefaults;
     std::unordered_map<uint32_t, StateGroup> stateGroups;
     float volumeThreshold = 0;  // 0 until an STMG is read

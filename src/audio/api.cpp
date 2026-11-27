@@ -7,6 +7,9 @@
 
 #include "engine.h"
 
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <cstring>
 #include <set>
@@ -89,6 +92,136 @@ uint32_t rfa_audio_load_bank_from_archive(const wchar_t* archive, const char* ba
     uint32_t id = archive && bank_name ? E().LoadBankFromArchive(archive, bank_name, why) : 0;
     CopyText(id ? "" : why, error, error_size);
     return id;
+}
+
+uint32_t rfa_audio_load_game_bank(const wchar_t* archive, const wchar_t* const* folders, int folder_count, const char* bank_name,
+                                  char* error, int error_size)
+{
+    if (!archive || !bank_name) {
+        CopyText("no archive or bank named", error, error_size);
+        return 0;
+    }
+    // Its overrides, looked for before the engine's lock is taken.
+    std::wstring wideName;
+    for (const char* c = bank_name; *c; c++) wideName += static_cast<wchar_t>(static_cast<unsigned char>(*c));
+    std::wstring looseBank, looseMedia;
+    for (int i = 0; folders && i < folder_count; i++) {
+        if (!folders[i]) continue;
+        std::wstring bank = std::wstring(folders[i]) + wideName + L".bnk_pc", media = std::wstring(folders[i]) + wideName + L"_media.bnk_pc";
+        if (looseBank.empty() && GetFileAttributesW(bank.c_str()) != INVALID_FILE_ATTRIBUTES) looseBank = bank;
+        if (looseMedia.empty() && GetFileAttributesW(media.c_str()) != INVALID_FILE_ATTRIBUTES) looseMedia = media;
+    }
+    std::lock_guard<std::mutex> hold(E().lock);
+    std::string why;
+    uint32_t id = E().LoadBankFromArchive(archive, bank_name, why, looseBank, looseMedia);
+    CopyText(id ? "" : why, error, error_size);
+    return id;
+}
+
+void rfa_audio_stop_bank(uint32_t bank_id, int fade_ms)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().StopBank(bank_id, fade_ms);
+}
+
+namespace {
+
+// The ids of a library's banks that Wwise made from names, by kind (rfa_audio_named_ids).
+int NamedIds(const Library& lib, uint32_t* ids, int* kinds, int max)
+{
+    std::set<std::pair<int, uint32_t>> found;
+    auto put = [&](int kind, uint32_t id) {
+        if (id) found.insert({kind, id});
+    };
+    auto curves = [&](const std::vector<Curve>& list) {
+        for (const Curve& c : list) put(RFA_AUDIO_NAMED_PARAMETER, c.parameter);
+    };
+    for (auto& [bankId, bank] : lib.Banks()) {
+        put(RFA_AUDIO_NAMED_BANK, bankId);
+        for (uint32_t e : bank->events) put(RFA_AUDIO_NAMED_EVENT, e);
+        for (auto& [id, type] : bank->unread)
+            if (type == 15) put(RFA_AUDIO_NAMED_DIALOGUE, id);
+        for (uint32_t b : bank->buses) {
+            put(RFA_AUDIO_NAMED_BUS, b);
+            if (const Bus* bus = lib.FindBus(b)) {
+                put(RFA_AUDIO_NAMED_STATE_GROUP, bus->stateGroup);
+                curves(bus->curves);
+            }
+        }
+        for (uint32_t id : bank->nodes) {
+            const Node* n = lib.FindNode(id);
+            if (!n) continue;
+            curves(n->curves);
+            put(RFA_AUDIO_NAMED_STATE_GROUP, n->stateGroup);
+            if (n->type != TypeSwitch) continue;
+            put(n->onState ? RFA_AUDIO_NAMED_STATE_GROUP : RFA_AUDIO_NAMED_SWITCH_GROUP, n->group);
+            for (const auto& [value, children] : n->choices) put(n->onState ? RFA_AUDIO_NAMED_STATE : RFA_AUDIO_NAMED_SWITCH, value);
+        }
+        for (uint32_t id : bank->actions) {
+            const Action* a = lib.FindAction(id);
+            if (!a) continue;
+            if (a->Kind() == ActionSetState) {
+                put(RFA_AUDIO_NAMED_STATE_GROUP, a->group);
+                put(RFA_AUDIO_NAMED_STATE, a->groupValue);
+            } else if (a->Kind() == ActionSetSwitch) {
+                put(RFA_AUDIO_NAMED_SWITCH_GROUP, a->group);
+                put(RFA_AUDIO_NAMED_SWITCH, a->groupValue);
+            }
+        }
+        for (uint32_t id : bank->attenuations)
+            if (const Attenuation* at = lib.FindAttenuation(id)) curves(at->curves);
+    }
+    for (auto& [id, group] : lib.StateGroups()) {
+        put(RFA_AUDIO_NAMED_STATE_GROUP, id);
+        for (auto& [state, values] : group.states) put(RFA_AUDIO_NAMED_STATE, state);
+    }
+    for (auto& [id, value] : lib.ParameterDefaults()) put(RFA_AUDIO_NAMED_PARAMETER, id);
+    int n = 0;
+    for (auto& [kind, id] : found) {
+        if (n < max) {
+            if (ids) ids[n] = id;
+            if (kinds) kinds[n] = kind;
+        }
+        n++;
+    }
+    return n;
+}
+
+}  // namespace
+
+int rfa_audio_named_ids(uint32_t* ids, int* kinds, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    return NamedIds(E().library, ids, kinds, max);
+}
+
+int rfa_audio_event_reach(uint32_t event_id)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    return E().EventReach(event_id);
+}
+
+int rfa_audio_event_routes(const uint32_t* banks_here, int count, uint32_t* events, int* routes, int max)
+{
+    std::unordered_set<uint32_t> here;
+    for (int i = 0; banks_here && i < count; i++) here.insert(banks_here[i]);
+    std::lock_guard<std::mutex> hold(E().lock);
+    // The banks played here first: an event in several banks (Armageddon's have some) goes by the first that holds it.
+    std::vector<const Bank*> banks;
+    for (auto& [id, bank] : E().library.Banks()) banks.push_back(bank.get());
+    std::stable_partition(banks.begin(), banks.end(), [&](const Bank* b) { return here.count(b->id) != 0; });
+    std::unordered_set<uint32_t> seen;
+    int n = 0;
+    for (const Bank* bank : banks)
+        for (uint32_t e : bank->events) {
+            if (!seen.insert(e).second) continue;
+            if (n < max) {
+                if (events) events[n] = e;
+                if (routes) routes[n] = E().EventRoute(e, bank->id, here);
+            }
+            n++;
+        }
+    return n;
 }
 
 void rfa_audio_unload_bank(uint32_t bank_id)
@@ -274,6 +407,12 @@ uint32_t rfa_audio_post(uint32_t event_id, uint64_t object)
     return E().Post(event_id, object);
 }
 
+uint32_t rfa_audio_post_controls(uint32_t event_id, uint64_t object)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    return E().Post(event_id, object, true);
+}
+
 uint32_t rfa_audio_play_node(uint32_t node_id, uint64_t object)
 {
     std::lock_guard<std::mutex> hold(E().lock);
@@ -333,11 +472,27 @@ int rfa_audio_load_archive_banks(const wchar_t* archive, char* error, int error_
         if (n.size() < 7 || n.compare(n.size() - 7, 7, ".bnk_pc") != 0 || n.find("_media.") != std::string::npos) continue;
         std::lock_guard<std::mutex> hold(E().lock);
         std::string problem;
-        if (E().LoadBankFromArchive(archive, n.substr(0, n.size() - 7), problem)) loaded++;
+        if (E().LoadBankFromArchive(archive, n.substr(0, n.size() - 7), problem, L"", L"", true)) loaded++;
         else why = n + ": " + problem;
     }
     CopyText(loaded ? "" : why, error, error_size);
     return loaded;
+}
+
+int rfa_audio_archive_bank_names(const wchar_t* archive, char* text, int size)
+{
+    std::vector<std::string> names;
+    std::string why;
+    if (!archive || !ListArchive(archive, names, why)) {
+        if (text && size > 0) text[0] = 0;
+        return -1;
+    }
+    std::string list;
+    for (const std::string& n : names)
+        if (n.size() > 7 && n.compare(n.size() - 7, 7, ".bnk_pc") == 0 && n.find("_media.") == std::string::npos)
+            list += n.substr(0, n.size() - 7) + "\n";
+    CopyText(list, text, size);
+    return static_cast<int>(list.size());
 }
 
 void rfa_audio_note_bus(uint32_t bus, int delta)
@@ -356,6 +511,15 @@ int rfa_audio_is_playing(uint32_t playing_id)
 {
     std::lock_guard<std::mutex> hold(E().lock);
     return E().IsPlaying(playing_id) ? 1 : 0;
+}
+
+void rfa_audio_set_log_callback(rfa_audio_log_callback callback, void* user, int most)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().logCallback = callback;
+    E().logUser = user;
+    E().quietLogsLeft = most;
+    E().quietLogged.clear();
 }
 
 void rfa_audio_set_end_callback(rfa_audio_end_callback callback, void* user)
