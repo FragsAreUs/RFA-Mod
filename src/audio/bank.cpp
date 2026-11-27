@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 
 namespace rfa_audio {
 
@@ -131,17 +132,51 @@ void ReadNodeBase(Reader& r, Node& node)
         r.F32();
         node.threeD = r.U8() != 0;
         if (node.threeD) {
-            uint32_t positionType = r.U32();
+            node.positionType = r.U32();
             node.attenuation = r.U32();
             r.U8();               // spatialized
-            if (positionType == 3) r.U8();  // game-defined: at the game object
+            if (node.positionType == 3) r.U8();  // game-defined: at the game object
             else {
-                // user-defined (paths): play mode, its vertices, its playlist and ranges
-                r.U32(); r.U8(); r.U32(); r.U8();
-                r.Skip(16ull * r.U32());
-                uint32_t playlists = r.U32();
-                r.Skip(8ull * playlists);
-                r.Skip(8ull * playlists);
+                // user-defined (paths): the play mode, whether they loop, the transition time, a byte, the points
+                // (x, y, z, the time to the next), the paths (a first point and a count) and their random ranges
+                node.pathMode = r.U32();
+                node.pathLoops = r.U8() != 0;
+                node.pathTransitionMs = r.S32();
+                r.U8();
+                uint32_t points = r.U32();
+                if (points > r.Left() / 16) {
+                    r.failed = true;
+                    return;
+                }
+                for (uint32_t i = 0; i < points; i++) {
+                    Node::PathPoint p;
+                    p.x = r.F32();
+                    p.y = r.F32();
+                    p.z = r.F32();
+                    p.ms = r.S32();
+                    node.pathPoints.push_back(p);
+                }
+                uint32_t paths = r.U32();
+                if (paths > r.Left() / 16) {
+                    r.failed = true;
+                    return;
+                }
+                node.paths.resize(paths);
+                for (auto& p : node.paths) {
+                    p.first = r.U32();
+                    p.count = r.U32();
+                }
+                for (auto& p : node.paths) {
+                    p.rangeX = r.F32();
+                    p.rangeZ = r.F32();
+                }
+                // A path past the points read is dropped.
+                node.paths.erase(std::remove_if(node.paths.begin(), node.paths.end(),
+                                                [&](const Node::Path& p) {
+                                                    return p.count == 0 || p.first >= node.pathPoints.size() ||
+                                                           p.count > node.pathPoints.size() - p.first;
+                                                }),
+                                 node.paths.end());
             }
         } else {
             r.U8();               // the panner
@@ -154,8 +189,14 @@ void ReadNodeBase(Reader& r, Node& node)
     node.ownLimit = r.U8() != 0;
     node.ownQuiet = r.U8() != 0;
     r.U8();
+    // Its states, as a bus's: each the state, a flag, the state object it uses (with 0, the group's own values).
     node.stateEntries = r.U16();
-    r.Skip(9ull * node.stateEntries);
+    for (int i = 0; i < node.stateEntries && !r.failed; i++) {
+        uint32_t state = r.U32();
+        uint8_t custom = r.U8();
+        uint32_t object = r.U32();
+        node.stateObjects[state] = custom ? object : 0;
+    }
     uint16_t curves = r.U16();
     for (uint16_t i = 0; i < curves && !r.failed; i++) node.curves.push_back(ReadCurve(r));
 }
@@ -165,6 +206,60 @@ void ReadChildren(Reader& r, Node& node)
     uint32_t count = r.U32();
     if (count > r.Left() / 4) { r.failed = true; return; }
     for (uint32_t i = 0; i < count; i++) node.children.push_back(r.U32());
+}
+
+// A dialogue event (type 15), as Armageddon's voice banks have it: the tree's depth (its arguments' count), the
+// arguments (state groups), the tree's size, a probability and a mode byte, then the tree's nodes, 12 bytes each: a key,
+// then a first child and a count (a node above the last level) or the node to play (one on the last level), a weight and
+// a probability. The root is the first node.
+bool ReadDialogueEvent(const uint8_t* body, size_t size, DialogueEvent& d)
+{
+    Reader r(body, size);
+    uint32_t depth = r.U32();
+    if (depth == 0 || depth > 8) return false;
+    for (uint32_t i = 0; i < depth; i++) d.arguments.push_back(r.U32());
+    uint32_t treeBytes = r.U32();
+    r.U8();  // probability
+    r.U8();  // mode (best match)
+    if (r.failed || treeBytes % 12 || treeBytes > r.Left()) return false;
+    const uint8_t* tree = body + (size - r.Left());
+    const uint32_t count = treeBytes / 12;
+    r.Skip(treeBytes);
+    if (r.failed || r.Left() != 0) return false;
+    auto u32 = [&](uint32_t node, int at) {
+        uint32_t v;
+        memcpy(&v, tree + 12ull * node + at, 4);
+        return v;
+    };
+    auto u16 = [&](uint32_t node, int at) {
+        uint16_t v;
+        memcpy(&v, tree + 12ull * node + at, 2);
+        return v;
+    };
+    std::vector<uint32_t> keys;
+    bool ok = true;
+    std::function<void(uint32_t, uint32_t)> walk = [&](uint32_t node, uint32_t level) {
+        if (!ok || node >= count) {
+            ok = false;
+            return;
+        }
+        if (level == depth) {
+            d.paths.emplace_back(keys, u32(node, 4));
+            return;
+        }
+        uint32_t first = u16(node, 4), children = u16(node, 6);
+        for (uint32_t c = first; c < first + children && ok; c++) {
+            if (c >= count) {
+                ok = false;
+                break;
+            }
+            keys.push_back(u32(c, 0));
+            walk(c, level + 1);
+            keys.pop_back();
+        }
+    };
+    if (count) walk(0, 0);
+    return ok;
 }
 
 // One object of the HIRC chunk. False if it isn't read to its exact end (a layout not known).
@@ -238,16 +333,25 @@ bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Ba
         ReadChildren(r, n);
         n.layers = static_cast<int>(r.U32());
         for (int i = 0; i < n.layers && !r.failed; i++) {
-            r.U32();
+            Node::Layer layer;
+            layer.id = r.U32();
             uint16_t curves = r.U16();
-            for (uint16_t k = 0; k < curves && !r.failed; k++) ReadCurve(r);
-            r.U32();  // the crossfade parameter
-            r.F32();
+            for (uint16_t k = 0; k < curves && !r.failed; k++) layer.curves.push_back(ReadCurve(r));
+            layer.crossfadeParameter = r.U32();
+            layer.crossfadeDefault = r.F32();
             uint32_t associated = r.U32();
             for (uint32_t j = 0; j < associated && !r.failed; j++) {
-                r.U32();
-                r.Skip(12ull * r.U32());
+                uint32_t child = r.U32();
+                std::vector<CurvePoint> points;
+                uint32_t count = r.U32();
+                if (count > r.Left() / 12) {
+                    r.failed = true;
+                    break;
+                }
+                ReadPoints(r, count, points);
+                layer.children.emplace_back(child, std::move(points));
             }
+            n.layerList.push_back(std::move(layer));
         }
         break;
     }
@@ -454,7 +558,9 @@ float CurveShape(uint32_t shape, float t)
     }
 }
 
-float Curve::ValueAt(float x) const
+float Curve::ValueAt(float x) const { return ValueAt(points, x); }
+
+float Curve::ValueAt(const std::vector<CurvePoint>& points, float x)
 {
     if (points.empty()) return 0.0f;
     if (x <= points.front().x) return points.front().y;
@@ -809,7 +915,10 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
     std::unordered_map<uint32_t, float> newDefaults;
     std::unordered_map<uint32_t, StateGroup> newGroups;
     float newThreshold = 0;
-    bool sawGlobals = false;
+    bool sawGlobals = false, sawEnvironments = false, sawEffects = false;
+    std::vector<std::unique_ptr<DialogueEvent>> newDialogue;
+    ObstructionCurves newObstruction;
+    std::unordered_map<uint32_t, Reverb> newReverbs;
     bool sawHeader = false;
     size_t at = 0;
     while (at + 8 <= bytes.size()) {
@@ -841,6 +950,16 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
                 std::unique_ptr<Bus> bus;
                 std::unique_ptr<Attenuation> attenuation;
                 std::unique_ptr<StateValues> state;
+                if (type == TypeDialogueEvent) {
+                    auto d = std::make_unique<DialogueEvent>();
+                    if (ReadDialogueEvent(body + p + 12, size - 4, *d)) {
+                        d->id = id;
+                        d->bankId = bank->id;
+                        newDialogue.push_back(std::move(d));
+                        p += 8 + size;
+                        continue;
+                    }
+                }
                 if (!ReadObject(type, id, body + p + 12, size - 4, *bank, node, action, event, bus, attenuation, state))
                     bank->problems.push_back("object " + Hex(id) + " (type " + std::to_string(type) + ") isn't laid out as read; left out");
                 else if (node) { node->id = id; node->type = type; node->bankId = bank->id; newNodes.push_back(std::move(node)); }
@@ -904,6 +1023,57 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
             }
             if (g.failed || g.Left() != 0) bank->problems.push_back("its global settings (STMG) aren't laid out as read; left out");
             else sawGlobals = true;
+        } else if (memcmp(chunk, "ENVS", 4) == 0) {
+            // Obstruction's volume and low-pass curves, then occlusion's: each whether it is on, its scaling, its points.
+            Reader g(body, length);
+            ObstructionCurves c;
+            Curve* curves[] = {&c.obstructionVolume, &c.obstructionLowPass, &c.occlusionVolume, &c.occlusionLowPass};
+            bool* on[] = {&c.obstructionVolumeOn, &c.obstructionLowPassOn, &c.occlusionVolumeOn, &c.occlusionLowPassOn};
+            for (int i = 0; i < 4 && !g.failed; i++) {
+                *on[i] = g.U8() != 0;
+                curves[i]->scaling = g.U8();
+                curves[i]->property = i % 2 == 0 ? PropertyVolume : PropertyLowPass;
+                ReadPoints(g, g.U16(), curves[i]->points);
+            }
+            if (g.failed || g.Left() != 0) bank->problems.push_back("its environments (ENVS) aren't laid out as read; left out");
+            else {
+                newObstruction = c;
+                sawEnvironments = true;
+            }
+        } else if (memcmp(chunk, "FXPR", 4) == 0) {
+            // The effects environments use: each its id, its plug-in, its parameters' size and the parameters, then 6
+            // bytes (0 in Armageddon's). Matrix Reverb's parameters: the reverb time, its high-frequency ratio, the
+            // delay lines, the dry and wet levels (dB), the pre-delay (s), a mode.
+            Reader g(body, length);
+            uint32_t count = g.U32();
+            for (uint32_t i = 0; i < count && !g.failed; i++) {
+                uint32_t id = g.U32(), plugin = g.U32(), bytes = g.U32();
+                if (bytes > g.Left()) {
+                    g.failed = true;
+                    break;
+                }
+                if (plugin == 0x00730003 && bytes >= 24) {
+                    Reverb rv;
+                    rv.id = id;
+                    rv.seconds = g.F32();
+                    rv.hfRatio = g.F32();
+                    rv.delays = g.U32();
+                    rv.dryDb = g.F32();
+                    rv.wetDb = g.F32();
+                    rv.preDelay = g.F32();
+                    g.Skip(bytes - 24);
+                    newReverbs[id] = rv;
+                } else {
+                    g.Skip(bytes);
+                }
+                g.Skip(6);
+            }
+            if (g.failed || g.Left() != 0) {
+                bank->problems.push_back("its effects (FXPR) aren't laid out as read; left out");
+                newReverbs.clear();
+            } else {
+                sawEffects = true;
+            }
         }
         at += 8 + length;
     }
@@ -947,6 +1117,7 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
     for (auto& e : newEvents) { bank->events.push_back(e->id); events[e->id] = std::move(e); }
     for (auto& b : newBuses) { bank->buses.push_back(b->id); buses[b->id] = std::move(b); }
     for (auto& a : newAttenuations) attenuations[a->id] = std::move(a);
+    for (auto& d : newDialogue) { bank->dialogueEvents.push_back(d->id); dialogueEvents[d->id] = std::move(d); }
     for (auto& [id, v] : newStates) stateObjects[id] = v;
     for (auto& [id, type] : bank->unread) unreadObjects[id] = type;
     if (sawGlobals) {
@@ -954,6 +1125,8 @@ Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bank
         parameterDefaults = std::move(newDefaults);
         stateGroups = std::move(newGroups);
     }
+    if (sawEnvironments) obstruction = newObstruction;
+    if (sawEffects) reverbs = std::move(newReverbs);
     Bank* kept = bank.get();
     banks[bank->id] = std::move(bank);
     CheckLinks(*kept);
@@ -1005,6 +1178,7 @@ void Library::Unload(uint32_t bankId)
     for (uint32_t id : bank.attenuations) attenuations.erase(id);
     for (uint32_t id : bank.stateObjects) stateObjects.erase(id);
     for (auto& [id, type] : bank.unread) unreadObjects.erase(id);
+    for (uint32_t id : bank.dialogueEvents) dialogueEvents.erase(id);
     banks.erase(it);
 }
 
@@ -1018,8 +1192,11 @@ void Library::Clear()
     attenuations.clear();
     stateObjects.clear();
     unreadObjects.clear();
+    dialogueEvents.clear();
     parameterDefaults.clear();
     stateGroups.clear();
+    obstruction = ObstructionCurves{};
+    reverbs.clear();
     volumeThreshold = 0;
 }
 
@@ -1063,6 +1240,32 @@ const Action* Library::FindAction(uint32_t id) const
 {
     auto it = actions.find(id);
     return it == actions.end() ? nullptr : it->second.get();
+}
+
+uint32_t DialogueEvent::Resolve(const uint32_t* values, size_t count) const
+{
+    uint32_t best = 0;
+    int bestExact = -1;
+    for (const auto& [keys, node] : paths) {
+        if (keys.size() != count) continue;
+        int exact = 0;
+        bool fits = true;
+        for (size_t i = 0; i < count && fits; i++) {
+            if (keys[i] == values[i]) exact++;
+            else if (keys[i] != 0) fits = false;
+        }
+        if (fits && exact > bestExact) {
+            best = node;
+            bestExact = exact;
+        }
+    }
+    return best;
+}
+
+const DialogueEvent* Library::FindDialogueEvent(uint32_t id) const
+{
+    auto it = dialogueEvents.find(id);
+    return it == dialogueEvents.end() ? nullptr : it->second.get();
 }
 
 const Event* Library::FindEvent(uint32_t id) const

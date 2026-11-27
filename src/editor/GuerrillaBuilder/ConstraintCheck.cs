@@ -16,7 +16,7 @@ static class ConstraintCheck
     /// <summary>Checks the world's constraints; logs what it finds. False if any is wrong or a block holds too many.</summary>
     public static bool Run(Setup setup, BuildLog log)
     {
-        var archives = new[] { "rfg_precache.vpp_pc", "rfg_l1.vpp_pc", "rfg_l0.vpp_pc" }.Select(a => Path.Combine(setup.Cache, a)).ToList();
+        var archives = new[] { "rfg_precache.vpp_pc", "rfg_l1.vpp_pc", "rfg_l0.vpp_pc" }.Select(a => setup.NewFile(RfaFormats.Guerrilla.OverrideLayout.World, a)).ToList();
         if (!archives.All(File.Exists)) return true;
         uint constraintClass = NameHashes.ClassHash("constraint");
         uint rfgMover = NameHashes.ClassHash("rfg_mover"), generalMover = NameHashes.ClassHash("general_mover");

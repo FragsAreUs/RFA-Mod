@@ -123,6 +123,18 @@ public sealed class PegFile
         return (made, d);
     }
 
+    /// <summary>
+    /// How a flip-book texture is split into frames: tiles across and down (its entry's +12 and +14; 1 × 1 for a plain
+    /// texture). Effects' animated textures are such grids (vfx_fireball03_anim 5 × 5); their frame count (+16) and frames
+    /// a second (+26) are 1 in the game's files, so the grid alone says how many frames there are.
+    /// </summary>
+    public (int Across, int Down) AnimationTiles(PegTexture texture)
+    {
+        int entry = HeaderSize + texture.Index * EntrySize;
+        if (entry + 16 > header.Length) return (1, 1);
+        return (Math.Max(1, (int)BitConverter.ToUInt16(header, entry + 12)), Math.Max(1, (int)BitConverter.ToUInt16(header, entry + 14)));
+    }
+
     /// <summary>The names of the textures in a header file, without needing its data file.</summary>
     public static IEnumerable<string> TextureNames(byte[] header)
     {

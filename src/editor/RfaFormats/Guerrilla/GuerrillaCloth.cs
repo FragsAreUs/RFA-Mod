@@ -51,7 +51,7 @@ namespace RfaFormats.Guerrilla;
 /// cloths running at once (0x96EC63); a 64 KB pool for the files (0xA46CC0, "Cloth Sim Mempool"), of which
 /// Armageddon's own 25 take 34,788 bytes; a 256 KB pool for the cloths running.
 ///
-/// It writes the containers as new files in overrides\build\pc\cache\ and its own cloth_containers.asm_pc over
+/// It writes the containers as new files in overrides\build\pc\cache\guerrilla\cloth\ and its own cloth_containers.asm_pc over
 /// Armageddon's (overrides\build\pc\cache\cloth_sim.vpp_pc\): Armageddon's list with ours after it.
 /// </summary>
 public static class GuerrillaCloth
@@ -209,8 +209,7 @@ public static class GuerrillaCloth
         var list = AsmFile.Read(gameArchive.Read(gameArchive.Find(ListName) ?? throw new InvalidDataException($"no {ListName} in Armageddon's {ListArchive}")));
         int theirs = list.Containers.Count;
         var rfgArchive = Packfile.Open(Path.Combine(guerrilla, "build", "pc", "cache", ListArchive));
-        string cache = Path.Combine(overrides, "build", "pc", "cache"), listFile = Path.Combine(overrides, AssetList);
-        Directory.CreateDirectory(cache);
+        string listFile = Path.Combine(overrides, AssetList);
         Directory.CreateDirectory(Path.GetDirectoryName(listFile)!);
         var lines = new List<string>();
         foreach (string mesh in Ported)
@@ -225,7 +224,7 @@ public static class GuerrillaCloth
             var container = rfgArchive.OpenContainer(source, containerName);
             byte[] ours = Convert(container.Read(container.Find(file) ?? throw new InvalidDataException($"no {file} in Guerrilla's {containerName}")));
             byte[] packed = Packfile.CreateContainer([(file, ours)]);
-            File.WriteAllBytes(Path.Combine(cache, containerName), packed);
+            File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Cloth, containerName), packed);
             list.Containers.Add(Entry(file, packed, ours));
             var cloth = Read(ours, guerrilla: false);
             lines.Add($"Cloth: {mesh}: {cloth.Nodes} nodes ({cloth.Anchors} pinned to the body), {cloth.Links} links, {cloth.Capsules} capsules, " +
@@ -258,10 +257,7 @@ public static class GuerrillaCloth
         if (!File.Exists(listFile)) yield break;
         var gameArchive = Packfile.Open(Path.Combine(game, "build", "pc", "cache", ListArchive));
         foreach (var c in AsmFile.Read(File.ReadAllBytes(listFile)).Containers.Where(c => gameArchive.Find(c.FileName) == null))
-        {
-            string file = Path.Combine(overrides, "build", "pc", "cache", c.FileName);
-            if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-        }
+            foreach (string file in OverrideLayout.Delete(overrides, c.FileName)) yield return $"Deleted {file}";
         File.Delete(listFile);
         yield return $"Deleted {listFile}";
     }

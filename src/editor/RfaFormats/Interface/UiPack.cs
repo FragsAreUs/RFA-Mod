@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using RfaFormats.Guerrilla;
 using RfaFormats.Textures;
 
 namespace RfaFormats.Interface;
@@ -8,7 +9,7 @@ namespace RfaFormats.Interface;
 /// RFA-Mod's UI pack: new pictures for the main menu's Modern style (Options > Main Menu > Style), drawn
 /// here (no art files needed) and packed the way the Guerrilla HUD's pictures are (see GuerrillaHud): a
 /// document that brings nothing but their texture file (rfa_ui_modern, VintDocument.TexturesOnly), in its
-/// two containers (rfa_ui_modern.str2_pc and rfa_ui_modern2.str2_pc in overrides\build\pc\cache), listed in
+/// two containers (rfa_ui_modern.str2_pc and rfa_ui_modern2.str2_pc in overrides\build\pc\cache\rfa), listed in
 /// the interface's asset list (vint_doc_containers.asm_pc) and project (rfg.vint_proj), its pictures in the
 /// project's sheet table. The main menu has the loader load the document (rfa_load_ui_pack) and puts the
 /// pictures on its own elements: the highlight's ends and middle (vdo_button_highlight's left, center and
@@ -36,8 +37,8 @@ public static class UiPack
         ("rfa_modern_corner", 92, 0, 50, 50),
     ];
 
-    static string CacheOut(string overridesFolder) => Path.Combine(overridesFolder, "build", "pc", "cache");
-    static string VersionFile(string overridesFolder) => Path.Combine(CacheOut(overridesFolder), Document + ".version");
+    static string CacheOut(string overridesFolder) => OverrideLayout.Cache(overridesFolder);
+    static string VersionFile(string overridesFolder) => Path.Combine(OverrideLayout.RfaFolder(overridesFolder), Document + ".version");
 
     /// <summary>Whether the pack is there, of this version, and listed in the asset list and the project.</summary>
     public static bool Built(string overridesFolder)
@@ -45,7 +46,8 @@ public static class UiPack
         string cache = CacheOut(overridesFolder);
         try
         {
-            if (!File.Exists(Path.Combine(cache, Document + ".str2_pc")) || !File.Exists(Path.Combine(cache, Document + "2.str2_pc"))) return false;
+            string own = OverrideLayout.RfaFolder(overridesFolder);
+            if (!File.Exists(Path.Combine(own, Document + ".str2_pc")) || !File.Exists(Path.Combine(own, Document + "2.str2_pc"))) return false;
             if (!File.Exists(VersionFile(overridesFolder)) || File.ReadAllText(VersionFile(overridesFolder)).Trim() != Version.ToString()) return false;
             string asm = Path.Combine(cache, "interface.vpp_pc", "vint_doc_containers.asm_pc");
             string project = Path.Combine(cache, "misc.vpp_pc", "rfg.vint_proj");
@@ -55,8 +57,9 @@ public static class UiPack
         catch (IOException) { return false; }
     }
 
-    /// <summary>Was it ever built (its containers there, whatever their version)? Then a rebuild of the HUD adds it again.</summary>
-    public static bool Installed(string overridesFolder) => File.Exists(Path.Combine(CacheOut(overridesFolder), Document + ".str2_pc"));
+    /// <summary>Was it ever built (its containers there, whatever their version, also at the top of the cache from an older build)? Then a rebuild of the HUD adds it again.</summary>
+    public static bool Installed(string overridesFolder) => File.Exists(Path.Combine(OverrideLayout.RfaFolder(overridesFolder), Document + ".str2_pc")) ||
+                                                            File.Exists(Path.Combine(CacheOut(overridesFolder), Document + ".str2_pc"));
 
     /// <summary>Builds it (again) into <paramref name="overridesFolder"/>. Returns what was done, a line each.</summary>
     public static List<string> Build(string gameFolder, string overridesFolder)
@@ -82,10 +85,12 @@ public static class UiPack
         Packfile textureTemplate = Container(gameInterface, "ui_flyer_hud2.str2_pc");
         byte[] main = Packfile.CreateContainer(documentTemplate, [(Document + ".vint_doc", documentBytes), (Document + ".lua", scriptBytes)]);
         byte[] art = Packfile.CreateContainer(textureTemplate, [(TextureFile + ".cpeg_pc", pegHeader), (TextureFile + ".gpeg_pc", pegData)]);
-        Write(Path.Combine(cacheOut, Document + ".str2_pc"), main);
-        Write(Path.Combine(cacheOut, Document + "2.str2_pc"), art);
-        Write(Path.Combine(cacheOut, Document + ".vint_doc"), documentBytes);
-        Write(Path.Combine(cacheOut, Document + ".lua"), scriptBytes);
+        Write(OverrideLayout.NewRfaFile(overridesFolder, Document + ".str2_pc"), main);
+        Write(OverrideLayout.NewRfaFile(overridesFolder, Document + "2.str2_pc"), art);
+        Write(OverrideLayout.NewRfaFile(overridesFolder, Document + ".vint_doc"), documentBytes);
+        Write(OverrideLayout.NewRfaFile(overridesFolder, Document + ".lua"), scriptBytes);
+        string oldVersion = Path.Combine(cacheOut, Document + ".version");  // an older build's, at the top of the cache
+        if (File.Exists(oldVersion)) File.Delete(oldVersion);
         report.Add($"{Document}: {Pictures.Length} pictures in a {SheetWidth} × {SheetHeight} texture ({string.Join(", ", Pictures.Select(p => p.Name))})");
 
         // The asset list: ours, or the game's.
@@ -108,14 +113,14 @@ public static class UiPack
         string projectText = File.Exists(projectPath) ? File.ReadAllText(projectPath, Encoding.Latin1) : ReadText(gameMisc, "rfg.vint_proj");
         var (at, length) = GuerrillaHud.SheetTableInProject(projectText);
         string sheetTable = projectText.Substring(at, length);
-        string sheetPath = Path.Combine(cacheOut, GuerrillaHud.SheetTableName + ".xtbl");
-        string sheetsText = sheetTable.Equals(GuerrillaHud.SheetTableName, StringComparison.OrdinalIgnoreCase) && File.Exists(sheetPath)
-            ? File.ReadAllText(sheetPath, Encoding.Latin1)
+        string? ourSheets = OverrideLayout.Find(overridesFolder, GuerrillaHud.SheetTableName + ".xtbl");
+        string sheetsText = sheetTable.Equals(GuerrillaHud.SheetTableName, StringComparison.OrdinalIgnoreCase) && ourSheets != null
+            ? File.ReadAllText(ourSheets, Encoding.Latin1)
             : ReadText(gameMisc, sheetTable + ".xtbl");
         bool listed = projectText.Contains($"<doc_name>{Document}</doc_name>", StringComparison.OrdinalIgnoreCase);
         projectText = GuerrillaHud.WithDocuments(projectText, listed ? new List<string>() : new List<string> { Document }, GuerrillaHud.SheetTableName);
         Write(projectPath, Encoding.Latin1.GetBytes(projectText));
-        Write(sheetPath, Encoding.Latin1.GetBytes(WithOurSheet(sheetsText)));
+        Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, GuerrillaHud.SheetTableName + ".xtbl"), Encoding.Latin1.GetBytes(WithOurSheet(sheetsText)));
         report.Add($"Listed in vint_doc_containers.asm_pc and rfg.vint_proj; its pictures in the sheet table {GuerrillaHud.SheetTableName}.xtbl");
 
         Write(VersionFile(overridesFolder), Encoding.Latin1.GetBytes(Version.ToString()));

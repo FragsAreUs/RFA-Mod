@@ -64,8 +64,8 @@ static class ClothCheck
         // A skeleton's bone count: ours (in the cache) or the game's (misc.vpp_pc); null if neither has it.
         int? BoneCount(string rig)
         {
-            string rigPath = Path.Combine(setup.Cache, rig);
-            byte[]? rigData = File.Exists(rigPath) ? File.ReadAllBytes(rigPath) : misc.Find(rig) is { } inGame ? misc.Read(inGame) : null;
+            string? rigPath = setup.FindNewFile(rig);
+            byte[]? rigData = rigPath != null ? File.ReadAllBytes(rigPath) : misc.Find(rig) is { } inGame ? misc.Read(inGame) : null;
             return rigData == null ? null : Rig.Read(rigData).Bones.Count;
         }
 
@@ -73,7 +73,7 @@ static class ClothCheck
         foreach (var container in list.Containers.Where(c => gameArchive.Find(c.FileName) == null))
         {
             ours++;
-            string path = Path.Combine(setup.Cache, container.FileName);
+            string path = setup.NewFile(RfaFormats.Guerrilla.OverrideLayout.Cloth, container.FileName);
             if (!File.Exists(path))
             {
                 log.Line($"Cloth check: {container.FileName} is listed but isn't there");

@@ -65,10 +65,12 @@ You can put the panels where you like:
   the Guerrilla world's `rfg_l0.vpp_pc`, `rfg_l1.vpp_pc` and `zonescript_rfg.vpp_pc` once
   `GuerrillaBuilder.exe` has built them. You can open their zones in the level editor; what you save
   to them goes to `edits\`, so the archives stay as they were built.
-- **New files** (in each folder that has some, such as `build\pc\cache`): the files in `overrides\`
-  that aren't in any archive. The Guerrilla builder puts most of the port there: the characters
-  (`mason.rig_pc`, `EDF_Elite.str2_pc`, ...), vehicles (`*.ccar_pc.str2_pc`), weapons
-  (`rfg_enforcer.str2_pc`), sounds, interface scripts and tables. The game gets one when it looks
+- **New files** (in each folder that has some, such as `build\pc\cache\guerrilla\people`): the files in `overrides\`
+  that aren't in any archive. The Guerrilla builder puts most of the port there, a folder for each of
+  its parts under `build\pc\cache\guerrilla\`: the characters in `people` (`mason.rig_pc`,
+  `EDF_Elite.str2_pc`, ...), vehicles in `vehicles` (`*.ccar_pc.str2_pc`), weapons in `weapons`
+  (`rfg_enforcer.str2_pc`), sounds in `sounds`, the HUD's documents and scripts in `hud`, the world's
+  archives in `world`. The game gets one when it looks
   for that name and none of its archives has it; a new file whose name an archive has is marked
   "unused", as the game always takes the archive's.
 - **mods**: each mod's data folder (`mods\guerrilla_world`, `mods\guerrilla_gear\animations`,
@@ -81,14 +83,114 @@ You can put the panels where you like:
   data"). The files inside containers become searchable a few seconds after the editor starts. If
   the Guerrilla builder adds or removes files while the editor is open, the explorer and the search
   are made again when you come back to the editor's window.
-- Pick a file to preview it: text files (`.xtbl`, `.lua`, ...) as text, everything else as a hex
-  dump.
+- Pick a file to preview it: text files (`.xtbl`, `.lua`, ...) as text; textures, models, sound
+  banks, conversations, effects, strings, menus and HUD screens in their own views (below); anything else as a hex dump.
 - Pick one of the Guerrilla world's sound banks (a `.bnk_pc` the Guerrilla builder wrote) to hear
   it: its events are listed, and **Play** and **Stop** post them as the game would. Drag the sound
   around you on the pad to hear its distance and side, set its game parameters (an engine's RPM,
   ...) and switches, and see the voices playing. **Guerrilla's original** plays the sound it was made from, out of your
   copy of Red Faction: Guerrilla, to compare. Armageddon's own banks list their events but don't
   play yet.
+- Pick a conversation (a `.ctdg_pc` in `sounds.vpp_pc`, such as `e3_new_start.ctdg_pc`) to see
+  who speaks and what they say, in order:
+  - **Who speaks** lists the people in it (the game's voice personas: `darius`, `kara`, ...), how
+    many lines each has, and their voice bank in `voices.vpp_pc`.
+  - **Lines** lists each line with its speaker, the line's name and folder (from the game's
+    `audio_personas.xtbl` and `audio_line_tags.xtbl`), and the pause before it. A negative pause,
+    such as "250 ms early", starts the line before the one before it ends, so the two overlap.
+  - Pick a line to see what plays it. **Play line** (or double-click it, or Enter) plays it.
+    **Play conversation** plays every line in order from the picked one, with the file's pauses
+    and overlaps, as the game would. Each speaker stands at their own place in front of you, so
+    you can tell them apart. **Stop** stops it.
+  - If the game won't play a conversation, the top line says why: it has no lines or more than
+    30, or one of its lines isn't in its speaker's voice bank (the game checks every line before
+    it starts one).
+- Pick an interface document (a `.vint_doc` in `interface.vpp_pc`, inside its container: `ui_hud`
+  is the in-game HUD, `ui_pause_menu` the pause menu) to see the screen it draws:
+  - **The screen** is drawn from the document's elements as the game lays them out: pictures
+    cut from the game's sheets, text in the game's English words, sub-documents (`vdo_*`) drawn
+    inside the elements that show them. Click a picture or a text to pick it.
+  - **Elements** lists its tree. Pick one to see its properties, with a dashed box round it on the
+    screen. Untick an element's box to leave it out of the picture.
+  - **Add** puts a new element inside the picked one (or at the top when none is picked): a group,
+    picture, text, clip, sub-document, circle picture or map, with the values its kind needs. **Copy**
+    copies the picked element and everything in it, right after it, as `<name>_copy`. **Delete**
+    deletes it; if the script names it, you're asked first, as the script may fail without it. For example, untick
+    `low_health` in `ui_hud`: the HUD script only fades that red overlay in when you're hurt, but
+    the document has it showing.
+  - **Properties** shows the picked element's name and values: anchor (its place), offset, scale,
+    rotation, tint, alpha, image, text and so on. Hover over a name for what it does. Type a new
+    value and press Enter: the screen is drawn again at once. **×** removes a value (the game then
+    uses its default), and the list at the bottom adds one the element hasn't got. Renaming an
+    element doesn't change the script, which finds elements by name. **Undo changes** forgets what
+    you haven't saved.
+  - **Save** writes your changes into the document where the game reads it. The document's
+    container is rebuilt in `overrides\`, and the asset list that holds the containers' sizes is
+    updated with it. Changes to a sub-document's elements (a `vdo_*` shown inside) are saved into
+    that sub-document. **Restore original** goes back to the game's own copy of the document.
+  - **Script** shows the document's Lua script, coloured. Every element name the script uses is
+    underlined: click one to pick that element. Pick an element and the lines that name it are
+    marked, and listed under its properties ("line 120", ...) to jump to.
+  - **Animations** (the tab beside the script) lists the document's animations. Pick one and press
+    **Play** to see it move over the screen, looping as it loops in the game; drag the slider to see
+    any moment, and **Stop** goes back to the document's start. Its tweens (each moves one property
+    of one element: alpha, anchor, scale, rotation, tint, ...) are listed with their start, length,
+    values and easing. Pick one to change any of these, or delete it. **Add tween** adds one that
+    fades the picked element out; **New animation** and **Delete animation** add and remove whole
+    animations. Animation names in the script are underlined too: click one to show it. Renaming an
+    element moves its tweens with it; deleting one that tweens move asks first. The scripts play
+    animations when the game needs them, so what you see is each one alone.
+  - **Show hidden** also draws the elements that start hidden, faded; the scripts show them as
+    they need them. **Outlines** draws a thin box round every picture and text. **Game fonts**
+    draws text with the game's own fonts, letter by letter from their font sheets; untick it for a
+    plain stand-in font.
+  - The resolution list lays it out for the game's other resolution (960x720) where the document
+    has values for it.
+  - It updates live. While a document shows, saving its document, its container or its script
+    in your mod folder (`overrides\`, `mods\`) draws it again from the new files. So you can keep
+    the editor open beside your text editor while you work on a HUD script or document.
+  - **Reload in game** tells the running game (started through `RFAModLauncher.exe`) to load the
+    document again from your files, so you see your saved changes in the game too. Save first: the
+    game sees only what is saved.
+  - What you see is close to the game, not exact. Masks and multiply-blended elements aren't drawn, glowing (additive) ones are drawn
+    plainly, and anything a script moves, fills in or animates is shown where the document
+    starts it.
+- Pick a strings file (a `.le_strings` in `misc.vpp_pc`, such as `menu_us.le_strings`) to read the
+  game's text:
+  - Every string is listed by its tag (`MENU_ACCELERATE`, ...), the name the game's tables, menus and
+    scripts use for it, with the text beside it.
+  - A file that comes in several languages (`menu_us`, `menu_de`, ... `menu_ru`) shows all of them
+    side by side, one column each, whichever of them you picked.
+  - Type in the search box to keep only the strings whose tag or text, in any language, has it.
+  - Pick a string to read it whole, in every language, below.
+  - Accented, Polish and Russian letters show as letters. The game stores them under its fonts'
+    own codes, which the editor turns back into letters; a few rare symbols, and Japanese, are
+    shown as stored.
+- Pick an effect (a `.cefct_pc`, or the `.gefct_pc` beside it, in `effects.vpp_pc` and the
+  levels' containers) to see it play and what it's made of:
+  - It plays at the top, over a grid whose lines are a metre apart. Drag to turn around it and use
+    the wheel to come closer. **Pause** (or Space) stops it, **Restart** starts it again from
+    nothing, and the speed list slows it down to a quarter. **Loop** plays it again and again, as
+    an effect that keeps going (a fire); turn it off to see a one-off effect (an explosion) once,
+    its particles left to die.
+  - The top line says how long it lasts, how big it is, what it holds, and which entries of
+    `effects.xtbl` use it, with their sounds. Those entries' names are what weapons, objects and
+    scripts call the effect.
+  - **Textures** shows each texture it uses as a picture. Hover over one to see which parts use it.
+  - **Parts** lists its emitters (what particles they make, from what shape, how many, how long
+    they live), lights (point or spot, and how far they reach), coronas (glows), meshes and filters
+    (forces that push its particles). Pick one to see more: an emitter's colours at birth and at
+    the end, how it's drawn, its shader and textures; which emitters a filter pushes. Untick a
+    part's **Shown** box to play the effect without it.
+  - The player draws particles, ribbons and trails (a strip through the particles behind a flying
+    spark), coronas (glows, drawn on top), and the effect's meshes: light rays, rings, falling
+    debris and shell casings.
+  - Its lights light the ground under it and its solid meshes; a small ring in the light's colour
+    marks where each light is. A spotlight shows its cone on the ground.
+  - Its filters push its particles while it plays: a magnet pulls them in, a vortex swirls them,
+    turbulence shakes them, and an orientor lays them flat (the rings a bullet makes in water).
+  - What plays is close to the game, not exact: the editor works it out from the file's settings
+    itself, and a mesh can show through one in front of it. Wind filters aren't played yet.
 - **Extract** saves a file, and **Extract all** every file of an archive or container, into a
   folder.
 - **Copy to overrides** puts a copy at the right place in `overrides\`, where the game uses it
@@ -542,9 +644,9 @@ has the brush's choices while you sculpt.
   as for textures), with the zone's new size when it grew (objects added, longer text): the game
   sets memory aside by those sizes. Many zones are in the game twice; the editor saves every copy.
 - **The Guerrilla world** (`rfg_CC_RR` zones, in `zonescript_rfg.vpp_pc` and `rfg_l1.vpp_pc` under
-  `overrides\build\pc\cache\`) is ours, not the game's: its archives are new files in `overrides\`,
+  `overrides\build\pc\cache\guerrilla\world\`) is ours, not the game's: its archives are new files in `overrides\`,
   so its changes go to `edits\` instead (beside `overrides\`, laid out the same way:
-  `edits\build\pc\cache\rfg_l1.vpp_pc\1h_c0312.str2_pc`), which the loader uses as it does
+  `edits\build\pc\cache\guerrilla\world\rfg_l1.vpp_pc\1h_c0312.str2_pc`), which the loader uses as it does
   overrides. The archives stay as the Guerrilla builder made them. If you build the world again, a
   change made to a file the build changed is left out (the loader logs it): make it again in the
   editor. (This needs the loader from this version; changes an older editor made to those archives
@@ -598,6 +700,14 @@ top right, brings it forward):
 - The game fills the panel, whatever its size or shape: it draws at its own resolution and is
   stretched to the space it has.
 - **Undock** or closing the editor gives the game its own window back, as it was.
+
+### MCP servers
+
+If you use Claude with this mod, Claude starts two helper programs (MCP servers):
+`live_analysis_mcp.exe`, for the running game, and `editor\RfaEditorMcp.exe`, for the game's files.
+The **MCP servers** button in the top bar lists them and closes them. They also close when you
+close the editor, so none is left running. To use their tools again in a Claude session that was
+open, reconnect them in that session's `/mcp`.
 
 ## Not yet
 

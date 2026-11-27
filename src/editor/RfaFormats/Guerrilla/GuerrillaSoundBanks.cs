@@ -829,19 +829,17 @@ public sealed class GuerrillaSoundBanks
     public List<string> Write(string game, string overrides, string modFolder)
     {
         var lines = new List<string>();
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
-        Directory.CreateDirectory(cache);
         // The banks this part wrote before and doesn't now are taken away.
         var listed = Listed(modFolder, part);
         foreach (string old in listed.Banks.Where(b => !banks.ContainsKey(b)))
             foreach (string file in new[] { old + ".bnk_pc", old + "_media.bnk_pc" })
-                if (File.Exists(Path.Combine(cache, file))) File.Delete(Path.Combine(cache, file));
+                OverrideLayout.Delete(overrides, file);
         long total = 0;
         foreach (var (name, bank) in banks.OrderBy(b => b.Key))
         {
             var (bankFile, mediaFile) = bank.Write();
-            File.WriteAllBytes(Path.Combine(cache, name + ".bnk_pc"), bankFile);
-            File.WriteAllBytes(Path.Combine(cache, name + "_media.bnk_pc"), mediaFile);
+            File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Sounds, name + ".bnk_pc"), bankFile);
+            File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Sounds, name + "_media.bnk_pc"), mediaFile);
             total += bankFile.Length + mediaFile.Length;
             lines.Add($"{name}: {bank.Counts()} ({mediaFile.Length / 1048576.0:0.0} MB)");
         }
@@ -998,10 +996,7 @@ public sealed class GuerrillaSoundBanks
         var (banks, pairs) = Listed(modFolder, part);
         foreach (string bank in banks)
             foreach (string file in new[] { bank + ".bnk_pc", bank + "_media.bnk_pc" })
-            {
-                string path = Path.Combine(overrides, "build", "pc", "cache", file);
-                if (File.Exists(path)) { File.Delete(path); yield return $"Deleted {path}"; }
-            }
+                foreach (string path in OverrideLayout.Delete(overrides, file)) yield return $"Deleted {path}";
         string tablePath = Path.Combine(modFolder, BankTable);
         if (File.Exists(tablePath))
         {

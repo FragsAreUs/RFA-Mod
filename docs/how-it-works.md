@@ -174,8 +174,8 @@ finds the archive (`0x6CD1A0`, through `0xC92010`), then opens it with `cf_open`
 from the file it was given.
 
 **Edits**: `edits\` does for the archives the mod adds (the new files above, such as the Guerrilla
-world's `build\pc\cache\rfg_l1.vpp_pc`) what `overrides\` does for the game's:
-`edits\build\pc\cache\rfg_l1.vpp_pc\1h_c0312.str2_pc` replaces that archive's copy, the same way
+world's `build\pc\cache\guerrilla\world\rfg_l1.vpp_pc`) what `overrides\` does for the game's:
+`edits\build\pc\cache\guerrilla\world\rfg_l1.vpp_pc\1h_c0312.str2_pc` replaces that archive's copy, the same way
 (when the game finds a copy of that size). `overrides\` can't hold them, as the archive itself is a
 file there with the name the folder would have. The level editor saves its changes to those
 archives here, so they stay as the Guerrilla builder made them. Beside each, `<file>.rfabase` gives

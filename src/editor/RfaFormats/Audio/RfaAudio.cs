@@ -68,6 +68,21 @@ public static class RfaAudio
     public static void UnloadBank(uint bank) => rfa_audio_unload_bank(bank);
 
     public static uint[] BankEvents(uint bank) => Items<uint>(n => rfa_audio_bank_events(bank, null, 0), a => rfa_audio_bank_events(bank, a, a.Length));
+
+    /// <summary>A voice bank's dialogue events (Armageddon's: one a persona's bank).</summary>
+    public static uint[] BankDialogueEvents(uint bank) =>
+        Items<uint>(n => rfa_audio_bank_dialogue_events(bank, null, 0), a => rfa_audio_bank_dialogue_events(bank, a, a.Length));
+
+    /// <summary>A dialogue event's lines: each its keys (one an argument: Armageddon's the persona and the line) and its node.</summary>
+    public static (uint[] Keys, uint Node)[] DialogueLines(uint dialogueEvent)
+    {
+        int count = rfa_audio_dialogue_lines(dialogueEvent, out int arguments, null, null, 0);
+        if (count <= 0 || arguments <= 0) return [];
+        var keys = new uint[count * arguments];
+        var nodes = new uint[count];
+        count = Math.Min(count, rfa_audio_dialogue_lines(dialogueEvent, out arguments, keys, nodes, count));
+        return [.. Enumerable.Range(0, count).Select(i => (keys[(i * arguments)..((i + 1) * arguments)], nodes[i]))];
+    }
     public static ObjectInfo[] BankObjects(uint bank) => Items<ObjectInfo>(n => rfa_audio_bank_objects(bank, null, 0), a => rfa_audio_bank_objects(bank, a, a.Length));
     public static uint[] BankParameters(uint bank) => Items<uint>(n => rfa_audio_bank_parameters(bank, null, 0), a => rfa_audio_bank_parameters(bank, a, a.Length));
     public static uint[] BankSwitchGroups(uint bank) => Items<uint>(n => rfa_audio_bank_switch_groups(bank, null, 0), a => rfa_audio_bank_switch_groups(bank, a, a.Length));
@@ -287,6 +302,9 @@ public static class RfaAudio
     static extern uint rfa_audio_load_bank_from_archive(string archive, byte[] bankName, byte[] error, int errorSize);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern void rfa_audio_unload_bank(uint bank);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_events(uint bank, [Out] uint[]? ids, int max);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_dialogue_events(uint bank, [Out] uint[]? ids, int max);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    static extern int rfa_audio_dialogue_lines(uint dialogueEvent, out int arguments, [Out] uint[]? keys, [Out] uint[]? nodes, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_objects(uint bank, [Out] ObjectInfo[]? info, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_parameters(uint bank, [Out] uint[]? ids, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_switch_groups(uint bank, [Out] uint[]? ids, int max);

@@ -30,10 +30,9 @@ static class SoundCheck
             log.Line("Sound check: skipped, rfa_audio.dll or soft_oal.dll isn't beside GuerrillaBuilder.exe");
             return true;
         }
-        var bankFiles = Directory.Exists(setup.Cache)
-            ? Directory.EnumerateFiles(setup.Cache, "rfg*.bnk_pc").Where(f => !f.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase))
-                       .Order(StringComparer.OrdinalIgnoreCase).ToList()
-            : [];
+        var bankFiles = RfaFormats.Guerrilla.OverrideLayout.FindAll(setup.Overrides, "rfg*.bnk_pc")
+            .Where(f => !f.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ToList();
         try
         {
             RfaAudio.Open(loopback: true, ownThread: false, sampleRate: Rate, maxSources: 256, cacheMb: 256);
@@ -65,7 +64,7 @@ static class SoundCheck
         var events = new List<(string Bank, uint BankId, uint Event)>();
         foreach (string file in bankFiles)
         {
-            string name = Path.GetFileNameWithoutExtension(file), media = Path.Combine(setup.Cache, name + "_media.bnk_pc");
+            string name = Path.GetFileNameWithoutExtension(file), media = Path.Combine(Path.GetDirectoryName(file)!, name + "_media.bnk_pc");
             uint id;
             try { id = RfaAudio.LoadBank(file, File.Exists(media) ? media : null); }
             catch (InvalidDataException e)

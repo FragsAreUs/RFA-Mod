@@ -16,7 +16,7 @@ namespace RfaFormats.Guerrilla;
 ///     own shaders' skinned rewrites (<see cref="GuerrillaShaders"/>), packed with its textures (each
 ///     one of Guerrilla's as a single-texture file under its alias, as the world's and the vehicles')
 ///     into a container of its own named as the character (&lt;Name&gt;.str2_pc in
-///     overrides\build\pc\cache\), listed in an override of humans.vpp_pc\character_containers.asm_pc
+///     overrides\build\pc\cache\guerrilla\people\), listed in an override of humans.vpp_pc\character_containers.asm_pc
 ///     (Armageddon's own list with ours added) as Armageddon lists its people (type 19). Characters
 ///     whose containers are the same in Guerrilla (its troopers, mercenaries and lieutenants are all
 ///     greene, file for file) share the first one's, as Armageddon's Shared_Container does (and
@@ -253,7 +253,6 @@ public static class GuerrillaPeople
         var ownerOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);  // a character made → whose container it has
         var rigs = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         var made = new List<string>();
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
         // Guerrilla's inventory items ported so far (GuerrillaWeapons): Guerrilla's name → ours.
         var gameItems = new HashSet<string>(ReadTable(gameTables, "items_inventory.xtbl").Entries.Select(XtblFile.EntryName), StringComparer.OrdinalIgnoreCase);
         string itemsFile = Path.Combine(worldFolder, "items_inventory.xtbl");
@@ -451,11 +450,10 @@ public static class GuerrillaPeople
             if (propItems.Count > 0) yield return $"Props: {propItems.Count} of Guerrilla's items added to {ItemTable} ({string.Join(", ", propItems.Keys)})";
         }
 
-        Directory.CreateDirectory(cache);
-        foreach (var (file, bytes) in containers) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+        foreach (var (file, bytes) in containers) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.People, file), bytes);
         // Containers of an earlier run's characters with none of their own now.
-        foreach (string old in oldPeople.Where(o => !containers.ContainsKey(o + ".str2_pc") && o.IndexOfAny(Path.GetInvalidFileNameChars()) < 0))
-            if (File.Exists(Path.Combine(cache, old + ".str2_pc"))) File.Delete(Path.Combine(cache, old + ".str2_pc"));
+        foreach (string old in oldPeople.Where(o => !containers.ContainsKey(o + ".str2_pc")))
+            OverrideLayout.Delete(overrides, old + ".str2_pc");
         string listFile = Path.Combine(overrides, AssetList);
         Directory.CreateDirectory(Path.GetDirectoryName(listFile)!);
         File.WriteAllBytes(listFile, assetList.ToBytes());
@@ -475,13 +473,13 @@ public static class GuerrillaPeople
         }
         // Guerrilla's human ragdoll, which the people's entries name (guerrilla_world hands it over).
         File.WriteAllBytes(Path.Combine(worldFolder, GuerrillaRagdoll.FileName), GuerrillaRagdoll.Table());
-        foreach (string line in sets.Write(cache, worldFolder, peopleFolder)) yield return line;
-        foreach (var (file, bytes) in rigs) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+        foreach (string line in sets.Write(overrides, worldFolder, peopleFolder)) yield return line;
+        foreach (var (file, bytes) in rigs) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.People, file), bytes);
         Directory.CreateDirectory(peopleFolder);
         File.WriteAllLines(Path.Combine(peopleFolder, RigList), rigs.Keys.Order(StringComparer.OrdinalIgnoreCase));
         File.WriteAllLines(Path.Combine(peopleFolder, PeopleList), made);
         // Guerrilla's material shaders' skinned rewrites, which the people's materials name.
-        var shaders = GuerrillaShaders.WriteSkinned(gameCache, cache);
+        var shaders = GuerrillaShaders.WriteSkinned(gameCache, overrides);
         yield return $"Shaders: {shaders.Count} skinned effect files of Guerrilla's material shaders";
         yield return $"Characters: {ourCharacters.Entries.Count()} of the {MaxCharacters} the game holds";
         yield return made.Count == 0 ? "No characters built." : $"People: {string.Join(", ", made)}";
@@ -490,7 +488,6 @@ public static class GuerrillaPeople
     /// <summary>Takes away everything <see cref="Build"/> wrote.</summary>
     public static IEnumerable<string> Remove(string game, string overrides, string worldFolder, string peopleFolder)
     {
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
         var gameTables = Packfile.Open(Path.Combine(game, "build", "pc", "cache", "misc.vpp_pc"));
         var own = ReadOwn(peopleFolder);
         // Our entries out of the shared animation lists (each kept if another tool's are still in it).
@@ -503,7 +500,7 @@ public static class GuerrillaPeople
             if (before > 0) { File.WriteAllBytes(path, x.ToBytes()); yield return $"{table}: {before} of ours taken out"; }
         }
         foreach (string set in own.Where(o => o.Kind == "set").Select(o => o.Name))
-            if (set.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(Path.Combine(cache, set))) { File.Delete(Path.Combine(cache, set)); yield return $"Deleted {Path.Combine(cache, set)}"; }
+            foreach (string file in OverrideLayout.Delete(overrides, set)) yield return $"Deleted {file}";
         string animationFolder = Path.Combine(peopleFolder, AnimationFolder);
         if (Directory.Exists(animationFolder))
         {
@@ -516,11 +513,8 @@ public static class GuerrillaPeople
         {
             string path = Path.Combine(peopleFolder, list);
             if (!File.Exists(path)) continue;
-            foreach (string line in File.ReadAllLines(path).Select(l => l.Trim()).Where(l => l.Length > 0 && l.IndexOfAny(Path.GetInvalidFileNameChars()) < 0))
-            {
-                string file = Path.Combine(cache, list == PeopleList ? line + ".str2_pc" : line);
-                if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-            }
+            foreach (string line in File.ReadAllLines(path).Select(l => l.Trim()).Where(l => l.Length > 0))
+                foreach (string file in OverrideLayout.Delete(overrides, list == PeopleList ? line + ".str2_pc" : line)) yield return $"Deleted {file}";
             File.Delete(path);
             yield return $"Deleted {path}";
         }
@@ -1416,17 +1410,16 @@ public static class GuerrillaPeople
         }
 
         /// <summary>
-        /// Writes the sets' tables (overrides\build\pc\cache\), the animations (mods\guerrilla_people\animations\,
+        /// Writes the sets' tables (overrides\build\pc\cache\guerrilla\people\), the animations (mods\guerrilla_people\animations\,
         /// which the guerrilla_people mod loads; an earlier run's go), the shared lists (mods\guerrilla_world\), and
         /// what is ours in them (mods\guerrilla_people\).
         /// </summary>
-        public IEnumerable<string> Write(string cache, string worldFolder, string peopleFolder)
+        public IEnumerable<string> Write(string overrides, string worldFolder, string peopleFolder)
         {
             yield return AnimTriggerPools.Check(fileList);  // refuses (throws) before anything is written
-            Directory.CreateDirectory(cache);
             Directory.CreateDirectory(worldFolder);
             Directory.CreateDirectory(peopleFolder);
-            foreach (var (file, data) in setTables) File.WriteAllBytes(Path.Combine(cache, file), data);
+            foreach (var (file, data) in setTables) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.People, file), data);
             string folder = Path.Combine(peopleFolder, AnimationFolder);
             Directory.CreateDirectory(folder);
             foreach (string old in Directory.EnumerateFiles(folder, "*.anim_pc").ToList()) File.Delete(old);

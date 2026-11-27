@@ -1,0 +1,98 @@
+<UserControl x:Class="RfaEditor.EffectView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- An effect (.cefct_pc/.gefct_pc): played, what it is made of, its textures, and the effects.xtbl entries that use it -->
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="ShowIf" />
+    </UserControl.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="340" MinHeight="120" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" MinHeight="80" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="120" MinHeight="40" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="SummaryText" Grid.Row="0" TextWrapping="Wrap" Margin="0,0,0,6" />
+
+        <!-- Playing it -->
+        <WrapPanel Grid.Row="1" Margin="0,0,0,4">
+            <Button x:Name="PlayButton" Content="Pause" Click="OnPlayPause" Style="{StaticResource PrimaryButton}" Margin="0,0,6,4" MinWidth="70"
+                    ToolTip="Pause or go on (Space)" />
+            <Button Content="Restart" Click="OnRestart" Margin="0,0,6,4" MinWidth="70" ToolTip="Start the effect again from nothing" />
+            <CheckBox x:Name="LoopBox" Content="Loop" IsChecked="True" Click="OnLoop" VerticalAlignment="Center" Margin="6,0,10,4"
+                      ToolTip="Play it again and again (as an effect that keeps going, such as a fire); off: once, its particles left to die" />
+            <ComboBox x:Name="SpeedList" Width="80" SelectedIndex="2" Margin="0,0,10,4" ToolTip="How fast it plays">
+                <ComboBoxItem Content="× 0.25" Tag="0.25" />
+                <ComboBoxItem Content="× 0.5" Tag="0.5" />
+                <ComboBoxItem Content="× 1" Tag="1" />
+                <ComboBoxItem Content="× 2" Tag="2" />
+            </ComboBox>
+            <TextBlock x:Name="PlayText" VerticalAlignment="Center" Foreground="{StaticResource DimTextBrush}" TextWrapping="Wrap" Margin="4,0,0,4" />
+        </WrapPanel>
+        <Border x:Name="PlayerArea" Grid.Row="2" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="6" ClipToBounds="True"
+                Background="Black" Focusable="True" SizeChanged="OnPlayerResized"
+                MouseLeftButtonDown="OnPlayerDown" MouseMove="OnPlayerMove" MouseLeftButtonUp="OnPlayerUp" MouseWheel="OnPlayerWheel"
+                KeyDown="OnPlayerKey"
+                ToolTip="Drag to turn around the effect, wheel to come closer. The grid's lines are a metre apart.">
+            <Image x:Name="PlayerImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
+        </Border>
+        <GridSplitter Grid.Row="3" Height="6" HorizontalAlignment="Stretch" Background="Transparent" />
+
+        <TextBlock Grid.Row="4" Text="TEXTURES" Style="{StaticResource SectionTitle}" Margin="0,4,0,4" />
+        <ScrollViewer Grid.Row="5" MaxHeight="160" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl x:Name="TextureStrip">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="6" Margin="0,0,8,8" Padding="6"
+                                Background="{StaticResource ViewportBrush}" Width="112" ToolTip="{Binding Tip}">
+                            <StackPanel>
+                                <Grid Width="98" Height="78">
+                                    <Image Source="{Binding Picture}" Stretch="Uniform" />
+                                    <TextBlock Text="{Binding Missing}" Foreground="{StaticResource DimTextBrush}" TextWrapping="Wrap"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" FontSize="11" />
+                                </Grid>
+                                <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" FontSize="11" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <TextBlock Grid.Row="6" Text="PARTS" Style="{StaticResource SectionTitle}" Margin="0,6,0,4" />
+        <ListView x:Name="PartList" Grid.Row="7" ScrollViewer.VerticalScrollBarVisibility="Auto" SelectionMode="Single"
+                  SelectionChanged="OnPartChosen">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Shown" Width="54">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding Shown, Mode=TwoWay}" Visibility="{Binding CanHide, Converter={StaticResource ShowIf}}"
+                                          ToolTip="Play the effect with this part (untick to leave it out)" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Kind" Width="80" DisplayMemberBinding="{Binding Kind}" />
+                    <GridViewColumn Header="Name" Width="210" DisplayMemberBinding="{Binding Name}" />
+                    <GridViewColumn Header="What" Width="440" DisplayMemberBinding="{Binding What}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <GridSplitter Grid.Row="8" Height="6" HorizontalAlignment="Stretch" Background="Transparent" />
+        <TextBox x:Name="DetailsBox" Grid.Row="9" IsReadOnly="True" FontFamily="Consolas" FontSize="12" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" />
+    </Grid>
+</UserControl>

@@ -106,7 +106,7 @@ static class TableCheck
                      : $"({banks - GuerrillaSoundBanks.GameBankLimit} too many: the game would load no sound at all; {GuerrillaSoundBanks.BankTable} in mods\\guerrilla_world\\)"));
         if (banks > GuerrillaSoundBanks.GameBankLimit) bad++;
         // The interface's sheet table against the sheets and pictures the game takes from it (guerrilla_hud's raised limits).
-        string sheetTable = Path.Combine(setup.Cache, RfaFormats.Interface.GuerrillaHud.SheetTableName + ".xtbl");
+        string sheetTable = setup.NewFile(RfaFormats.Guerrilla.OverrideLayout.Hud, RfaFormats.Interface.GuerrillaHud.SheetTableName + ".xtbl");
         if (File.Exists(sheetTable))
         {
             var (sheets, pictures) = RfaFormats.Interface.GuerrillaHud.SheetTableCounts(Encoding.Latin1.GetString(File.ReadAllBytes(sheetTable)));
@@ -130,7 +130,9 @@ static class TableCheck
         bool constraints = ConstraintCheck.Run(setup, log);
         // And our sound banks, every event played without speakers on rfa_audio's engine (SoundCheck).
         bool sounds = SoundCheck.Run(setup, log);
-        return bad == 0 && solid && ladders && cloth && constraints && sounds;
+        // And the parts' files: each one a part wrote still there, and no new file's name twice (FileLists).
+        bool layout = new FileLists(setup).Check(log);
+        return bad == 0 && solid && ladders && cloth && constraints && sounds && layout;
     }
 
     /// <summary>
@@ -142,14 +144,13 @@ static class TableCheck
     /// </summary>
     static bool DistanceCheck(Setup setup, BuildLog log)
     {
-        string cache = Path.Combine(setup.Overrides, "build", "pc", "cache");
-        if (!Directory.Exists(cache)) return true;
         byte[] placed = [0x00, 0x00, 0xC8, 0x42, 0x01, 0x03, 0x00, 0x00, 0x00];  // 3D, game-defined (WwiseBankWriter.NodeBase)
         int withFade = 0, without = 0, sharedIds = 0;
         var lacking = new List<string>();
         // Each curve's id: Armageddon's are all different, and ours must be too (726 of our fades had one id, 2026-11-19).
         var curveIds = new HashSet<uint>();
-        foreach (string file in Directory.EnumerateFiles(cache, "rfg*.bnk_pc").Where(f => !f.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase)))
+        foreach (string file in RfaFormats.Guerrilla.OverrideLayout.FindAll(setup.Overrides, "rfg*.bnk_pc")
+                                    .Where(f => !f.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase)))
         {
             byte[] d = File.ReadAllBytes(file);
             for (int o = 0; o + 8 <= d.Length;)

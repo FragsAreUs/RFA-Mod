@@ -7,6 +7,7 @@
 #include "rfa_audio.h"
 #include "worker.h"
 
+#include <algorithm>
 #include <deque>
 #include <functional>
 #include <map>
@@ -31,6 +32,11 @@ struct GameObject {
     bool placed = false;  // never given a place: it is where the listener is
     std::unordered_map<uint32_t, uint32_t> switches;
     std::unordered_map<uint32_t, float> parameters;
+    float obstruction = 0, occlusion = 0;                   // 0-100, as the game gives Wwise
+    std::vector<std::pair<uint32_t, float>> environments;   // the reverbs its sounds go to, each by how much (0-1)
+    // Its speed (m/s), from its places over time (for Doppler); the place and time it was last measured from.
+    Vec3 velocity, sampled;
+    double sampledAt = -1;
 };
 
 // A gain moving in a straight line from one value to another over a time.
@@ -43,6 +49,15 @@ struct Fade {
 struct Play;
 
 // A voice: a sound instance's medium on an OpenAL source, or virtual (no source: too quiet, or none free).
+// A voice moving on its node's paths (3D on paths, around the listener): the node, the path, its random offset, and
+// when it set out on it.
+struct PathState {
+    const Node* node = nullptr;
+    uint32_t path = 0;
+    float dx = 0, dz = 0;
+    double start = 0;
+};
+
 struct Voice {
     MediumInfo medium;
     std::shared_ptr<Decoded> decoded;  // decoded whole (from the cache), or
@@ -63,6 +78,9 @@ struct Voice {
     double startedAt = 0;              // when it started (again)
     bool virtualVoice = false, ended = false, everPlayed = false;
     double quietGraceUntil = 0;        // too quiet at its start: it waits, virtual, till then for its place (0: none)
+    PathState path;                    // on its node's paths (path.node null: at its object)
+    uint32_t sentTo[4] = {};           // the reverbs its sends go to now, and by how much (set again only on a change)
+    float sentGain[4] = {};
     float levelDb = -999, distance = 0;
     int priority = 50;
     WhenQuiet whenQuiet = WhenQuiet::PlayOn;
@@ -107,6 +125,7 @@ struct Play {
     bool paused = false;               // paused on its own (rfa_audio_pause_playing): its time stands still
     double pausedAt = 0;
     bool controlsOnly = false;         // its event's plays left out (rfa_audio_post_controls): another engine plays them
+    bool startNoted = false;           // its first voice's start told (rfa_audio_set_start_callback)
 };
 
 // What OpenAL Soft's panning loses for a mono sound (dB, all outputs' power against the sound's), on a grid of
@@ -126,6 +145,10 @@ struct PendingAction {
     const Action* action = nullptr;
 };
 
+struct StartNote {
+    uint32_t playingId, bankId, mediumId;
+};
+
 struct EndNote {
     uint32_t playingId, eventId;
     uint64_t object;
@@ -139,6 +162,16 @@ public:
     Library library;
     OpenAl al;
     rfa_audio_end_callback endCallback = nullptr;
+    rfa_audio_start_callback startCallback = nullptr;
+    void* startUser = nullptr;
+    std::vector<StartNote> starts;
+    std::vector<StartNote> TakeStarts()
+    {
+        std::vector<StartNote> taken;
+        taken.swap(starts);
+        return taken;
+    }
+    int MediumPrefix(uint32_t bankId, uint32_t mediumId, uint8_t* out, int max);
     rfa_audio_log_callback logCallback = nullptr;  // (rfa_audio_set_log_callback)
     void* logUser = nullptr;
     int quietLogsLeft = 0;
@@ -169,6 +202,17 @@ public:
 
     void SetPosition(uint64_t object, const float* position, const float* front);
     void SetListener(const float* position, const float* front, const float* up);
+    // Space (step 4): an object's obstruction and occlusion, its environments (the reverbs its sounds go to), and
+    // Doppler (0 off; 1 as sound travels; the speeds are measured from the places given).
+    void SetObstruction(uint64_t object, float obstruction, float occlusion);
+    void SetEnvironments(uint64_t object, const uint32_t* ids, const float* values, int count);
+    void SetDoppler(float factor);
+    // Guerrilla's occlusion (engine.cpp, "Guerrilla's occlusion"): a ray of the listener's as the game casts it, which
+    // occlusion 3D sounds get (0 the obstruction through init.bnk's curves, Armageddon's way; 1 Guerrilla's), and how it
+    // stands (the voices muffled at the last update, the most, the listener's enclosure, the room's reverb type).
+    void SetListenerRay(int direction, int hits, const float* distances, const int* materials, bool blocked);
+    void SetOcclusionModel(int model) { occlusionModel = model == 1 ? 1 : 0; }
+    int OcclusionStatus(float& most, float& enclosure, int& reverbType) const;
     void SetParameter(uint64_t object, uint32_t parameter, float value);
     void ResetParameter(uint64_t object, uint32_t parameter);
     void SetSwitch(uint64_t object, uint32_t group, uint32_t value);
@@ -202,6 +246,7 @@ public:
     void EventInfo(uint32_t eventId, rfa_audio_event_info& out);
     // The buses an event's plays go through that duck other buses (for the hybrid's mirror of Wwise's sounds).
     std::vector<uint32_t> EventDuckingBuses(uint32_t eventId) const;
+    std::vector<uint32_t> NodeDuckingBuses(uint32_t nodeId) const;  // a node's (a voice line's), as an event's
     // What an event's actions act on (RFA_AUDIO_REACH_*), and from it where the hybrid sends it (RFA_AUDIO_ROUTE_*),
     // the banks `here` played by this engine.
     int EventReach(uint32_t eventId) const;
@@ -244,8 +289,17 @@ private:
         uint32_t bus = 0;
         WhenQuiet whenQuiet = WhenQuiet::PlayOn;
         float lowPass = 0;     // Wwise's low-pass (0 none, 100 the most): the nodes', their curves', the distance's
+        float spread = 0;      // its attenuation's spread at its distance (0 a point, 100 all around)
+        float occlusion = 0;   // Guerrilla's (0-5), when it muffles this voice
     };
     Level LevelOf(const Instance& in, const GameObject& object) const;
+    // The node whose 3D settings a node takes (its own, or the first above it that has them, or the top's).
+    const Node* PositioningNode(const Node* n) const;
+    // 3D on paths: a voice set out on one of its node's paths, and where it is on them now (around the listener: x
+    // right, y up, z ahead, metres).
+    void StartPath(Voice& v, const Node* positioning);
+    Vec3 PathPlace(const Voice& v) const;
+    std::unordered_map<uint32_t, uint32_t> nextPath;  // each node's next path, played in sequence
     float ParameterValue(const GameObject& object, uint32_t parameter, float distance) const;
     // A voice ended too quiet, written to the log callback with its level's parts (once an event).
     void LogQuiet(const Instance& in, const GameObject& object, float levelDb);
@@ -265,6 +319,43 @@ private:
     GameObject& Object(uint64_t id);
     const Node* LimitOwner(const Node* node) const;
     Vec3 ToListener(const Vec3& position) const;
+    Vec3 ToListenerDirection(const Vec3& direction) const;  // a direction (a speed) as the listener sees it
+    // A speed measured from places over time: smoothed, and nothing once the places stop coming.
+    void Measure(Vec3& velocity, Vec3& sampled, double& sampledAt, const Vec3& place);
+    // Reverb: init.bnk's Matrix Reverb sets (FXPR) as EFX reverbs, each on a slot of its own, made the first time an
+    // object's environment names it; a voice's sends to its object's environments, by how much.
+    struct ReverbSlot {
+        ALuint slot = 0, effect = 0;
+    };
+    std::unordered_map<uint32_t, ReverbSlot> reverbSlots;
+    ALuint ReverbSlotFor(uint32_t environment);
+    void ApplySends(Voice& v, const GameObject& object, bool spatial);
+    int maxSends = 0;                                  // OpenAL Soft's sends a source (0: no reverb)
+    std::unordered_map<ALuint, std::vector<ALuint>> sendFilters;  // each source's sends' gains
+    float dopplerFactor = 0;
+    Vec3 listenerVelocity, listenerSampled;
+    double listenerSampledAt = -1;
+    // Guerrilla's occlusion: the listener's rays (its audiolib_raycast_data: the first three hits, valid when the first is
+    // within 45 m), the room they make (audiolib_room_dimensions), the listener's enclosure (its listener_fov).
+    struct ListenerRay {
+        int hits = 0;
+        float distance[3] = {};
+        int material[3] = {};
+        bool valid = false, blocked = false;
+    };
+    ListenerRay listenerRays[26];
+    struct Room {
+        int shape = 0, size = 0, reverbType = 0;
+        float volume = 0, height = 0, northSouth = 0, eastWest = 0, northEastSouthWest = 0, northWestSouthEast = 0;
+        bool valid = false;
+    } room;
+    float listenerEnclosure = 0;
+    int occlusionModel = 0;
+    int occludedVoices = 0;  // at the last update, and the most of them
+    float mostOcclusion = 0;
+    float RayDistance(int direction) const;
+    void WorkOutRoom();
+    float GuerrillaOcclusion(const Vec3& toSound, float distance, float distanceMin) const;
     Play* FindPlay(uint32_t playingId) const;
     uint32_t NewPlay(uint32_t eventId, uint64_t object);
     void DescribeNode(const Node& node, int depth, std::string& text);
@@ -276,6 +367,7 @@ private:
     int sampleRate = 48000, maxSources = 128;
     int directChannels = 0;        // AL_DIRECT_CHANNELS_SOFT's value for a 2D stereo voice (0: OpenAL Soft can't)
     bool canUnspatialize = false;  // AL_SOURCE_SPATIALIZE_SOFT is there (2D mono voices aren't panned)
+    bool canSpread = false;        // AL_SOURCE_RADIUS is there (AL_EXT_SOURCE_RADIUS: a spread sound)
     PanningLoss panning;           // what OpenAL Soft's panning loses for a mono voice, by direction (made up for)
     float threshold = Silent;
     double now = 0;
@@ -297,10 +389,25 @@ private:
     std::unordered_map<uint32_t, float> globalParameters;
     std::unordered_map<uint32_t, uint32_t> states;
     // What actions have set on a node (set volume, pitch, low-pass; mute), for one object or every one (0).
+    // A value an action sets, moving to it over the action's fade along the fade's curve (Wwise's shapes).
+    struct Ramp {
+        float from = 0, to = 0;
+        double start = 0, seconds = 0;
+        uint32_t shape = 4;
+        float At(double now) const;
+        void Go(float value, double now, double fadeSeconds, uint32_t fadeShape);
+        bool Settled(double now) const { return seconds <= 0 || now >= start + seconds; }
+    };
+    // What actions set on a node or bus: volume (dB), pitch (cents), low-pass (0-100), and a mute (0 heard, 1 silent:
+    // silent, but not "too quiet", so a mute doesn't end voices or make them virtual).
     struct ActionValues {
-        float volume = 0, pitch = 0, lowPass = 0;
-        bool muted = false;  // silent, but not "too quiet" (a mute doesn't end voices or make them virtual)
-        bool Empty() const { return volume == 0 && pitch == 0 && lowPass == 0 && !muted; }
+        Ramp volume, pitch, lowPass, mute;
+        float MuteGain(double now) const { return 1.0f - std::clamp(mute.At(now), 0.0f, 1.0f); }
+        bool Empty(double now) const
+        {
+            return volume.Settled(now) && pitch.Settled(now) && lowPass.Settled(now) && mute.Settled(now) && volume.to == 0 && pitch.to == 0 &&
+                   lowPass.to == 0 && mute.to == 0;
+        }
     };
     using ActionKeyType = std::pair<uint32_t, uint64_t>;
     static ActionKeyType ActionKey(uint32_t node, uint64_t object) { return {node, object}; }

@@ -189,6 +189,49 @@ public sealed class VintDocument
         return (BitConverter.ToSingle(body, property.ValueAt), BitConverter.ToSingle(body, property.ValueAt + 4));
     }
 
+    /// <summary>
+    /// A property's value as numbers, whatever its type: 1 an int, 2 an unsigned int, 3 a float, 5 a byte (a bool), 6 three
+    /// floats (a colour), 7 two floats; null for a string (4: read it with <see cref="Text"/>).
+    /// </summary>
+    public float[]? Numbers(VintProperty property) => property.ValueType switch
+    {
+        1 => [BitConverter.ToInt32(body, property.ValueAt)],
+        2 => [BitConverter.ToUInt32(body, property.ValueAt)],
+        3 => [BitConverter.ToSingle(body, property.ValueAt)],
+        5 => [body[property.ValueAt]],
+        6 => [BitConverter.ToSingle(body, property.ValueAt), BitConverter.ToSingle(body, property.ValueAt + 4), BitConverter.ToSingle(body, property.ValueAt + 8)],
+        7 => [BitConverter.ToSingle(body, property.ValueAt), BitConverter.ToSingle(body, property.ValueAt + 4)],
+        _ => null,
+    };
+
+    /// <summary>Changes a number property's value in place (as many numbers as its type holds: see <see cref="Numbers"/>).</summary>
+    public void SetNumbers(VintProperty property, IReadOnlyList<float> numbers)
+    {
+        Span<byte> at = body.AsSpan(property.ValueAt);
+        switch (property.ValueType)
+        {
+            case 1: BitConverter.TryWriteBytes(at, (int)MathF.Round(numbers[0])); break;
+            case 2: BitConverter.TryWriteBytes(at, (uint)Math.Max(0, MathF.Round(numbers[0]))); break;
+            case 3: BitConverter.TryWriteBytes(at, numbers[0]); break;
+            case 5: at[0] = (byte)Math.Clamp(MathF.Round(numbers[0]), 0, 255); break;
+            case 6:
+                for (int i = 0; i < 3; i++) BitConverter.TryWriteBytes(at[(4 * i)..], numbers[i]);
+                break;
+            case 7:
+                for (int i = 0; i < 2; i++) BitConverter.TryWriteBytes(at[(4 * i)..], numbers[i]);
+                break;
+            default: throw new ArgumentException($"value type {property.ValueType} holds no numbers", nameof(property));
+        }
+    }
+
+    /// <summary>The document's metadata value for a key (lua_script_file: its script), or null.</summary>
+    public string? MetadataValue(string key)
+    {
+        foreach (var (k, v) in Metadata)
+            if (string.Equals(Text(k), key, StringComparison.OrdinalIgnoreCase)) return Text(v);
+        return null;
+    }
+
     /// <summary>Changes a two-float property's value in place.</summary>
     public void SetVector2(VintProperty property, float x, float y)
     {

@@ -24,7 +24,7 @@ static class CollisionCheck
     /// <summary>Checks the world's rocks; logs what it finds. False if any tree hides collision or a rock has none.</summary>
     public static bool Run(Setup setup, BuildLog log)
     {
-        var archives = new[] { "rfg_precache.vpp_pc", "rfg_l1.vpp_pc", "rfg_l0.vpp_pc" }.Select(a => Path.Combine(setup.Cache, a)).ToList();
+        var archives = new[] { "rfg_precache.vpp_pc", "rfg_l1.vpp_pc", "rfg_l0.vpp_pc" }.Select(a => setup.NewFile(RfaFormats.Guerrilla.OverrideLayout.World, a)).ToList();
         if (!archives.All(File.Exists))
         {
             log.Line("Collision check: no Guerrilla world built here");

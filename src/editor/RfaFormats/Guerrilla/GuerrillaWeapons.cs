@@ -460,17 +460,14 @@ public static class GuerrillaWeapons
         var backpackMedia = BackpackMedia(Packfile.Open(Path.Combine(guerrilla, "build", "pc", "cache", "misc.vpp_pc")));
         foreach (string line in b.BackpackShakes(backpackMedia.Shakes)) yield return line;
 
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
-        Directory.CreateDirectory(cache);
-        foreach (var (file, bytes) in b.Containers) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+        foreach (var (file, bytes) in b.Containers) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Weapons, file), bytes);
         // The character-mesh items' skeletons: new files the guerrilla_vehicles mod has the game load with its own
         // at start-up (it reads mods\guerrilla_gear\rigs.txt beside its own list); an earlier build's that aren't
         // made now go.
         string rigList = Path.Combine(GearFolder(modFolder), RigList);
         foreach (string old in File.Exists(rigList) ? File.ReadAllLines(rigList).Select(l => l.Trim()) : [])
-            if (old.Length > 0 && !b.Rigs.ContainsKey(old) && old.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(Path.Combine(cache, old)))
-                File.Delete(Path.Combine(cache, old));
-        foreach (var (file, bytes) in b.Rigs) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+            if (!b.Rigs.ContainsKey(old)) OverrideLayout.Delete(overrides, old);
+        foreach (var (file, bytes) in b.Rigs) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Weapons, file), bytes);
         Directory.CreateDirectory(GearFolder(modFolder));
         File.WriteAllLines(rigList, b.Rigs.Keys.Order(StringComparer.OrdinalIgnoreCase));
         string listFile = Path.Combine(overrides, ItemList);
@@ -524,7 +521,6 @@ public static class GuerrillaWeapons
     static HashSet<uint> OtherPartsEvents(string overrides, string modFolder)
     {
         var events = new HashSet<uint>();
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
         foreach (string list in Directory.Exists(modFolder) ? Directory.EnumerateFiles(modFolder, "*sound_banks.txt") : [])
         {
             if (Path.GetFileName(list).Equals(SoundPart + "_sound_banks.txt", StringComparison.OrdinalIgnoreCase)) continue;
@@ -533,8 +529,7 @@ public static class GuerrillaWeapons
                 string text = line.Trim();
                 if (text.Length == 0 || text.StartsWith("pair ", StringComparison.Ordinal)) continue;
                 string bank = text.StartsWith("bank ", StringComparison.Ordinal) ? text[5..].Trim() : text;  // the first list: a bank a line
-                string file = Path.Combine(cache, bank + ".bnk_pc");
-                if (bank.Length == 0 || bank.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || !File.Exists(file)) continue;
+                if (OverrideLayout.Find(overrides, bank + ".bnk_pc") is not { } file) continue;
                 byte[] d = File.ReadAllBytes(file);
                 for (int at = 0; at + 8 <= d.Length;)
                 {
@@ -617,10 +612,7 @@ public static class GuerrillaWeapons
         {
             var gameItems = Packfile.Open(Path.Combine(game, "build", "pc", "cache", "items.vpp_pc"));
             foreach (var c in AsmFile.Read(File.ReadAllBytes(listFile)).Containers.Where(c => gameItems.Find(c.FileName) == null))
-            {
-                string file = Path.Combine(overrides, "build", "pc", "cache", c.FileName);
-                if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-            }
+                foreach (string file in OverrideLayout.Delete(overrides, c.FileName)) yield return $"Deleted {file}";
             File.Delete(listFile);
             yield return $"Deleted {listFile}";
         }
@@ -634,11 +626,8 @@ public static class GuerrillaWeapons
         string rigList = Path.Combine(GearFolder(modFolder), RigList);
         if (File.Exists(rigList))
         {
-            foreach (string rig in File.ReadAllLines(rigList).Select(l => l.Trim()).Where(l => l.Length > 0 && l.IndexOfAny(Path.GetInvalidFileNameChars()) < 0))
-            {
-                string file = Path.Combine(overrides, "build", "pc", "cache", rig);
-                if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-            }
+            foreach (string rig in File.ReadAllLines(rigList).Select(l => l.Trim()))
+                foreach (string file in OverrideLayout.Delete(overrides, rig)) yield return $"Deleted {file}";
             File.Delete(rigList);
             yield return $"Deleted {rigList}";
         }

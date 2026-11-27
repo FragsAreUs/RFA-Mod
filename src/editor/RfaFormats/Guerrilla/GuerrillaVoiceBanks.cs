@@ -191,10 +191,9 @@ public static class GuerrillaVoiceBanks
         foreach (string line in banks.Write(game, overrides, worldModFolder)) yield return "sounds: " + line;
 
         // What it costs: the media on disk, the banks Wwise holds while loaded.
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
-        long Size(string file) => File.Exists(file) ? new FileInfo(file).Length : 0;
+        long Size(string file) => OverrideLayout.Find(overrides, file) is { } path ? new FileInfo(path).Length : 0;
         var built = banks.Banks.ToList();
-        long media = built.Sum(b => Size(Path.Combine(cache, b.Name + "_media.bnk_pc"))), events = built.Sum(b => Size(Path.Combine(cache, b.Name + ".bnk_pc")));
+        long media = built.Sum(b => Size(b.Name + "_media.bnk_pc")), events = built.Sum(b => Size(b.Name + ".bnk_pc"));
         var check = built.Aggregate((Worst: double.MaxValue, Sum: 0d, Count: 0), (a, b) =>
             (Math.Min(a.Worst, b.AdpcmCheck.Worst), a.Sum + b.AdpcmCheck.Sum, a.Count + b.AdpcmCheck.Count));
         string average = (check.Sum / Math.Max(1, check.Count)).ToString("0.#", CultureInfo.InvariantCulture);

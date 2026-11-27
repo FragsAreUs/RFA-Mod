@@ -30,6 +30,24 @@
 //   0xB8AB30, 0xB8ABA0, 0xB8ABF0  pause, resume and stop the game's sounds (effects, music)   the same, for effects
 //   0xB98A20  Wwise's callback (type, info): the end of one of Armageddon's events (for the mirror, below)
 //   0xB98110  unload a bank (the bank manager's record; its id at +0x40)   Wwise as before; our player stops its sounds
+//   0xB98430  a sound object's obstruction (its byte +0x8D, 0-100; occlusion always 0)   Wwise as before, and ours
+//   0xE59B20  Wwise's SetGameObjectEnvironmentsValues (object, values, count): the reverbs an object's sounds go to,
+//             as 0xB99130 and 0xB99180 give them (at most 4: an environment and how much)   Wwise as before, and ours
+//   0x5371D0  Armageddon's listener rays (its port of Guerrilla's gameaudio_update_listener_los), once a gameplay
+//             frame   as before; then ours for Guerrilla's occlusion ([Audio] Occlusion=1; see "Guerrilla's occlusion")
+//
+// Voices (step D). A voice line (the line: +4 its cookie, +8 the line, +0xC its dynamic sequence's id) on a sound
+// object (+0x14 its persona):
+//   0xB98590  play it (object, line): the persona's dialogue event (0xB7D400) resolved with (persona, line), played
+//             in a dynamic sequence whose callback is 0xB7E9E0; +0xC the sequence; the object's +0x8E counts it;
+//             message 5   a line of a voice bank Banks= names: our player plays the node, as Wwise would
+//   0xB987A0  stop it (object, line): message 8   0xB987E0  pause or resume it (object, line, pause): 7 or 5
+//   0xB98860  close its sequence (line): +0xC cleared (the sequence plays on to its end)
+//   0xB7E9E0  the sequence's callback (type, info: its cookie first): an item's end (2) posts 0x0B and 8, its duration
+//             (8) posts 0x0A. Ours post the same themselves; Wwise's lines end their mirror here.
+// Lip sync rides on the voice media: each starts with a "DMAV" block (+8 the persona, +0xC the line), which Wwise's
+// stream device hands to 0xB835A0 (block) as it reads; that finds the playing line by persona and line and gives the
+// mouth data to the lip-sync player. Our player hands it the block itself as the line's voice starts.
 //
 // Nothing in this build seeks (0xB84EF0, the only function that asks 0xB98C30 to, has no caller) or calls StopAll
 // (0xB97430). The one source plug-in the game stops itself (0xB95F60) is Wwise's Audio Input (0xC8), which stays on
@@ -71,7 +89,11 @@ namespace {
 
 // ---- The game's side ---------------------------------------------------------------------------------------------
 
-constexpr DWORD kCallback = 0xB98A20, kUnloadBank = 0xB98110;
+constexpr DWORD kCallback = 0xB98A20, kUnloadBank = 0xB98110, kObstruction = 0xB98430, kEnvironments = 0xE59B20;
+constexpr DWORD kVoicePlay = 0xB98590, kVoiceStop = 0xB987A0, kVoicePause = 0xB987E0, kVoiceClose = 0xB98860, kVoiceCallback = 0xB7E9E0;
+enum VoiceMessage { kVoiceDuration = 0x0A, kVoiceItemEnded = 0x0B };
+auto const PersonaDialogue = reinterpret_cast<uint32_t(__cdecl*)(uint32_t persona)>(0xB7D400);
+auto const GiveLipSync = reinterpret_cast<void(__cdecl*)(const uint8_t* block)>(0xB835A0);
 constexpr DWORD kPost = 0xB98A70, kStop = 0xB98DA0, kPause = 0xB98CD0, kSwitch = 0xB990A0, kParameter = 0xB98F10,
                 kState = 0xB996A0, kUnregister = 0xB98990, kPlaces = 0xB981C0, kListener = 0xB98190,
                 kPauseSounds = 0xB8AB30, kResumeSounds = 0xB8ABA0, kStopSounds = 0xB8ABF0;
@@ -92,6 +114,10 @@ using ObjectFn = int(__cdecl*)(uint8_t* object);
 using ListenerFn = int(__cdecl*)(const float* listener);
 using SoundsFn = int(__cdecl*)(uint32_t effects, uint32_t music);
 using CallbackFn = void(__cdecl*)(uint32_t type, const uint8_t* info);
+using EnvironmentsFn = int(__cdecl*)(uint32_t object, const uint8_t* values, uint32_t count);
+using VoiceFn = int(__cdecl*)(uint8_t* object, uint8_t* line);
+using VoicePauseFn = int(__cdecl*)(uint8_t* object, uint8_t* line, uint32_t pause);
+using VoiceCloseFn = int(__cdecl*)(uint8_t* line);
 
 PostFn g_post;
 StopFn g_stop;
@@ -99,7 +125,12 @@ PauseFn g_pause;
 SwitchFn g_switch;
 ParameterFn g_parameter;
 StateFn g_state;
-ObjectFn g_unregister, g_places, g_unloadBank;
+ObjectFn g_unregister, g_places, g_unloadBank, g_obstruction;
+EnvironmentsFn g_environments;
+VoiceFn g_voicePlay, g_voiceStop;
+VoicePauseFn g_voicePause;
+VoiceCloseFn g_voiceClose;
+CallbackFn g_voiceCallback;
 ListenerFn g_listener;
 SoundsFn g_pauseSounds, g_resumeSounds, g_stopSounds;
 CallbackFn g_callback;
@@ -126,6 +157,7 @@ std::atomic<bool> g_ready{false};        // the engine is open and the banks loa
 enum class Route : uint8_t { Wwise, Ours, Both, WwiseAndControls };
 std::unordered_map<uint32_t, Route> g_routes;
 std::unordered_set<uint32_t> g_ownedBanks;  // the banks Banks= names (filled before g_ready, read only after)
+std::unordered_set<uint32_t> g_ownedDialogue;  // their dialogue events (the voice banks'; the same)
 
 Route RouteFor(uint32_t eventId)
 {
@@ -137,6 +169,7 @@ std::mutex g_playsLock;                  // our plays' cookies; taken before the
 struct OurPlay {
     uint32_t cookie;
     bool stoppedByGame;
+    bool voice = false;  // a voice line's (its end posts 0x0B and 8; its start hands the game its lip sync)
 };
 std::unordered_map<uint32_t, OurPlay> g_plays;
 
@@ -194,6 +227,25 @@ void EndMirror(uint32_t cookie)
         g_mirrored.erase(it);
     }
     for (uint32_t bus : buses) rfa_audio_note_bus(bus, -1);
+}
+
+// A voice line Wwise plays: mirrored as an event is (its node's ducking buses), till the game's voice callback says it
+// ended (or the line is stopped), or 30 s.
+void MirrorVoice(uint32_t node, uint32_t cookie)
+{
+    uint32_t found[16];
+    int n = std::clamp(rfa_audio_node_ducking_buses(node, found, 16), 0, 16);
+    if (!n) return;
+    std::vector<uint32_t> before;
+    {
+        std::lock_guard<std::mutex> hold(g_mirrorLock);
+        Mirrored& m = g_mirrored[cookie];
+        before = std::move(m.buses);
+        m.buses.assign(found, found + n);
+        m.expires = GetTickCount64() + 30000;
+    }
+    for (uint32_t bus : before) rfa_audio_note_bus(bus, -1);
+    for (int i = 0; i < n; i++) rfa_audio_note_bus(found[i], 1);
 }
 
 void Mirror(uint32_t eventId, uint32_t cookie)
@@ -270,13 +322,14 @@ void SendPlace(const uint8_t* object)
 void OnEnd(uint32_t playingId, uint32_t eventId, uint64_t, int voices, void*)
 {
     uint32_t cookie = 0;
-    bool tell = false;
+    bool tell = false, voice = false;
     {
         std::lock_guard<std::mutex> hold(g_playsLock);
         auto it = g_plays.find(playingId);
         if (it == g_plays.end()) return;
         cookie = it->second.cookie;
         tell = !it->second.stoppedByGame;
+        voice = it->second.voice;
         g_plays.erase(it);
     }
     if (voices == 0 && rfa::DetailLog()) {
@@ -291,7 +344,27 @@ void OnEnd(uint32_t playingId, uint32_t eventId, uint64_t, int voices, void*)
         }
         if (first) rfa::LogDetail("Our event %08X ended without starting a voice (a limit, or a switch with nothing for its value)", eventId);
     }
-    if (tell) PostGameMessage(kEnded, cookie);
+    if (tell) {
+        if (voice) PostGameMessage(kVoiceItemEnded, cookie);  // as the voice callback 0xB7E9E0 does at an item's end
+        PostGameMessage(kEnded, cookie);
+    }
+}
+
+// A voice line of ours has started (its first voice; from the engine's thread, outside its lock): the game gets its
+// lip-sync block, as Wwise's stream device would give it, and its duration message, as Wwise's callback would post.
+void OnStart(uint32_t playingId, uint32_t bankId, uint32_t mediumId, void*)
+{
+    uint32_t cookie = 0;
+    {
+        std::lock_guard<std::mutex> hold(g_playsLock);
+        auto it = g_plays.find(playingId);
+        if (it == g_plays.end() || !it->second.voice) return;
+        cookie = it->second.cookie;
+    }
+    static uint8_t block[8192];  // (only the engine's thread calls this)
+    int bytes = rfa_audio_medium_prefix(bankId, mediumId, block, sizeof block);
+    if (bytes >= 0x24 && memcmp(block, "DMAV", 4) == 0) GiveLipSync(block);
+    PostGameMessage(kVoiceDuration, cookie);
 }
 
 // The engine's own lines (with Log=1): each voice ended too quiet to hear, with its level's parts.
@@ -435,6 +508,104 @@ int __cdecl ListenerHook(const float* listener)
     return result;
 }
 
+// A sound object's obstruction, as the game gives Wwise (its byte +0x8D, 0-100; occlusion is always 0).
+int __cdecl ObstructionHook(uint8_t* object)
+{
+    int result = g_obstruction(object);
+    if (Open() && object) rfa_audio_set_obstruction(reinterpret_cast<uintptr_t>(object), object[0x8D], 0);
+    return result;
+}
+
+// The reverbs a sound object's sounds go to (Wwise's AkEnvironmentValue: an environment, how much), as Wwise gets them.
+int __cdecl EnvironmentsHook(uint32_t object, const uint8_t* values, uint32_t count)
+{
+    int result = g_environments(object, values, count);
+    if (Open() && object && count <= 4) {
+        uint32_t ids[4] = {};
+        float amounts[4] = {};
+        for (uint32_t i = 0; i < count && values; i++) {
+            memcpy(&ids[i], values + 8 * i, 4);
+            memcpy(&amounts[i], values + 8 * i + 4, 4);
+        }
+        rfa_audio_set_environments(object, ids, amounts, static_cast<int>(count));
+    }
+    return result;
+}
+
+// A voice line (see the top): a persona's line whose dialogue event is in a voice bank of ours plays on our player.
+int __cdecl VoicePlayHook(uint8_t* object, uint8_t* line)
+{
+    if (!Ready() || !object || !line || !WwiseStarted()) return g_voicePlay(object, line);
+    const uint32_t persona = U32(object, 0x14), lineId = U32(line, 8), cookie = U32(line, 4);
+    const uint32_t dialogue = PersonaDialogue(persona);
+    const uint32_t values[2] = {persona, lineId};
+    if (!dialogue || !g_ownedDialogue.count(dialogue)) {
+        // Wwise's: its ducking mirrored once it plays.
+        int result = g_voicePlay(object, line);
+        if (result == 0 && g_mirror && dialogue)
+            if (uint32_t node = rfa_audio_resolve_dialogue(dialogue, values, 2)) MirrorVoice(node, cookie);
+        return result;
+    }
+    const uint32_t node = rfa_audio_resolve_dialogue(dialogue, values, 2);
+    if (!node) return g_voicePlay(object, line);  // not ours to answer: Wwise's lookup (and its failure) as before
+    RFA_LOG_DETAIL_FIRST(1, "the first voice line of ours played (dialogue event %08X)", dialogue);
+    uintptr_t id = reinterpret_cast<uintptr_t>(object);
+    {
+        std::lock_guard<std::mutex> hold(g_objectsLock);
+        g_objects.insert(id);
+    }
+    SendPlace(object);
+    uint32_t playingId;
+    {
+        std::lock_guard<std::mutex> hold(g_playsLock);
+        playingId = rfa_audio_play_node(node, id);
+        if (playingId) g_plays[playingId] = {cookie, false, true};
+    }
+    if (!playingId) return g_voicePlay(object, line);
+    *reinterpret_cast<uint32_t*>(line + 0xC) = playingId;
+    object[0x8E] = static_cast<uint8_t>(object[0x8E] + 1);
+    PostGameMessage(kPosted, cookie);
+    return 0;
+}
+
+int __cdecl VoiceStopHook(uint8_t* object, uint8_t* line)
+{
+    if (Ready() && line && g_mirror && !Ours(U32(line, 0xC))) EndMirror(U32(line, 4));
+    if (!Ready() || !line || !Ours(U32(line, 0xC))) return g_voiceStop(object, line);
+    uint32_t playingId = U32(line, 0xC), cookie = U32(line, 4);
+    {
+        std::lock_guard<std::mutex> hold(g_playsLock);
+        if (auto it = g_plays.find(playingId); it != g_plays.end()) it->second.stoppedByGame = true;
+    }
+    rfa_audio_stop_playing(playingId, 10);
+    PostGameMessage(kEnded, cookie);
+    return 0;
+}
+
+int __cdecl VoicePauseHook(uint8_t* object, uint8_t* line, uint32_t pause)
+{
+    if (!Ready() || !line || !Ours(U32(line, 0xC))) return g_voicePause(object, line, pause);
+    bool pausing = (pause & 0xFF) != 0;
+    rfa_audio_pause_playing(U32(line, 0xC), pausing ? 1 : 0);
+    PostGameMessage(pausing ? kPaused : kPosted, U32(line, 4));
+    return 0;
+}
+
+// Closing a sequence of ours: nothing to close (the line plays on to its end, as a closed sequence's does).
+int __cdecl VoiceCloseHook(uint8_t* line)
+{
+    if (!Ready() || !line || !Ours(U32(line, 0xC))) return g_voiceClose(line);
+    *reinterpret_cast<uint32_t*>(line + 0xC) = 0;
+    return 0;
+}
+
+// The voice lines' callback (Wwise's lines): an item's end ends its mirror.
+void __cdecl VoiceCallbackHook(uint32_t type, const uint8_t* info)
+{
+    if ((type & 2) && info && g_mirror) EndMirror(U32(info, 0));
+    g_voiceCallback(type, info);
+}
+
 // The game unloads a bank (its record: the bank's id at +0x40): Wwise stops what plays from it, and so does our player
 // (which keeps the bank loaded: a bank the game loads again is ready at once).
 int __cdecl UnloadBankHook(uint8_t* record)
@@ -472,12 +643,222 @@ int __cdecl StopSoundsHook(uint32_t effects, uint32_t music)
     return result;
 }
 
+// ---- Guerrilla's occlusion ([Audio] Occlusion=1) ------------------------------------------------------------------
+// Our engine muffles each 3D sound by what stands between it and the listener, as Red Faction: Guerrilla does
+// (src\audio\engine.cpp, "Guerrilla's occlusion"), from rays round the listener cast here as Guerrilla's
+// gameaudio_update_listener_los casts them:
+//   - after Armageddon's own (0x5371D0, its port of that function, which the gameplay frame's sound-listener step runs
+//     once a frame: 0x540F50 -> 0x536C90), so on the game's thread, where the world may be cast into;
+//   - one of the 26 directions a frame, in Guerrilla's order (its table 0x165E300), two when the frame took less than
+//     40 ms; each a 50 m ray from the listener along the direction's vector (times 50), radius 0.1, every hit;
+//   - Guerrilla's one world-only ray is two in Armageddon (as guerrilla_world's SkyBlocked found): [0x1975F00] sees the
+//     terrain but goes through the buildings, which [0x1975EF0] sees. Their hits are taken together, the nearest first.
+// Of the hits, as Guerrilla's: one on the object last counted is passed over (a building's pieces count once), and one
+// within 0.4 m of the last counted too, though on a downward ray a clear one (a fence, a pole) then takes its place; at
+// most 4 count. Guerrilla also passes over hits on no object; Armageddon's terrain may be such, so here they count (the
+// log says how many there were). A hit's material is its effect material (+0x35; 0x683AC0) as Armageddon's port of
+// Guerrilla's gameaudio_material_lookup has it (0x537810: Terrain, Gravel, Ice, Sand and Stone are ground; the rest by
+// their shape: solid absorbs thick, a sheet or catwalk reflects thin, a pole or fence is clear). The ray is blocked if a
+// hit that counts is within 20 m (the listener's enclosure). With Log=1, every 30 s: the rays cast, what they cost the
+// game's thread, and what the engine made of them.
+
+constexpr DWORD kListenerRays = 0x5371D0;
+using FrameFn = void(__cdecl*)();
+FrameFn g_listenerRays;
+bool g_occlusion = false;  // Occlusion=1 and the hook in (set before our engine starts, read only after)
+
+// A ray through the world (0x7993C0, cdecl: the ray, its hits; true if it hit): from, to, its radius, +0x1C -1 (0x424AD0
+// sets the defaults), a filter's data and callback, the collision filter, the collector (1: every hit) and flags. Its
+// hits come back in a Havok array of 0x38-byte hit_info (Guerrilla's raycast_output::hit_info): here one of ours with the
+// top bit of its capacity set, which the game fills but frees only if it had to grow it (0x424CD0).
+struct Ray {
+    float from[3], to[3];
+    float radius;
+    int passThrough;
+    DWORD filterData, filterCallback, filter, collector, flags;
+};
+static_assert(sizeof(Ray) == 0x34, "the game's ray input");
+struct RayHit {
+    float at[3], centre[3], normal[3];
+    float along;  // how far along the ray, 0-1
+    DWORD object, shapeKey, body;
+    uint8_t physicalMaterial, effectMaterial, unused[2];
+};
+static_assert(sizeof(RayHit) == 0x38, "the game's ray hit");
+struct RayHits {
+    RayHit* hits;
+    int count;
+    DWORD capacityAndFlags;
+};
+auto const RayInit = reinterpret_cast<void(__fastcall*)(Ray* ray, void* unused)>(0x424AD0);      // thiscall
+auto const CastRay = reinterpret_cast<bool(__cdecl*)(const Ray* ray, RayHits* hits)>(0x7993C0);
+auto const FreeHits = reinterpret_cast<void(__fastcall*)(RayHits* hits, void* unused)>(0x424CD0);  // thiscall
+auto const ListenerPlace = reinterpret_cast<int(__cdecl*)(float* place, float* front)>(0xB8BCF0);  // 0 once audiolib runs
+auto const EffectMaterial = reinterpret_cast<const void*(__cdecl*)(uint8_t index)>(0x683AC0);
+auto const AudioMaterial = reinterpret_cast<int(__cdecl*)(const void* material, int direction)>(0x537810);
+const DWORD* const kTerrainRays = reinterpret_cast<const DWORD*>(0x1975F00);
+const DWORD* const kBuildingRays = reinterpret_cast<const DWORD*>(0x1975EF0);
+
+// Guerrilla's ray table (0x165E300): the directions in the order it casts them; and each direction's vector (as
+// audiolib_raycast_direction_vectors, AUDIOLIB_RAYCAST_DIRECTION order: not all of length 1).
+constexpr int kRayOrder[26] = {0, 1, 16, 20, 2, 6, 12, 24, 14, 18, 8, 4, 22, 10, 17, 21, 11, 23, 9, 5, 15, 13, 19, 25, 3, 7};
+constexpr float kRayVectors[26][3] = {
+    {0, 1, 0},           {0, -1, 0},              {0, 0, 1},           {0.707f, 0, 0.707f},       {1, 0, 0},
+    {0.707f, 0, -0.707f}, {0, 0, -1},             {-0.707f, 0, -0.707f}, {-1, 0, 0},              {-0.707f, 0, 0.707f},
+    {0, 0.707f, 1},      {0.707f, 0.707f, 0.707f}, {1, 0.707f, 0},     {0.707f, 0.707f, -0.707f}, {0, 0.707f, -1},
+    {-0.707f, 0.707f, -0.707f}, {-1, 0.707f, 0}, {-0.707f, 0.707f, 0.707f}, {0, -0.353f, 1},      {0.707f, -0.353f, 0.707f},
+    {1, -0.353f, 0},     {0.707f, -0.353f, -0.707f}, {0, -0.353f, -1},  {-0.707f, -0.353f, -0.707f}, {-1, -0.353f, 0},
+    {-0.707f, -0.353f, 0.707f}};
+constexpr float kRayLength = 50, kRayRadius = 0.1f, kBlockedWithin = 20, kSameHit = 0.4f, kShortFrame = 0.04f;
+constexpr int kMostCounted = 4, kMostHits = 32;  // hits that count on a ray; hits taken from each of its two casts
+
+int g_nextRay = 0;
+LARGE_INTEGER g_frequency{}, g_lastRays{};
+struct RaysCost {
+    LONGLONG ticks = 0, most = 0, windowStart = 0;
+    int frames = 0, casts = 0, hits = 0, noObject = 0;
+} g_raysCost;
+
+// One of Guerrilla's directions: its two casts, the hits that count, and the ray given to our engine.
+void CastOcclusionRay(const float listener[3], int direction)
+{
+    struct Hit {
+        float along;
+        DWORD object;
+        uint8_t effectMaterial;
+    };
+    Hit hits[2 * kMostHits];
+    int found = 0;
+    const DWORD filters[2] = {*kTerrainRays, *kBuildingRays};
+    for (DWORD filter : filters) {
+        RayHit own[kMostHits];
+        RayHits list = {own, 0, 0x80000000u | kMostHits};
+        Ray ray;
+        RayInit(&ray, nullptr);
+        for (int i = 0; i < 3; i++) {
+            ray.from[i] = listener[i];
+            ray.to[i] = listener[i] + kRayVectors[direction][i] * kRayLength;
+        }
+        ray.radius = kRayRadius;
+        ray.filterData = 0;
+        ray.filterCallback = 0;
+        ray.filter = filter;
+        ray.collector = 1;  // every hit (Guerrilla's COLLECT_ALL_HITS)
+        ray.flags = 0;
+        if (CastRay(&ray, &list) && list.hits)
+            for (int h = 0; h < list.count && found < 2 * kMostHits; h++) {
+                const RayHit& hit = list.hits[h];
+                hits[found++] = {hit.along, hit.object, hit.effectMaterial};
+            }
+        FreeHits(&list, nullptr);
+        g_raysCost.casts++;
+    }
+    std::sort(hits, hits + found, [](const Hit& a, const Hit& b) { return a.along < b.along; });
+    g_raysCost.hits += found;
+    float distances[kMostCounted] = {};
+    int materials[kMostCounted] = {};
+    int counted = 0;
+    bool blocked = false;
+    float last = 0;
+    DWORD lastObject = 0xFFFFFFFFu;
+    for (int i = 0; i < found && counted < kMostCounted; i++) {
+        const Hit& hit = hits[i];
+        if (hit.object == 0 || hit.object == 0xFFFFFFFFu) {
+            g_raysCost.noObject++;
+        } else {
+            if (hit.object == lastObject) continue;
+            lastObject = hit.object;
+        }
+        const int material = AudioMaterial(EffectMaterial(hit.effectMaterial), direction);
+        const float at = hit.along * kRayLength;
+        if (std::fabs(at - last) > kSameHit) {
+            distances[counted] = at;
+            materials[counted] = material;
+            counted++;
+            if (at < kBlockedWithin) blocked = true;
+            last = at;
+        } else if (i > 0 && counted > 0 && (direction == 1 || direction >= 18) && material == 0) {
+            distances[counted - 1] = at;
+            materials[counted - 1] = 0;
+            last = at;
+        }
+    }
+    rfa_audio_set_listener_ray(direction, counted, distances, materials, blocked ? 1 : 0);
+}
+
+// What the rays cost the game's thread, and (Log=1) every 30 s what they found and what our engine made of them.
+void NoteRaysCost(const LARGE_INTEGER& start, const LARGE_INTEGER& end)
+{
+    RaysCost& c = g_raysCost;
+    const LONGLONG took = end.QuadPart - start.QuadPart;
+    c.ticks += took;
+    c.most = std::max(c.most, took);
+    c.frames++;
+    if (!c.windowStart) c.windowStart = start.QuadPart;
+    if (end.QuadPart - c.windowStart < 30 * g_frequency.QuadPart) return;
+    if (rfa::DetailLog()) {
+        float most = 0, enclosure = 0;
+        int reverbType = 0;
+        const int muffled = rfa_audio_occlusion_status(&most, &enclosure, &reverbType);
+        const double ms = 1000.0 / static_cast<double>(g_frequency.QuadPart);
+        rfa::LogDetail("Guerrilla's occlusion: %d casts in %d frames, %.3f ms a frame (at most %.3f); %d hits (%d on no object); "
+                       "the listener %.0f%% shut in, the room's reverb type %d; %d voices muffled now, the most %.2f of 5",
+                       c.casts, c.frames, static_cast<double>(c.ticks) * ms / c.frames, static_cast<double>(c.most) * ms, c.hits,
+                       c.noObject, enclosure * 100.0f, reverbType, muffled, most);
+    }
+    c = RaysCost{};
+    c.windowStart = end.QuadPart;
+}
+
+void __cdecl ListenerRaysHook()
+{
+    g_listenerRays();
+    if (!g_occlusion || !Open()) return;
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    float listener[3];
+    if (ListenerPlace(listener, nullptr) == 0) {
+        // Guerrilla's rate: a direction a frame, another when the frame took less than 40 ms (its Frametime).
+        const bool shortFrame = g_lastRays.QuadPart &&
+                                static_cast<double>(start.QuadPart - g_lastRays.QuadPart) < kShortFrame * static_cast<double>(g_frequency.QuadPart);
+        for (int i = shortFrame ? 2 : 1; i > 0; i--) {
+            CastOcclusionRay(listener, kRayOrder[g_nextRay]);
+            g_nextRay = (g_nextRay + 1) % 26;
+        }
+    }
+    g_lastRays = start;
+    QueryPerformanceCounter(&end);
+    NoteRaysCost(start, end);
+}
+
+// The rays' hook, apart from the others: without it, 3D sounds simply aren't muffled (Armageddon's way).
+bool InstallListenerRaysHook()
+{
+    const uint8_t expected[] = {0x55, 0x8B, 0xEC, 0x81, 0xEC, 0xD4, 0x00, 0x00, 0x00};
+    if (memcmp(reinterpret_cast<const void*>(kListenerRays), expected, sizeof expected) != 0) {
+        rfa::Log("The game's listener rays function (0x%lX) isn't as expected: no Guerrilla's occlusion (3D sounds aren't muffled)",
+                 static_cast<unsigned long>(kListenerRays));
+        return false;
+    }
+    QueryPerformanceFrequency(&g_frequency);
+    void* original = rfa::HookFunction(kListenerRays, sizeof expected, reinterpret_cast<void*>(ListenerRaysHook));
+    if (!original) {
+        rfa::Log("Hooking the game's listener rays function (0x%lX) failed: no Guerrilla's occlusion",
+                 static_cast<unsigned long>(kListenerRays));
+        return false;
+    }
+    g_listenerRays = reinterpret_cast<FrameFn>(original);
+    return true;
+}
+
 // ---- Starting ----------------------------------------------------------------------------------------------------
 
 struct Settings {
     std::vector<std::wstring> banks;  // name patterns (* for any letters), lower-case
     int voices = 128, cacheMb = 32;
     bool hrtf = false, mirror = true;
+    float doppler = 1;                // 0 off; 1 as sound travels
+    bool occlusion = true;            // Guerrilla's occlusion (0: as Armageddon, nothing muffled)
 };
 
 std::wstring Lower(std::wstring s)
@@ -513,6 +894,8 @@ Settings ReadSettings()
     s.cacheMb = std::clamp(rfa::IniInt(L"Audio", L"CacheMB", 32), 4, 512);
     s.hrtf = rfa::IniInt(L"Audio", L"HRTF", 0) != 0;
     s.mirror = rfa::IniInt(L"Audio", L"MirrorWwise", 1) != 0;
+    s.doppler = static_cast<float>(std::clamp(rfa::IniInt(L"Audio", L"Doppler", 1), 0, 10));  // 1 as sound travels, 2-10 stronger
+    s.occlusion = rfa::IniInt(L"Audio", L"Occlusion", 1) != 0;
     return s;
 }
 
@@ -546,22 +929,24 @@ void LogProblems(uint32_t bank, const char* name)
     if (rfa_audio_bank_problems(bank, problems, sizeof problems) > 0) rfa::LogDetail("%s: %s", name, problems);
 }
 
-// Armageddon's banks that Banks= names, from the game's sounds.vpp_pc as the game reads them: an override of a bank or
-// of its media (overrides\build\pc\cache\sounds.vpp_pc\, or soundboot.vpp_pc\, which holds copies of some) first. Its
-// music banks stay on Wwise (step M); init.bnk_pc is loaded apart, for the buses.
-int LoadArmageddonBanks(const Settings& settings, const std::wstring& overrides, int& failed)
+// Armageddon's banks that Banks= names, from one of the game's archives (sounds.vpp_pc, voices.vpp_pc) as the game
+// reads them: an override of a bank or of its media first (overrides\build\pc\cache\<archive>\, or the boot archive's
+// folder, which holds copies of some). Its music banks stay on Wwise (step M); init.bnk_pc is loaded apart, for the
+// buses. A voice bank's dialogue events are ours with it.
+int LoadArmageddonBanks(const Settings& settings, const std::wstring& overrides, const wchar_t* archiveName, const wchar_t* bootName,
+                        int& failed)
 {
-    const std::wstring archive = GameCache() + L"sounds.vpp_pc";
+    const std::wstring archive = GameCache() + archiveName;
     const int size = rfa_audio_archive_bank_names(archive.c_str(), nullptr, 0);
     if (size < 0) {
-        rfa::Log("The game's build\\pc\\cache\\sounds.vpp_pc can't be read: Armageddon's sounds stay on Wwise");
+        rfa::Log("The game's build\\pc\\cache\\%ls can't be read: its sounds stay on Wwise", archiveName);
         return 0;
     }
     std::string list(static_cast<size_t>(size) + 1, '\0');
     rfa_audio_archive_bank_names(archive.c_str(), list.data(), size + 1);
     list.resize(static_cast<size_t>(size));
-    const std::wstring sounds = overrides + L"sounds.vpp_pc\\", boot = overrides + L"soundboot.vpp_pc\\";
-    const wchar_t* folders[] = {sounds.c_str(), boot.c_str()};
+    const std::wstring own = overrides + archiveName + L"\\", boot = overrides + bootName + L"\\";
+    const wchar_t* folders[] = {own.c_str(), boot.c_str()};
     int loaded = 0;
     std::vector<std::string> music;
     for (size_t start = 0; start < list.size();) {
@@ -582,6 +967,9 @@ int LoadArmageddonBanks(const Settings& settings, const std::wstring& overrides,
             continue;
         }
         g_ownedBanks.insert(bank);
+        uint32_t dialogue[8];
+        int n = std::min(rfa_audio_bank_dialogue_events(bank, dialogue, 8), 8);
+        g_ownedDialogue.insert(dialogue, dialogue + std::max(n, 0));
         loaded++;
         LogProblems(bank, (name + ".bnk_pc").c_str());
     }
@@ -627,6 +1015,8 @@ void Start(Settings settings)
         return;
     }
     PassOnEarlyGlobals();
+    rfa_audio_set_doppler(settings.doppler);
+    rfa_audio_set_occlusion_model(g_occlusion ? 1 : 0);
     // Armageddon's init.bnk_pc, as the game reads it (our override of it), for the volumes of the buses our sounds go to.
     std::wstring init = cache + L"soundboot.vpp_pc\\init.bnk_pc";
     if (GetFileAttributesW(init.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -635,18 +1025,20 @@ void Start(Settings settings)
     } else {
         rfa::LogDetail("No init.bnk_pc override in overrides\\build\\pc\\cache\\soundboot.vpp_pc\\: the buses' volumes count as 0 dB");
     }
-    // Ours: the banks Banks= names among those loose in overrides\build\pc\cache\ (the Guerrilla world's, rfg*).
+    // Ours: the banks Banks= names among those the Guerrilla builder wrote (the Guerrilla world's, rfg*): in
+    // overrides\build\pc\cache\guerrilla\sounds\, or at the top of the cache from a build before each part had a folder.
     int banks = 0, failed = 0;
-    WIN32_FIND_DATAW found;
-    HANDLE find = FindFirstFileW((cache + L"*.bnk_pc").c_str(), &found);
-    if (find != INVALID_HANDLE_VALUE) {
+    for (const std::wstring folder : {cache + L"guerrilla\\sounds\\", cache}) {
+        WIN32_FIND_DATAW found;
+        HANDLE find = FindFirstFileW((folder + L"*.bnk_pc").c_str(), &found);
+        if (find == INVALID_HANDLE_VALUE) continue;
         do {
             if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             std::wstring file = found.cFileName, name = Lower(file.substr(0, file.size() - 7));
             if (name.size() > 6 && name.compare(name.size() - 6, 6, L"_media") == 0) continue;
             if (!Wanted(name, settings)) continue;
-            std::wstring media = cache + file.substr(0, file.size() - 7) + L"_media.bnk_pc";
-            uint32_t bank = rfa_audio_load_bank((cache + file).c_str(), media.c_str(), error, sizeof error);
+            std::wstring media = folder + file.substr(0, file.size() - 7) + L"_media.bnk_pc";
+            uint32_t bank = rfa_audio_load_bank((folder + file).c_str(), media.c_str(), error, sizeof error);
             if (!bank) {
                 rfa::Log("%ls didn't load (%s): its sounds stay on Wwise", file.c_str(), error);
                 failed++;
@@ -659,9 +1051,11 @@ void Start(Settings settings)
         FindClose(find);
     }
     // Armageddon's own that Banks= names (B1).
-    const int armageddons = LoadArmageddonBanks(settings, cache, failed);
+    const int armageddons = LoadArmageddonBanks(settings, cache, L"sounds.vpp_pc", L"soundboot.vpp_pc", failed) +
+                            LoadArmageddonBanks(settings, cache, L"voices.vpp_pc", L"voiceboot.vpp_pc", failed);
     banks += armageddons;
     rfa_audio_set_end_callback(OnEnd, nullptr);
+    rfa_audio_set_start_callback(OnStart, nullptr);
     if (rfa::DetailLog()) rfa_audio_set_log_callback(EngineLine, nullptr, 60);
     char device[256] = {};
     rfa_audio_device_info(device, sizeof device);
@@ -689,8 +1083,10 @@ void Start(Settings settings)
     WorkOutRoutes(ours, both, wwiseAndControls);
     g_ready.store(true, std::memory_order_release);
     rfa::LogInfo("Our sound engine plays %d banks (%d of them Armageddon's) on %s: %d events on ours alone, %d on both engines "
-                 "(stops, pauses, mutes, states), %d played by Wwise with their other actions on ours too%s",
-                 banks, armageddons, device, ours, both, wwiseAndControls, failed ? "; some banks didn't load (above)" : "");
+                 "(stops, pauses, mutes, states), %d played by Wwise with their other actions on ours too; %s%s",
+                 banks, armageddons, device, ours, both, wwiseAndControls,
+                 g_occlusion ? "3D sounds muffled by what stands in their way (Guerrilla's occlusion)" : "no occlusion (as Armageddon)",
+                 failed ? "; some banks didn't load (above)" : "");
 }
 
 // With Log=1: what our player is doing, every 10 s.
@@ -738,6 +1134,20 @@ bool InstallHooks()
          reinterpret_cast<void**>(&g_callback)},
         {"unload a bank", kUnloadBank, 11, {0x55, 0x8B, 0xEC, 0x51, 0x0F, 0xB6, 0x05, 0x29, 0x55, 0x74, 0x02},
          reinterpret_cast<void*>(UnloadBankHook), reinterpret_cast<void**>(&g_unloadBank)},
+        {"obstruction", kObstruction, 5, {0x55, 0x8B, 0xEC, 0x6A, 0xFF}, reinterpret_cast<void*>(ObstructionHook),
+         reinterpret_cast<void**>(&g_obstruction)},
+        {"Wwise's environments", kEnvironments, 7, {0x8B, 0x54, 0x24, 0x0C, 0x83, 0xEC, 0x3C}, reinterpret_cast<void*>(EnvironmentsHook),
+         reinterpret_cast<void**>(&g_environments)},
+        {"play a voice line", kVoicePlay, 5, {0x55, 0x8B, 0xEC, 0x6A, 0xFF}, reinterpret_cast<void*>(VoicePlayHook),
+         reinterpret_cast<void**>(&g_voicePlay)},
+        {"stop a voice line", kVoiceStop, 7, {0x55, 0x8B, 0xEC, 0x51, 0x8B, 0x45, 0x0C}, reinterpret_cast<void*>(VoiceStopHook),
+         reinterpret_cast<void**>(&g_voiceStop)},
+        {"pause a voice line", kVoicePause, 8, {0x55, 0x8B, 0xEC, 0x51, 0x0F, 0xB6, 0x45, 0x10}, reinterpret_cast<void*>(VoicePauseHook),
+         reinterpret_cast<void**>(&g_voicePause)},
+        {"close a voice line", kVoiceClose, 7, {0x55, 0x8B, 0xEC, 0x51, 0x8B, 0x45, 0x08}, reinterpret_cast<void*>(VoiceCloseHook),
+         reinterpret_cast<void**>(&g_voiceClose)},
+        {"the voice lines' callback", kVoiceCallback, 6, {0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08}, reinterpret_cast<void*>(VoiceCallbackHook),
+         reinterpret_cast<void**>(&g_voiceCallback)},
     };
     // Every one checked before any is changed: all or none.
     for (const Hook& h : hooks)
@@ -771,6 +1181,8 @@ extern "C" __declspec(dllexport) void __cdecl RFAMod_Init()
         return;
     }
     if (!InstallHooks()) return;
-    std::thread(Start, ReadSettings()).detach();
+    Settings settings = ReadSettings();
+    g_occlusion = settings.occlusion && InstallListenerRaysHook();
+    std::thread(Start, settings).detach();
     if (rfa::DetailLog()) std::thread(StatusLoop).detach();
 }

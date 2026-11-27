@@ -453,22 +453,20 @@ public sealed class GuerrillaAnimationSets
     }
 
     /// <summary>
-    /// Writes the sets' tables (new files, in <paramref name="cache"/>: overrides\build\pc\cache\), the
+    /// Writes the sets' tables (new files, in <paramref name="part"/>'s folder of overrides\build\pc\cache: see OverrideLayout), the
     /// lists they change (in <paramref name="modFolder"/>, for guerrilla_world to hand the game; a list
     /// with nothing but Armageddon's in it is deleted there, so the game keeps its own) and this tool's
     /// record of its own entries in them.
     /// </summary>
-    public void Write(string cache, string modFolder)
+    public void Write(string overrides, string part, string modFolder)
     {
         AnimTriggerPools.Check(fileList);  // refuses (throws) before anything is written
-        Directory.CreateDirectory(cache);
         Directory.CreateDirectory(modFolder);
         // The set tables an earlier run of this tool wrote that this one doesn't (another tool's are kept).
         foreach (string name in earlierSets)
-            if (!setTables.Any(t => t.File.Equals(name, StringComparison.OrdinalIgnoreCase)) &&
-                name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(Path.Combine(cache, name)))
-                File.Delete(Path.Combine(cache, name));
-        foreach (var (file, data) in setTables) File.WriteAllBytes(Path.Combine(cache, file), data);
+            if (!setTables.Any(t => t.File.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                OverrideLayout.Delete(overrides, name);
+        foreach (var (file, data) in setTables) File.WriteAllBytes(OverrideLayout.NewFile(overrides, part, file), data);
         void Put(string name, XtblFile table, bool changed)
         {
             string path = Path.Combine(modFolder, name);
@@ -511,8 +509,7 @@ public sealed class GuerrillaAnimationSets
                 string name = e.ValueOf("Name")?.Trim() ?? "";
                 if (!Ours(name, theirSets, record?.Sets ?? [], others.Sets)) continue;
                 e.Remove();
-                string file = Path.Combine(overrides, "build", "pc", "cache", name);
-                if (name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
+                foreach (string file in OverrideLayout.Delete(overrides, name)) yield return $"Deleted {file}";
             }
             if (sets.Entries.Any(e => !theirSets.Contains(e.ValueOf("Name")?.Trim() ?? ""))) { File.WriteAllBytes(setPath, sets.ToBytes()); yield return $"{setPath}: our sets taken out, other tools' kept"; }
             else { File.Delete(setPath); yield return $"Deleted {setPath}"; }

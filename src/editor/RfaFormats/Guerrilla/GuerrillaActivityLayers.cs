@@ -88,8 +88,9 @@ public static class GuerrillaActivityLayers
     /// <summary>The asset list override's place in overrides\.</summary>
     public static string AssetListOverride(string overrides) => Path.Combine(overrides, "build", "pc", "cache", MissionArchive, AssetList);
 
-    /// <summary>A set's container's place in overrides\.</summary>
-    public static string ContainerFile(string overrides, string set) => Path.Combine(overrides, "build", "pc", "cache", set + ".str2_pc");
+    /// <summary>A set's container's place in overrides\: where it is, else where the world part writes it (see OverrideLayout).</summary>
+    public static string ContainerFile(string overrides, string set) =>
+        OverrideLayout.Find(overrides, set + ".str2_pc") ?? Path.Combine(OverrideLayout.Folder(overrides, OverrideLayout.World), set + ".str2_pc");
 
     /// <summary>Guerrilla's demolitions masters' and area defenses' layer sets, from its activity.xtbl (misc.vpp_pc) and activities.vpp_pc.</summary>
     public static List<LayerSet> Sets(string guerrillaCache)
@@ -161,8 +162,7 @@ public static class GuerrillaActivityLayers
         var taken = new HashSet<string>(table.Entries.Select(XtblFile.EntryName).Concat(assets.Containers.Select(c => c.Name)), StringComparer.OrdinalIgnoreCase);
         var turretNames = GameTableNames(game, "turrets.xtbl");
 
-        string output = Path.Combine(overrides, "build", "pc", "cache");
-        Directory.CreateDirectory(output);
+        string output = OverrideLayout.Folder(overrides, OverrideLayout.World);
         var leftOut = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var classCounts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var lines = new List<string>();
@@ -179,7 +179,7 @@ public static class GuerrillaActivityLayers
                 described.Add($"{layer.Name} ({counts.Values.Sum()} objects: {string.Join(", ", counts.Select(c => $"{c.Value} {c.Key}"))})");
             }
             byte[] container = Packfile.CreateContainer(template, files);
-            File.WriteAllBytes(ContainerFile(overrides, set.Name), container);
+            File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.World, set.Name + ".str2_pc"), container);
             var packed = Packfile.FromBytes(set.Name, container);
             var entry = new AsmContainer { Name = set.Name, Type = gameLayer.Type, Flags = gameLayer.Flags, DataOffset = (uint)packed.DataStart, CompressedSize = packed.CompressedDataSize };
             entry.Sizes.AddRange(files.Select(f => f.Data.Length));
@@ -397,12 +397,7 @@ public static class GuerrillaActivityLayers
             var missions = Packfile.Open(Path.Combine(game, "build", "pc", "cache", MissionArchive));
             if (missions.Find(AssetList) is { } entry) own.UnionWith(AsmFile.Read(missions.Read(entry)).Containers.Select(c => c.Name));
             foreach (var container in AsmFile.Read(File.ReadAllBytes(assetFile)).Containers.Where(c => !own.Contains(c.Name)))
-            {
-                string file = ContainerFile(overrides, container.Name);
-                if (!File.Exists(file)) continue;
-                File.Delete(file);
-                yield return $"Deleted {file}";
-            }
+                foreach (string file in OverrideLayout.Delete(overrides, container.Name + ".str2_pc")) yield return $"Deleted {file}";
             File.Delete(assetFile);
             yield return $"Deleted {assetFile}";
             string folder = Path.GetDirectoryName(assetFile)!;
@@ -478,7 +473,7 @@ public static class GuerrillaActivityLayers
             if (entry.Type != ContainerType || entry.Flags != ContainerFlags)
                 Problem($"{set}: its container's entry is type {entry.Type}, flags 0x{entry.Flags:X} (Armageddon's layers' are type {ContainerType}, flags 0x{ContainerFlags:X})");
             string path = ContainerFile(overrides, set);
-            if (!File.Exists(path)) { Problem($"{set}: {set}.str2_pc isn't in overrides\\build\\pc\\cache\\"); continue; }
+            if (!File.Exists(path)) { Problem($"{set}: {set}.str2_pc isn't in overrides\\build\\pc\\cache\\guerrilla\\world\\"); continue; }
             var container = Packfile.FromBytes(set, File.ReadAllBytes(path));
             if (container.DataStart != entry.DataOffset || container.CompressedDataSize != entry.CompressedSize)
                 Problem($"{set}: {AssetList}'s entry doesn't match its container (data at {entry.DataOffset}, {entry.CompressedSize} bytes; the container's at {container.DataStart}, {container.CompressedDataSize})");

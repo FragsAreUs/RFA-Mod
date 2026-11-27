@@ -1,5 +1,6 @@
 using System.IO;
 using RfaFormats;
+using RfaFormats.Guerrilla;
 
 namespace GuerrillaBuilder;
 
@@ -19,8 +20,12 @@ sealed class Setup
     public string ModFolder { get; }
     public string Ini => Path.Combine(ModFolder, "rfa_mods.ini");
     public string Overrides => Path.Combine(ModFolder, "overrides");
-    /// <summary>The cache folder in overrides\, where the world's archives and the parts' containers go.</summary>
-    public string Cache => Path.Combine(Overrides, "build", "pc", "cache");
+    /// <summary>The cache folder in overrides\: the game's archives' folders, and a folder for each part's new files (see OverrideLayout).</summary>
+    public string Cache => OverrideLayout.Cache(Overrides);
+    /// <summary>A part's new file: where it is (its part's folder, or the cache's top from an older build), else where it would be.</summary>
+    public string NewFile(string part, string name) => OverrideLayout.Find(Overrides, name) ?? Path.Combine(OverrideLayout.Folder(Overrides, part), name);
+    /// <summary>A new file of any part, where it is; null if it is nowhere.</summary>
+    public string? FindNewFile(string name) => OverrideLayout.Find(Overrides, name);
     public string WorldFolder => Path.Combine(ModFolder, "mods", "guerrilla_world");
     public string HudFolder => Path.Combine(ModFolder, "mods", "guerrilla_hud");
     public string PeopleFolder => Path.Combine(ModFolder, "mods", "guerrilla_people");

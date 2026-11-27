@@ -263,5 +263,6 @@ public partial class MainWindow
             page.WindowClosing();
         }
         gamePanel.Release();  // the game gets its own window back before the editor's goes
+        CloseMcpServersOnExit();  // MainWindow.Mcp.cs
     }
 }

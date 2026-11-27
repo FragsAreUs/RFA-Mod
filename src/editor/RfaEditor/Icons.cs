@@ -106,7 +106,7 @@ public sealed record FileKind(string Name, string Icon, Brush Colour)
         "rfgzone_pc" or "layer_pc" => Zone,
         "str2_pc" or "vpp_pc" => Container,
         "lua" => Script,
-        "bnk_pc" or "mbnk_pc" => Sound,
+        "bnk_pc" or "mbnk_pc" or "ctdg_pc" => Sound,
         "anim_pc" or "rig_pc" => Animation,
         "cefct_pc" or "gefct_pc" or "fxo_pc" or "fxo_pc_dx11" or "fxo" => Effect,
         "txt" or "le_strings" or "vint_doc" or "vint_proj" or "dat" => Text,

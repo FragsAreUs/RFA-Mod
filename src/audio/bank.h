@@ -17,7 +17,7 @@ constexpr float Silent = -96.3f;
 // The object kinds of a bank's HIRC chunk.
 enum ObjectType : uint32_t {
     TypeState = 1, TypeSound = 2, TypeAction = 3, TypeEvent = 4, TypeRanSeq = 5, TypeSwitch = 6, TypeActorMixer = 7, TypeBus = 8,
-    TypeLayer = 9, TypeAttenuation = 14,
+    TypeLayer = 9, TypeAttenuation = 14, TypeDialogueEvent = 15,
 };
 
 // What a curve changes.
@@ -49,6 +49,8 @@ struct Curve {
 
     // y at x: held flat beyond the first and last points.
     float ValueAt(float x) const;
+    // The value of points (and their shapes) at x: the first's before them, the last's after.
+    static float ValueAt(const std::vector<CurvePoint>& points, float x);
     // For a volume curve: its gain at x (Wwise interpolates the stored values in straight lines, then turns them
     // into dB: 20·log10(1 + y / 96.3) below 0, −20·log10(1 − y / 96.3) above; so in gain the line is straight).
     float GainAt(float x) const;
@@ -102,6 +104,7 @@ struct Node {
     WhenQuiet whenQuiet = WhenQuiet::PlayOn;
     bool ownLimit = false, ownQuiet = false;  // these settings are its own, not its parent's
     int effectSlots = 0, stateEntries = 0;
+    std::unordered_map<uint32_t, uint32_t> stateObjects;  // a state of its group → the state object it uses (0: the group's)
     std::vector<Curve> curves;
     std::vector<uint32_t> children;
 
@@ -133,8 +136,36 @@ struct Node {
     };
     std::vector<SwitchChild> switchChildren;
 
-    // A layer container
+    // 3D on paths (user-defined positioning, around the listener): the paths' points, each with the time to the next
+    // (ms), and the paths (each a run of the points, with a random range for the whole path: x and z, metres).
+    struct PathPoint {
+        float x = 0, y = 0, z = 0;
+        int32_t ms = 0;
+    };
+    struct Path {
+        uint32_t first = 0, count = 0;
+        float rangeX = 0, rangeZ = 0;
+    };
+    uint32_t positionType = 0;     // a 3D node's: 3 at the game object, else on its paths
+    uint32_t pathMode = 0;         // bit 0 random (else in sequence), bit 1 continuous (else one path a play), bit 2 a new
+                                   // path at each play
+    bool pathLoops = false;
+    int32_t pathTransitionMs = 0;
+    std::vector<PathPoint> pathPoints;
+    std::vector<Path> paths;
+    bool OnPaths() const { return threeD && positionType != 3 && !paths.empty() && !pathPoints.empty(); }
+
+    // A layer container: its layers. Each has curves of its own (on game parameters, for every child in it), and may
+    // crossfade its children on a game parameter: each child's volume by that parameter's value, a curve of its own.
+    struct Layer {
+        uint32_t id = 0;
+        std::vector<Curve> curves;
+        uint32_t crossfadeParameter = 0;  // 0: none
+        float crossfadeDefault = 0;
+        std::vector<std::pair<uint32_t, std::vector<CurvePoint>>> children;  // a child, its crossfade curve
+    };
     int layers = 0;
+    std::vector<Layer> layerList;
     // A source plug-in sound: Wwise's silence (0x00650002) lasts silenceSeconds (and up to its random range more or
     // less); the others (tone, synthesis) aren't played.
     float silenceSeconds = 0, silenceLess = 0, silenceMore = 0;
@@ -162,6 +193,21 @@ struct Action {
 struct Event {
     uint32_t id = 0, bankId = 0;
     std::vector<uint32_t> actions;
+};
+
+// init.bnk's environments (ENVS): what an object's obstruction and occlusion (0-100) do to its sounds' volume and
+// low-pass, each a curve Wwise uses only if it is on (Armageddon's four are all off).
+struct ObstructionCurves {
+    Curve obstructionVolume, obstructionLowPass, occlusionVolume, occlusionLowPass;
+    bool obstructionVolumeOn = false, obstructionLowPassOn = false, occlusionVolumeOn = false, occlusionLowPassOn = false;
+};
+
+// One of init.bnk's effects (FXPR) that environments use: Wwise's Matrix Reverb (0x00730003), its reverb time (s), its
+// ratio of the reverb time at low to high frequencies, its delay lines, its dry and wet levels (dB) and pre-delay (s).
+struct Reverb {
+    uint32_t id = 0;
+    float seconds = 1, hfRatio = 2, dryDb = 0, wetDb = 0, preDelay = 0;
+    uint32_t delays = 16;
 };
 
 // A bus (object type 8, init.bnk's), laid out as Armageddon's: its parent; volume, LFE, pitch and low-pass; its voice
@@ -241,6 +287,16 @@ bool ListArchive(const std::wstring& archive, std::vector<std::string>& names, s
 bool FindInArchive(const std::wstring& archive, const std::vector<std::string>& names, std::vector<ArchiveFile>& found,
                    std::vector<bool>& present, std::string& why);
 
+// A dialogue event (object type 15, the voices' banks'): a tree on its arguments (state groups: Armageddon's are the
+// persona and the line), each path of keys (one an argument; 0 any) giving a sound or container to play.
+struct DialogueEvent {
+    uint32_t id = 0, bankId = 0;
+    std::vector<uint32_t> arguments;
+    std::vector<std::pair<std::vector<uint32_t>, uint32_t>> paths;
+    // The node for these values (one an argument): the path that matches them best (exact keys before "any"); 0 none.
+    uint32_t Resolve(const uint32_t* values, size_t count) const;
+};
+
 // A loaded bank: its objects (owned by the library), the media index and file.
 struct Bank {
     uint32_t id = 0;
@@ -253,6 +309,7 @@ struct Bank {
     int unknownObjects = 0;
     std::vector<uint32_t> stateObjects;
     std::vector<std::pair<uint32_t, uint32_t>> unread;  // objects of kinds not read (id, type): music, dialogue
+    std::vector<uint32_t> dialogueEvents;
     bool armageddons = false;  // read from one of the game's archives: Armageddon's own (its buses' voice limits apply)
 };
 
@@ -273,6 +330,7 @@ public:
     const Action* FindAction(uint32_t id) const;
     const Event* FindEvent(uint32_t id) const;
     const Bus* FindBus(uint32_t id) const;
+    const DialogueEvent* FindDialogueEvent(uint32_t id) const;
     Bank* FindBank(uint32_t id) const;
     const std::map<uint32_t, std::unique_ptr<Bank>>& Banks() const { return banks; }
 
@@ -291,6 +349,12 @@ public:
     const std::unordered_map<uint32_t, StateGroup>& StateGroups() const { return stateGroups; }
     const std::unordered_map<uint32_t, float>& ParameterDefaults() const { return parameterDefaults; }
     float VolumeThreshold() const { return volumeThreshold; }
+    const ObstructionCurves& Obstruction() const { return obstruction; }
+    const Reverb* FindReverb(uint32_t id) const
+    {
+        auto it = reverbs.find(id);
+        return it == reverbs.end() ? nullptr : &it->second;
+    }
 private:
     void CheckLinks(Bank& bank);
     // A bank's bytes read, with its media file opened (or null, with why in mediaProblem).
@@ -307,6 +371,9 @@ private:
     std::unordered_map<uint32_t, float> parameterDefaults;
     std::unordered_map<uint32_t, StateGroup> stateGroups;
     float volumeThreshold = 0;  // 0 until an STMG is read
+    ObstructionCurves obstruction;
+    std::unordered_map<uint32_t, Reverb> reverbs;
+    std::unordered_map<uint32_t, std::unique_ptr<DialogueEvent>> dialogueEvents;
 };
 
 // Wwise's id of a name: FNV-1 of its lower-case letters.

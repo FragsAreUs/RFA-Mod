@@ -1644,26 +1644,29 @@ const char* ShaderEnding(int kind, int variant) {
     return kind >= 0 && kind < 4 && variant >= 0 && variant < 4 ? endings[kind][variant] : "?";
 }
 
-// Guerrilla's shaders' names (the gw_ effect files in overrides\build\pc\cache\, without their endings) and numbers.
+// Guerrilla's shaders' names (the gw_ effect files in overrides\build\pc\cache\guerrilla\shaders\, or at the top of
+// the cache from a build before each part had a folder, without their endings) and numbers.
 void ReadRedShaders(void* library) {
     g_redShadersRead = true;
-    WIN32_FIND_DATAW found;
-    const std::wstring pattern = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\gw_*.fxo_pc_dx11";
-    HANDLE search = FindFirstFileW(pattern.c_str(), &found);
-    if (search == INVALID_HANDLE_VALUE) return;
-    do {
-        std::string name;
-        for (const wchar_t* c = found.cFileName; *c && *c != L'.'; ++c) name += static_cast<char>(*c);
-        const size_t ending = name.rfind('_');
-        if (ending == std::string::npos || ending == 0) continue;
-        name.resize(ending);
-        bool known = false;
-        for (const auto& shader : g_redShaders) known = known || shader.first == name;
-        if (known) continue;
-        const DWORD number = ShaderNamed(library, nullptr, name.c_str());
-        if (number != kNoShader) g_redShaders.emplace_back(name, number);
-    } while (FindNextFileW(search, &found));
-    FindClose(search);
+    const std::wstring cache = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\";
+    for (const wchar_t* folder : {L"guerrilla\\shaders\\", L""}) {
+        WIN32_FIND_DATAW found;
+        HANDLE search = FindFirstFileW((cache + folder + L"gw_*.fxo_pc_dx11").c_str(), &found);
+        if (search == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::string name;
+            for (const wchar_t* c = found.cFileName; *c && *c != L'.'; ++c) name += static_cast<char>(*c);
+            const size_t ending = name.rfind('_');
+            if (ending == std::string::npos || ending == 0) continue;
+            name.resize(ending);
+            bool known = false;
+            for (const auto& shader : g_redShaders) known = known || shader.first == name;
+            if (known) continue;
+            const DWORD number = ShaderNamed(library, nullptr, name.c_str());
+            if (number != kNoShader) g_redShaders.emplace_back(name, number);
+        } while (FindNextFileW(search, &found));
+        FindClose(search);
+    }
 }
 
 void NoteRed(void* library, DWORD shader, int kind, int variant) {

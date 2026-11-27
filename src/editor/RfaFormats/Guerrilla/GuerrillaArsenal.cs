@@ -9,7 +9,7 @@ namespace RfaFormats.Guerrilla;
 ///   - its model converted (<see cref="GuerrillaVehicles"/>) and packed with its textures (each one of
 ///     Guerrilla's, from the vehicle's own texture file, as a single-texture file under its alias, its
 ///     compressed mip levels down to 4 × 4) into a container of its own, named as Guerrilla's
-///     (&lt;mesh&gt;.ccar_pc.str2_pc) in overrides\build\pc\cache\, where the game finds a new file by name;
+///     (&lt;mesh&gt;.ccar_pc.str2_pc) in overrides\build\pc\cache\guerrilla\vehicles\, where the game finds a new file by name;
 ///   - an entry for that container added to Armageddon's vehicle asset list (an override of
 ///     vehicles.vpp_pc\vehicle_containers.asm_pc, the player's own with ours added), as Armageddon lists
 ///     its own vehicles (type 27, flags 0x80; the model a primitive of type 11, each texture of type 1);
@@ -466,9 +466,7 @@ public static class GuerrillaArsenal
             if (unfilled.Count > 0) yield return $"{name}: required by Armageddon, with no default to give (the game will stop on them): {string.Join(", ", unfilled)}";
         }
 
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
-        Directory.CreateDirectory(cache);
-        foreach (var (file, bytes) in containers) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+        foreach (var (file, bytes) in containers) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Vehicles, file), bytes);
         string listFile = Path.Combine(overrides, AssetList);
         Directory.CreateDirectory(Path.GetDirectoryName(listFile)!);
         File.WriteAllBytes(listFile, assetList.ToBytes());
@@ -547,8 +545,8 @@ public static class GuerrillaArsenal
         yield return $"Spawn groups: {groupsWritten} of Guerrilla's in {SpawnGroupTable} (as {GuerrillaVehiclePlaces.GroupPrefix}<name>)" +
                      (unbuilt.Count > 0 ? $"; their vehicles not built, left out of them: {string.Join(", ", unbuilt)}" : "") +
                      (emptyGroups.Count > 0 ? $"; groups left out (none of their vehicles built): {string.Join(", ", emptyGroups)}" : "");
-        sets.Write(cache, modFolder);
-        foreach (var (file, bytes) in rigs) File.WriteAllBytes(Path.Combine(cache, file), bytes);
+        sets.Write(overrides, OverrideLayout.Vehicles, modFolder);
+        foreach (var (file, bytes) in rigs) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Vehicles, file), bytes);
         string rigList = RigListFile(modFolder);
         Directory.CreateDirectory(Path.GetDirectoryName(rigList)!);
         File.WriteAllLines(rigList, rigs.Keys.Order(StringComparer.OrdinalIgnoreCase));
@@ -612,11 +610,8 @@ public static class GuerrillaArsenal
         string rigList = RigListFile(modFolder);
         if (File.Exists(rigList))
         {
-            foreach (string rig in File.ReadAllLines(rigList).Select(l => l.Trim()).Where(l => l.Length > 0 && l.IndexOfAny(Path.GetInvalidFileNameChars()) < 0))
-            {
-                string file = Path.Combine(overrides, "build", "pc", "cache", rig);
-                if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-            }
+            foreach (string rig in File.ReadAllLines(rigList).Select(l => l.Trim()))
+                foreach (string file in OverrideLayout.Delete(overrides, rig)) yield return $"Deleted {file}";
             File.Delete(rigList);
             yield return $"Deleted {rigList}";
         }
@@ -633,10 +628,7 @@ public static class GuerrillaArsenal
         {
             var gameArchive = Packfile.Open(Path.Combine(game, "build", "pc", "cache", "vehicles.vpp_pc"));
             foreach (var c in AsmFile.Read(File.ReadAllBytes(listFile)).Containers.Where(c => gameArchive.Find(c.FileName) == null))
-            {
-                string file = Path.Combine(overrides, "build", "pc", "cache", c.FileName);
-                if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-            }
+                foreach (string file in OverrideLayout.Delete(overrides, c.FileName)) yield return $"Deleted {file}";
             File.Delete(listFile);
             yield return $"Deleted {listFile}";
         }
@@ -646,11 +638,9 @@ public static class GuerrillaArsenal
             string table = Path.Combine(modFolder, name);
             if (File.Exists(table)) { File.Delete(table); yield return $"Deleted {table}"; }
         }
-        foreach (string relative in new[] { GuerrillaWalkerTrees.ListOverride, GuerrillaWalkerTrees.TreeOverride })
-        {
-            string file = Path.Combine(overrides, relative);
-            if (File.Exists(file)) { File.Delete(file); yield return $"Deleted {file}"; }
-        }
+        string treeList = Path.Combine(overrides, GuerrillaWalkerTrees.ListOverride);
+        if (File.Exists(treeList)) { File.Delete(treeList); yield return $"Deleted {treeList}"; }
+        foreach (string file in OverrideLayout.Delete(overrides, GuerrillaWalkerTrees.TreeFile)) yield return $"Deleted {file}";
     }
 
     /// <summary>

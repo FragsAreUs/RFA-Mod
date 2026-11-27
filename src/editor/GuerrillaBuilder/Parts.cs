@@ -124,7 +124,7 @@ static class Parts
     /// <summary>A file each part writes, last or nearly: there if the part is built.</summary>
     static string Marker(Setup setup, Part part) => part switch
     {
-        Part.World => Path.Combine(setup.Cache, GuerrillaWorld.World + "_l0.vpp_pc"),
+        Part.World => setup.NewFile(OverrideLayout.World, GuerrillaWorld.World + "_l0.vpp_pc"),
         Part.Hud => Path.Combine(setup.Cache, "misc.vpp_pc", "rfg.vint_proj"),
         Part.Vehicles => Path.Combine(setup.WorldFolder, GuerrillaArsenal.Table),
         Part.Weapons => Path.Combine(setup.Overrides, GuerrillaWeapons.ItemList),
@@ -142,6 +142,8 @@ static class Parts
         if (record == null) return new(State.BuildAgain, "Build again: built by an older RFA-Mod, or not finished");
         if (part == Part.World && WorldFormat(setup) != GuerrillaWorld.Format)
             return new(State.BuildAgain, "Build again: made for another version of the mods");
+        if (new FileLists(setup).Of(part).Count == 0)
+            return new(State.BuildAgain, "Build again: built before each part had a folder of its own");
         if (setup.Version != null && record.GetValueOrDefault("By") != setup.Version)
             return new(State.BuildAgain, $"Build again: built by {ShortVersion(record.GetValueOrDefault("By"))}");
         string text = $"Built {record.GetValueOrDefault("Built")}";
@@ -194,7 +196,7 @@ static class Parts
                 log.Stage?.Invoke($"Building {Noun(part)} again, for the vehicles' turrets...");
                 log.Line("");
                 log.Line($"==== {Name(part)} again (a first build: the vehicles' turrets need the weapons, and the weapons the turrets' list) ====");
-                if (!Run(setup, part, options, log, record)) return false;
+                if (!Run(setup, part, options, log, record, again: true)) return false;
             }
         // Every table written, checked as the game's reader will take it (see TableCheck).
         log.Stage?.Invoke("Checking the tables...");
@@ -211,10 +213,12 @@ static class Parts
         return true;
     }
 
-    static bool Run(Setup setup, Part part, Options options, BuildLog log, Record record)
+    static bool Run(Setup setup, Part part, Options options, BuildLog log, Record record, bool again = false)
     {
         record.Forget(part);  // until it's finished: a part left half-made shows as not finished
         var clock = Stopwatch.StartNew();
+        var lists = new FileLists(setup);
+        var before = lists.Look();
         string guerrilla = setup.Guerrilla!, game = setup.Game!;
         string usedOptions = "";
         try
@@ -263,7 +267,8 @@ static class Parts
         };
         if (usedOptions.Length > 0) values["Options"] = usedOptions;
         record.Set(part, values);
-        log.Line($"{Name(part)}: done in {Took(clock.Elapsed)}");
+        int files = lists.Save(part, before, again);
+        log.Line($"{Name(part)}: done in {Took(clock.Elapsed)}; {files} files, listed in mods\\guerrilla_world\\built\\{Word(part)}.txt");
         return true;
     }
 
@@ -331,6 +336,8 @@ static class Parts
                 };
                 int count = 0;
                 foreach (string line in lines) { log.Line(line); count++; }
+                // The part's new files its Remove didn't know of (FileLists).
+                foreach (string line in new FileLists(setup).RemoveLeft(part)) { log.Line(line); count++; }
                 if (count == 0) log.Line("Nothing was there.");
             }
             catch (Exception error)
@@ -363,23 +370,17 @@ static class Parts
     static IEnumerable<string> RemoveWorld(Setup setup)
     {
         string world = GuerrillaWorld.World, cache = setup.Cache;
+        foreach (string name in new[] { world + "_l0.vpp_pc", world + "_l1.vpp_pc", world + "_precache.vpp_pc", "zonescript_" + world + ".vpp_pc", world + ".gtodx" })
+            foreach (string deleted in OverrideLayout.Delete(setup.Overrides, name)) yield return $"Deleted {deleted}";
         var files = new List<string>
         {
-            Path.Combine(cache, world + "_l0.vpp_pc"),
-            Path.Combine(cache, world + "_l1.vpp_pc"),
-            Path.Combine(cache, world + "_precache.vpp_pc"),
-            Path.Combine(cache, "zonescript_" + world + ".vpp_pc"),
-            Path.Combine(cache, world + ".gtodx"),
             Path.Combine(cache, "table.vpp_pc", "territories.xtbl"),
             Path.Combine(cache, "misc.vpp_pc", "bitmaps_pc"),
             Path.Combine(cache, "effects.vpp_pc", "vfx_containers.asm_pc"),
             Path.Combine(setup.ModFolder, "mods", "guerrilla_save", GuerrillaRespawns.File),
         };
-        if (Directory.Exists(cache))
-        {
-            files.AddRange(Directory.EnumerateFiles(cache, world + "_*.dtodx"));
-            files.AddRange(Directory.EnumerateFiles(cache, "gw_*.fxo_pc_dx11"));
-        }
+        files.AddRange(OverrideLayout.FindAll(setup.Overrides, world + "_*.dtodx"));
+        files.AddRange(OverrideLayout.FindAll(setup.Overrides, "gw_*.fxo_pc_dx11"));
         foreach (string table in new[] { "gameplay_properties.xtbl", "lod_properties.xtbl", "glass.xtbl", "vfx.xtbl", "effects.xtbl",
                                          "level_objects.xtbl", "explosions.xtbl", "explosions_armageddon_cuts.xtbl", GuerrillaMaterialEvents.FileName, GuerrillaWheelEffects.FileName, GuerrillaGusts.FileName, "clouds.bin", "stars.bin", "corona.bin", GuerrillaWorld.StampFile,
                                          GuerrillaSquads.PlacedList })

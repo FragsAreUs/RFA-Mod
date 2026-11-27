@@ -63,6 +63,18 @@ struct OpenAl {
     LPALFILTERI alFilteri = nullptr;
     LPALFILTERF alFilterf = nullptr;
     bool HasFilters() const { return alGenFilters != nullptr; }
+    // EFX effects and their slots, and a source's sends to them (reverb; null if OpenAL Soft hasn't them)
+    LPALGENEFFECTS alGenEffects = nullptr;
+    LPALDELETEEFFECTS alDeleteEffects = nullptr;
+    LPALEFFECTI alEffecti = nullptr;
+    LPALEFFECTF alEffectf = nullptr;
+    LPALGENAUXILIARYEFFECTSLOTS alGenAuxiliaryEffectSlots = nullptr;
+    LPALDELETEAUXILIARYEFFECTSLOTS alDeleteAuxiliaryEffectSlots = nullptr;
+    LPALAUXILIARYEFFECTSLOTI alAuxiliaryEffectSloti = nullptr;
+    LPALAUXILIARYEFFECTSLOTF alAuxiliaryEffectSlotf = nullptr;
+    LPALSOURCE3I alSource3i = nullptr;
+    LPALSPEEDOFSOUND alSpeedOfSound = nullptr;
+    bool HasEffects() const { return alGenEffects != nullptr && HasFilters(); }
 
     void* module = nullptr;   // the DLL (an HMODULE)
     std::wstring path;        // where it was found

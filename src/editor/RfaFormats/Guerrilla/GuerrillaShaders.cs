@@ -100,25 +100,25 @@ public static class GuerrillaShaders
         MaterialTechnique = 0xEA49BBC0, MaterialFadingTechnique = 0xFE6B0E83;
 
     /// <summary>
-    /// Writes every effect into <paramref name="output"/> (the overrides' build\pc\cache), from
+    /// Writes every effect into the overrides' shader folder (build\pc\cache\guerrilla\shaders: see OverrideLayout), from
     /// Armageddon's ir_default in <paramref name="armageddonCache"/> (its build\pc\cache).
     /// Returns the files' names.
     /// </summary>
-    public static List<string> Write(string armageddonCache, string output)
+    public static List<string> Write(string armageddonCache, string overrides)
     {
         var misc = Packfile.Open(Path.Combine(armageddonCache, "misc.vpp_pc"));
-        var written = WriteModels(misc, output, [("s", false, false), ("bs", true, false), ("c", false, true)]);
-        written.AddRange(WriteTerrain(misc, output));
+        var written = WriteModels(misc, overrides, [("s", false, false), ("bs", true, false), ("c", false, true)]);
+        written.AddRange(WriteTerrain(misc, overrides));
         return written;
     }
 
     /// <summary>
-    /// Writes only the skinned (_c) effects into <paramref name="output"/>, the ones the people's materials
+    /// Writes only the skinned (_c) effects into the overrides' shader folder, the ones the people's materials
     /// (character meshes, GuerrillaPeople) and the glass's flying shards name; the same files
     /// <see cref="Write"/> writes among the others. Returns the files' names.
     /// </summary>
-    public static List<string> WriteSkinned(string armageddonCache, string output) =>
-        WriteModels(Packfile.Open(Path.Combine(armageddonCache, "misc.vpp_pc")), output, [("c", false, true)]);
+    public static List<string> WriteSkinned(string armageddonCache, string overrides) =>
+        WriteModels(Packfile.Open(Path.Combine(armageddonCache, "misc.vpp_pc")), overrides, [("c", false, true)]);
 
     /// <summary>
     /// The families written skinned: the glass (its shards), the BRDF ones (the people's clothes, skin and
@@ -142,7 +142,7 @@ public static class GuerrillaShaders
         _ => VariantsOf(family),
     };
 
-    static List<string> WriteModels(Packfile misc, string output, (string Suffix, bool Instanced, bool Skinned)[] kinds)
+    static List<string> WriteModels(Packfile misc, string overrides, (string Suffix, bool Instanced, bool Skinned)[] kinds)
     {
         string source = Source();
         var written = new List<string>();
@@ -174,7 +174,7 @@ public static class GuerrillaShaders
                                      [Compile("DepthPixel", "ps_4_0"), Compile("GeometryPixel", "ps_4_0"), Compile("GeometryPixel", "ps_4_0", true), pixel])
                             : family == Family.Glass || variant == Variant.Blended ? MaterialPassOnly(baseEffect, family, layers, vertex, pixel)
                             : Effect(baseEffect, family, layers, vertex, pixel);
-                        File.WriteAllBytes(Path.Combine(output, name), effect.Write());
+                        File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Shaders, name), effect.Write());
                         written.Add(name);
                     }
         }
@@ -191,7 +191,7 @@ public static class GuerrillaShaders
     /// _bs). Our pixel shader must read what Armageddon's vertex shader writes, register by register:
     /// checked before the file is written.
     /// </summary>
-    static List<string> WriteTerrain(Packfile misc, string output)
+    static List<string> WriteTerrain(Packfile misc, string overrides)
     {
         string source = Source("GuerrillaTerrain.hlsl");
         var written = new List<string>();
@@ -238,7 +238,7 @@ public static class GuerrillaShaders
                 e.Textures.Add(colour with { Name = H("Combine_map"), Register = 10 });
             }
             string written1 = name + ".fxo_pc_dx11";
-            File.WriteAllBytes(Path.Combine(output, written1), e.Write());
+            File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.Shaders, written1), e.Write());
             written.Add(written1);
         }
         return written;

@@ -35,6 +35,30 @@ of that name. The game mounts a level's archive this way too. Each is logged as 
 and `Using new file ...` when the game first asks for it. A file the game folder already has can't
 be replaced whole: put replacements in its archive's folder as above.
 
+Since new files are found by name, they can sit in any folder that isn't an archive's. The
+Guerrilla builder (`editor\GuerrillaBuilder.exe`) keeps each part's files in a folder of its own,
+and the editor shows each folder as its own "New files":
+
+```
+overrides\build\pc\cache\
+  interface.vpp_pc\ misc.vpp_pc\ ...   replacements of the game's files, as above
+  guerrilla\world\       the world's archives (rfg_l0, rfg_l1, rfg_precache, zonescript_rfg),
+                         its time of day, sun and moons, and its activities' containers
+  guerrilla\shaders\     Guerrilla's material shaders (gw_*.fxo_pc_dx11)
+  guerrilla\sounds\      the sound banks (.bnk_pc and their _media.bnk_pc)
+  guerrilla\hud\         the HUD's, world map's and handbook's documents and pictures
+  guerrilla\vehicles\    the vehicles' containers, animation tables and skeletons
+  guerrilla\weapons\     the guns' and turrets' containers, skeletons, the player's animations
+  guerrilla\people\      the people's containers, animation tables and skeletons
+  guerrilla\cloth\       the cloth's containers
+  rfa\                   RFA-Mod's own new files (the main menu's pictures, which the editor makes)
+  <level>.vpp_pc         levels made with the editor's New level
+```
+
+A name must be in one place only: the game gets one file of each name. The builder lists what each
+part wrote in `mods\guerrilla_world\built\<part>.txt`, and `GuerrillaBuilder.exe check` reports a
+listed file that's missing or a name that's there twice.
+
 **A new Ruin map** is listed with an entry in an override of `wrecking_crew_maps.xtbl` (in
 `table.vpp_pc`), with its `file_name` the name of its archive (`rfg01` for `rfg01.vpp_pc`). The
 game reads at most five maps from the table, and gives each place its own scoreboard, round times

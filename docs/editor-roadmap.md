@@ -19,7 +19,7 @@ geometry, terrain (viewing and sculpting the near ground and the height field), 
 the inspector), the zones around, the link with the running game
 (show in game, follow the game's camera), CLOE positions in the inspector, skeletons, animations
 (playing them on the characters that use them, or on a skeleton; characters' meshes move with
-their bones).
+their bones), conversations (who says which voice line, in order, and playing them), effects (playing their particles, their parts, textures and the table entries that use them).
 
 ## Level design (what CLOE did)
 
@@ -31,7 +31,7 @@ their bones).
 | Lights (placing, colours, flicker curves) | writing `.lightmult_pc`, `.lightpos_pc`, `.lightrot_pc` (read, and played in game light, already; the lighting itself is drawn). A zone's lamps (`obj_light`, 369 in world_08_03) are known: `type_enum` (spot, omni), `Color` (red, green, blue, brightness 1–3), `atten_start` and `atten_range` (metres), `hotspot_size` and `hotspot_falloff_size` (the spot's cone), facing along their forward direction |
 | The AI's navigation mesh | `.navdata_pc` (119 files) |
 | Terrain and foliage editing (the ground can be sculpted, across zones, far-away ground included) | painting the ground's textures, foliage (`.cfmesh_pc`) |
-| Effects in levels: fire, smoke, the sky's clouds (the sky's picture is drawn already) | `.cefct_pc` / `.gefct_pc` (2,654 + 962 files) |
+| Effects playing in levels (the preview plays their particles, ribbons, coronas, meshes, lights and forces; the sky's picture is drawn) | the level view's renderer (Direct3D 11) drawing them |
 
 ## Animation
 
@@ -49,9 +49,9 @@ their bones).
 | Missing | What it needs |
 |---|---|
 | Textures of a new size or format | rebuilding the texture file's header |
-| Translated text (all languages) | `.le_strings` (190 files) |
+| Editing translated text (it can be read: every language side by side) | writing `.le_strings`, and the fonts' letter codes (most are known) |
 | Sound banks: listening, replacing | `.bnk_pc`, `.mbnk_pc`, `.vad_pc` (Wwise banks) |
-| Menus and HUD, fonts | `.vint_doc`, `.vf3_pc` |
+| Menus and HUD: blur, masks and additive blending (documents are drawn with the game's own fonts, changed in shape and value, their animations played and changed, saved, with their scripts linked, redrawn live) | a renderer that blends as the game does |
 | Lua scripts with highlighting and checking | the scripts are plain text already |
 | Civilians' outfits | following their outfit meshes |
 

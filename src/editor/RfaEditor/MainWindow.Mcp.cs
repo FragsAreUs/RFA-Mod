@@ -8,7 +8,8 @@ namespace RfaEditor;
 // The MCP servers Claude starts for this mod (see bin\: live_analysis_mcp.exe, which talks to the running
 // game through rfa_live_analysis's pipe, and editor\RfaEditorMcp.exe, which edits the game's files), closed
 // from the editor: the top bar's "MCP servers" button lists them, with how many of each are running.
-// Closing one only ends that process: Claude starts it again the next time it uses its tools (or when it restarts).
+// Closing one only ends that process; both close with the editor too. A Claude Code session that is open marks a closed
+// one failed: Reconnect in its /mcp starts it again (a new session starts its own).
 public partial class MainWindow
 {
     static readonly (string Process, string Title)[] McpServers =
@@ -71,7 +72,26 @@ public partial class MainWindow
         Log(closed == 0 && failed == 0
             ? $"MCP servers: {process} isn't running."
             : $"MCP servers: closed {closed} {process}" + (failed > 0 ? $", {failed} couldn't be closed" : "") +
-              ". Claude starts it again the next time it uses its tools.");
+              ". Reconnect it in a Claude session's /mcp to use its tools again.");
+    }
+
+    /// <summary>
+    /// The editor is closing for certain: both MCP servers close with it, so none is left running (and holding its
+    /// files) after the editor is gone. Claude Code marks a closed one failed in a session that is still open: pick
+    /// Reconnect for it in that session's /mcp to use its tools again.
+    /// </summary>
+    static void CloseMcpServersOnExit()
+    {
+        foreach (var (process, _) in McpServers)
+            foreach (Process p in Process.GetProcessesByName(process))
+                using (p)
+                {
+                    try { p.Kill(entireProcessTree: true); }
+                    catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                    {
+                        EditorLog.Write($"MCP servers: couldn't close {process} ({p.Id}) on exit: {ex.Message}");
+                    }
+                }
     }
 
     /// <summary>A menu item's action.</summary>

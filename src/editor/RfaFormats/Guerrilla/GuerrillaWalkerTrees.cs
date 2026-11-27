@@ -173,9 +173,8 @@ public sealed class GuerrillaWalkerTrees
 
     /// <summary>Where the loader serves the list and the tree file each time the game reads them after start-up (relative to
     /// the overrides folder): the list in place of table.vpp_pc's copy (shared with misc.vpp_pc's, the same file), the tree
-    /// file as a new file found by its name.</summary>
-    public static readonly string ListOverride = Path.Combine("build", "pc", "cache", "table.vpp_pc", FileList),
-                                  TreeOverride = Path.Combine("build", "pc", "cache", TreeFile);
+    /// file as a new file found by its name (in the vehicles' folder: see OverrideLayout).</summary>
+    public static readonly string ListOverride = Path.Combine("build", "pc", "cache", "table.vpp_pc", FileList);
 
     /// <summary>Writes the tree file and Armageddon's file list with it; a line for the log. Into the mod's folder, which
     /// guerrilla_world hands the game while it starts, and into the overrides, which the loader serves later: every
@@ -185,7 +184,7 @@ public sealed class GuerrillaWalkerTrees
     public string Write(Packfile gameTables, string modFolder, string overrides)
     {
         string listPath = Path.Combine(modFolder, FileList), treePath = Path.Combine(modFolder, TreeFile);
-        string listOverride = Path.Combine(overrides, ListOverride), treeOverride = Path.Combine(overrides, TreeOverride);
+        string listOverride = Path.Combine(overrides, ListOverride), treeOverride = OverrideLayout.NewFile(overrides, OverrideLayout.Vehicles, TreeFile);
         if (made.Count == 0)
         {
             foreach (string path in new[] { listPath, treePath, listOverride, treeOverride }) if (File.Exists(path)) File.Delete(path);
@@ -203,6 +202,6 @@ public sealed class GuerrillaWalkerTrees
             File.WriteAllText(fileList, list.ToString());
         }
         return $"Walkers: {made.Count} blend trees ({string.Join(", ", made.Keys.Select(TreeName))}) in mods\\guerrilla_world\\{TreeFile}, listed in {FileList}; "
-               + $"the same in overrides\\{TreeOverride} and overrides\\{ListOverride}, for the game's reading of them at each level load";
+               + $"the same in {treeOverride} and overrides\\{ListOverride}, for the game's reading of them at each level load";
     }
 }

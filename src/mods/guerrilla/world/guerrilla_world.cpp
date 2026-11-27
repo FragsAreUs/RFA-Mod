@@ -1843,7 +1843,7 @@ const char* __cdecl PrecacheArea(int column, int row, int gridSize) {
     const char* area = g_precacheArea(column, row, gridSize);
     if (!InOurWorld()) return area;
     wchar_t precache[MAX_PATH];
-    swprintf_s(precache, L"%s\\overrides\\build\\pc\\cache\\%hs_precache.vpp_pc", rfa::RootDir().c_str(), WorldName());
+    swprintf_s(precache, L"%s\\overrides\\build\\pc\\cache\\guerrilla\\world\\%hs_precache.vpp_pc", rfa::RootDir().c_str(), WorldName());
     if (GetFileAttributesW(precache) == INVALID_FILE_ATTRIBUTES) {
         rfa::Log("Precache: world \"%s\" has no %s_precache.vpp_pc (built before it had one); the game's \"%s\" is used", WorldName(), WorldName(), area);
         return area;
@@ -3458,8 +3458,8 @@ void ReadOrbitals() {
     DropOrbitals();
     const std::wstring name(world, world + strlen(world));
     std::vector<BYTE> bytes;
-    if (!ReadWholeFile(rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\" + name + L".gtodx", bytes)) {
-        rfa::LogDetail("Sun and moons: no overrides\\build\\pc\\cache\\%s.gtodx (the world builder writes it); none drawn", world);
+    if (!ReadWholeFile(rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\guerrilla\\world\\" + name + L".gtodx", bytes)) {
+        rfa::LogDetail("Sun and moons: no overrides\\build\\pc\\cache\\guerrilla\\world\\%s.gtodx (the world builder writes it); none drawn", world);
         return;
     }
     const std::string text(bytes.begin(), bytes.end());
@@ -9359,20 +9359,23 @@ auto const RegisterShader = reinterpret_cast<bool(__fastcall*)(void* library, vo
 using ShaderLoadFn = bool(__fastcall*)(void* shader, void* unused, const char* file);  // the shader's table +0x10
 using ShaderReleaseFn = void(__fastcall*)(void* shader, void* unused);                  // its table +0x08
 
-// Our effect files' names (gw_*.fxo_pc_dx11 in overrides\build\pc\cache\), instanced and skinned
-// variants first, as the game's own archive lists them.
+// Our effect files' names (gw_*.fxo_pc_dx11 in overrides\build\pc\cache\guerrilla\shaders\, or at the top of
+// the cache from a build before each part had a folder), instanced and skinned variants first, as the game's
+// own archive lists them.
 std::vector<std::string> OurShaderFiles() {
     std::vector<std::string> files;
-    WIN32_FIND_DATAW found;
-    const std::wstring pattern = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\gw_*.fxo_pc_dx11";
-    HANDLE search = FindFirstFileW(pattern.c_str(), &found);
-    if (search == INVALID_HANDLE_VALUE) return files;
-    do {
-        std::string name;  // the builder names them in plain ASCII
-        for (const wchar_t* c = found.cFileName; *c; ++c) name += static_cast<char>(*c);
-        files.push_back(name);
-    } while (FindNextFileW(search, &found));
-    FindClose(search);
+    const std::wstring cache = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\";
+    for (const wchar_t* folder : {L"guerrilla\\shaders\\", L""}) {
+        WIN32_FIND_DATAW found;
+        HANDLE search = FindFirstFileW((cache + folder + L"gw_*.fxo_pc_dx11").c_str(), &found);
+        if (search == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::string name;  // the builder names them in plain ASCII
+            for (const wchar_t* c = found.cFileName; *c; ++c) name += static_cast<char>(*c);
+            if (std::find(files.begin(), files.end(), name) == files.end()) files.push_back(name);
+        } while (FindNextFileW(search, &found));
+        FindClose(search);
+    }
     std::sort(files.begin(), files.end());
     return files;
 }

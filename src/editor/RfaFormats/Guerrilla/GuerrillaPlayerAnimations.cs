@@ -246,7 +246,7 @@ public static class GuerrillaPlayerAnimations
         id.StartsWith("land ", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Builds rfg_player for the groups <paramref name="weapons"/> use: the set's table (overrides\build\pc\cache\),
+    /// Builds rfg_player for the groups <paramref name="weapons"/> use: the set's table (overrides\build\pc\cache\guerrilla\weapons\),
     /// the animations and the gun list (<paramref name="gearFolder"/>, mods\guerrilla_gear\), the shared lists
     /// (<paramref name="worldFolder"/>, mods\guerrilla_world\). <paramref name="soundOf"/>, when given, makes an
     /// animation's sound (Guerrilla's cue, looping or not) an event of our banks, or gives null to leave it out.
@@ -264,7 +264,6 @@ public static class GuerrillaPlayerAnimations
                      Func<string, bool, string?>? soundOf, List<string> log)
     {
         string guerrillaCache = Path.Combine(guerrilla, "build", "pc", "cache"), gameCache = Path.Combine(game, "build", "pc", "cache");
-        string cache = Path.Combine(overrides, "build", "pc", "cache");
         var guerrillaTables = Packfile.Open(Path.Combine(guerrillaCache, "misc.vpp_pc"));
         var guerrillaAnims = Packfile.Open(Path.Combine(guerrillaCache, "anims.vpp_pc"));
         var gameTables = Packfile.Open(Path.Combine(gameCache, "misc.vpp_pc"));
@@ -744,8 +743,8 @@ public static class GuerrillaPlayerAnimations
         // Armageddon's moves on Mason keep Darius's camera-lookat track for a bone of that name after
         // Mason's own (PlayerRetarget.WithCameraLookat, which the people's build applies to the skeleton it
         // writes); a skeleton written before that gets it here, so those animations never name a bone it hasn't.
-        string masonRigFile = Path.Combine(cache, "mason.rig_pc");
-        if (hasMason && File.Exists(masonRigFile) && gameTables.Find("player_v2.rig_pc") is { } dariusRigEntry)
+        string? masonRigFile = OverrideLayout.Find(overrides, "mason.rig_pc");  // the people part's
+        if (hasMason && masonRigFile != null && gameTables.Find("player_v2.rig_pc") is { } dariusRigEntry)
         {
             byte[] installed = File.ReadAllBytes(masonRigFile);
             byte[] withLookat = PlayerRetarget.WithCameraLookat(installed, gameTables.Read(dariusRigEntry));
@@ -756,7 +755,6 @@ public static class GuerrillaPlayerAnimations
             }
         }
 
-        Directory.CreateDirectory(cache);
         Directory.CreateDirectory(worldFolder);
         Directory.CreateDirectory(gearFolder);
         string folder = Path.Combine(gearFolder, AnimationFolder);
@@ -764,8 +762,8 @@ public static class GuerrillaPlayerAnimations
         foreach (string old in Directory.EnumerateFiles(folder, "*.anim_pc").ToList()) File.Delete(old);
         foreach (var (has, file, table, listedAs) in new[] { (hasDarius, SetFile, dariusSet, "darius"), (hasMason, MasonSetFile, masonSet, "mason") })
         {
-            string path = Path.Combine(cache, file);
-            if (!has) { if (File.Exists(path)) File.Delete(path); continue; }
+            if (!has) { OverrideLayout.Delete(overrides, file); continue; }
+            string path = OverrideLayout.NewFile(overrides, OverrideLayout.Weapons, file);
             // Darius's set is listed as his own (his model and skeleton), Mason's as Guerrilla lists its player's.
             var listing = listedAs == "darius"
                 ? setList.Entries.FirstOrDefault(e => string.Equals(e.ValueOf("Name")?.Trim(), BaseSet + ".xtbl", StringComparison.OrdinalIgnoreCase))?.Copy()
@@ -792,7 +790,7 @@ public static class GuerrillaPlayerAnimations
         File.WriteAllLines(Path.Combine(gearFolder, WeaponList), weaponsKept);
         if (!hasDarius && !hasMason) { log.Add("player animations: none made; the guns play Darius's"); return; }
 
-        int total = MapUse(setList, cache, gameTables);
+        int total = MapUse(setList, overrides, gameTables);
         double Megabytes(string prefix) => animations.Where(a => a.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).Sum(a => (long)a.Value.Length) / 1024.0 / 1024;
         if (hasDarius)
             log.Add($"player animations: set {SetName} ({dariusPlaces} states and actions, {dariusFiles.Count} animations: {armageddonOwn.Count} Armageddon's own versions by name, " +
@@ -922,12 +920,12 @@ public static class GuerrillaPlayerAnimations
     }
 
     /// <summary>How many states and actions every listed set has (each a place in the game's (set, animation) map).</summary>
-    static int MapUse(XtblFile setList, string cache, Packfile gameTables)
+    static int MapUse(XtblFile setList, string overrides, Packfile gameTables)
     {
         int total = 0;
         foreach (string file in setList.Entries.Select(e => e.ValueOf("Name")?.Trim()).OfType<string>())
         {
-            XtblFile? table = file.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(Path.Combine(cache, file)) ? XtblFile.FromBytes(File.ReadAllBytes(Path.Combine(cache, file)))
+            XtblFile? table = OverrideLayout.Find(overrides, file) is { } ours ? XtblFile.FromBytes(File.ReadAllBytes(ours))
                             : gameTables.Find(file) is { } entry ? XtblFile.FromBytes(gameTables.Read(entry)) : null;
             foreach (var skeletonSet in table?.Entries.Where(e => e.Name.Equals("Skeleton_Set", StringComparison.OrdinalIgnoreCase)) ?? [])
                 total += Descendants(skeletonSet, "State").Count() + Descendants(skeletonSet, "Action").Count();
@@ -978,10 +976,7 @@ public static class GuerrillaPlayerAnimations
     {
         var own = ReadOwn(gearFolder);
         foreach (string set in own.Sets.Concat([SetFile, MasonSetFile]).Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            string setPath = Path.Combine(overrides, "build", "pc", "cache", set);
-            if (set.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && File.Exists(setPath)) { File.Delete(setPath); yield return $"Deleted {setPath}"; }
-        }
+            foreach (string setPath in OverrideLayout.Delete(overrides, set)) yield return $"Deleted {setPath}";
         string setListPath = Path.Combine(worldFolder, SetList);
         if (File.Exists(setListPath) && own.Sets.Count > 0)
         {

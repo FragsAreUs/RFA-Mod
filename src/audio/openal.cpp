@@ -110,6 +110,20 @@ bool OpenAl::Load(std::string& error)
     alFilteri = reinterpret_cast<LPALFILTERI>(GetProcAddress(m, "alFilteri"));
     alFilterf = reinterpret_cast<LPALFILTERF>(GetProcAddress(m, "alFilterf"));
     if (!alGenFilters || !alDeleteFilters || !alFilteri || !alFilterf) alGenFilters = nullptr;
+    // EFX's effects and slots (reverb), and a source's sends: without them nothing reverberates.
+    alGenEffects = reinterpret_cast<LPALGENEFFECTS>(GetProcAddress(m, "alGenEffects"));
+    alDeleteEffects = reinterpret_cast<LPALDELETEEFFECTS>(GetProcAddress(m, "alDeleteEffects"));
+    alEffecti = reinterpret_cast<LPALEFFECTI>(GetProcAddress(m, "alEffecti"));
+    alEffectf = reinterpret_cast<LPALEFFECTF>(GetProcAddress(m, "alEffectf"));
+    alGenAuxiliaryEffectSlots = reinterpret_cast<LPALGENAUXILIARYEFFECTSLOTS>(GetProcAddress(m, "alGenAuxiliaryEffectSlots"));
+    alDeleteAuxiliaryEffectSlots = reinterpret_cast<LPALDELETEAUXILIARYEFFECTSLOTS>(GetProcAddress(m, "alDeleteAuxiliaryEffectSlots"));
+    alAuxiliaryEffectSloti = reinterpret_cast<LPALAUXILIARYEFFECTSLOTI>(GetProcAddress(m, "alAuxiliaryEffectSloti"));
+    alAuxiliaryEffectSlotf = reinterpret_cast<LPALAUXILIARYEFFECTSLOTF>(GetProcAddress(m, "alAuxiliaryEffectSlotf"));
+    alSource3i = reinterpret_cast<LPALSOURCE3I>(GetProcAddress(m, "alSource3i"));
+    alSpeedOfSound = reinterpret_cast<LPALSPEEDOFSOUND>(GetProcAddress(m, "alSpeedOfSound"));
+    if (!alGenEffects || !alDeleteEffects || !alEffecti || !alEffectf || !alGenAuxiliaryEffectSlots || !alDeleteAuxiliaryEffectSlots ||
+        !alAuxiliaryEffectSloti || !alAuxiliaryEffectSlotf || !alSource3i)
+        alGenEffects = nullptr;
     return true;
 }
 

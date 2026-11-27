@@ -466,6 +466,9 @@ std::string Lower(std::string text) {
 // this way too: before loading a level it asks whether build\pc\cache\<level>.vpp_pc exists
 // (0x6CD1A0, through 0xC92010), then opens it with cf_open (0xC91470 → 0xC914E0), both through
 // FindFile; the mount itself (0xCB5280 → 0xCB53C0) reads the archive from the file it was given.
+// Since a new file is found by its name too, it may be in any folder that isn't an archive's: the
+// Guerrilla builder keeps each part's in one of its own (build\pc\cache\guerrilla\world\rfg_l0.vpp_pc,
+// guerrilla\vehicles\, ...; RfaFormats' OverrideLayout), and a name must be in one place only.
 
 struct NewFile {
     std::wstring path;       // full path of the file, in the overrides folder
@@ -1210,7 +1213,7 @@ void MenuMusicChanged(int index) {
 
 // ---- RFA-Mod's UI pack (the main menu's Modern style's pictures: the editor's RfaFormats UiPack) ------------
 //
-// A document of pictures only, rfa_ui_modern, in overrides\build\pc\cache, listed in the interface's asset list
+// A document of pictures only, rfa_ui_modern, in overrides\build\pc\cache\rfa, listed in the interface's asset list
 // and project overrides. The game reads those lists once, as it starts: a document it doesn't know stops it
 // ("no SRID"), so it is loaded only if all of it was there when the game started.
 constexpr char kUiPackDocument[] = "rfa_ui_modern";
@@ -1228,8 +1231,8 @@ bool FileHolds(const std::wstring& path, const char* text) {
 
 void FindUiPack() {
     const std::wstring cache = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\";
-    g_uiPackThere = GetFileAttributesW((cache + L"rfa_ui_modern.str2_pc").c_str()) != INVALID_FILE_ATTRIBUTES &&
-                    GetFileAttributesW((cache + L"rfa_ui_modern2.str2_pc").c_str()) != INVALID_FILE_ATTRIBUTES &&
+    g_uiPackThere = GetFileAttributesW((cache + L"rfa\\rfa_ui_modern.str2_pc").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                    GetFileAttributesW((cache + L"rfa\\rfa_ui_modern2.str2_pc").c_str()) != INVALID_FILE_ATTRIBUTES &&
                     FileHolds(cache + L"interface.vpp_pc\\vint_doc_containers.asm_pc", "rfa_ui_modern2") &&
                     FileHolds(cache + L"misc.vpp_pc\\rfg.vint_proj", "<doc_name>rfa_ui_modern</doc_name>");
     rfa::LogDetail(g_uiPackThere ? "UI pack: rfa_ui_modern is there (the main menu's Modern style uses its pictures)"
@@ -1502,11 +1505,11 @@ bool StartEditor(const std::wstring& arguments, bool window, HANDLE* process) {
 }
 
 // Lua: rfa_guerrilla_world_built() -> whether editor\GuerrillaBuilder.exe has made the Guerrilla world
-// (its archives, overrides\build\pc\cache\rfg_l0.vpp_pc and rfg_l1.vpp_pc)
+// (its archives, overrides\build\pc\cache\guerrilla\world\rfg_l0.vpp_pc and rfg_l1.vpp_pc)
 int __cdecl LuaGuerrillaWorldBuilt(lua_State* L) {
     const std::wstring cache = rfa::RootDir() + L"\\overrides\\build\\pc\\cache\\";
-    const bool built = GetFileAttributesW((cache + L"rfg_l0.vpp_pc").c_str()) != INVALID_FILE_ATTRIBUTES ||
-                       GetFileAttributesW((cache + L"rfg_l1.vpp_pc").c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool built = GetFileAttributesW((cache + L"guerrilla\\world\\rfg_l0.vpp_pc").c_str()) != INVALID_FILE_ATTRIBUTES ||
+                       GetFileAttributesW((cache + L"guerrilla\\world\\rfg_l1.vpp_pc").c_str()) != INVALID_FILE_ATTRIBUTES;
     rfa::game::lua_pushboolean(L, built);
     return 1;
 }

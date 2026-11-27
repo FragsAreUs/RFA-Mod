@@ -86,8 +86,10 @@ public static class GuerrillaWorld
     /// objects' player starts in the campaign's markers.
     /// 13: Guerrilla's roads in the persistent zones alone (one object each; the GPS's route and the AI's driving
     /// across junctions).
+    /// 14: the builder's new files in a folder for each part (guerrilla\world\, ... in overrides\build\pc\cache: see
+    /// OverrideLayout), and the precache stored compressed.
     /// </summary>
-    public const int Format = 13;
+    public const int Format = 14;
     // The effects' emitters the game holds (guerrilla_world makes its pool 6,600) and Armageddon's own files' (639 files).
     const int EmitterRoom = 6600, ArmageddonEmitters = 3457;
 
@@ -1379,19 +1381,21 @@ public static class GuerrillaWorld
         layer.Add((World + "_l0.asm_pc", asm.ToBytes()));
         layer1.Add((World + "_l1.asm_pc", asm1.ToBytes()));
 
-        string output = Path.Combine(overrides, "build", "pc", "cache");
+        string output = OverrideLayout.Cache(overrides);
         Directory.CreateDirectory(output);
         // Guerrilla's material shaders rewritten for Armageddon's renderer, which the chunks' and rocks'
         // materials name (the guerrilla_world mod has the game load them).
-        var shaderFiles = GuerrillaShaders.Write(cache, output);
+        var shaderFiles = GuerrillaShaders.Write(cache, overrides);
         log($"Shaders: {shaderFiles.Count} effect files of Guerrilla's material shaders; {GuerrillaMaterials.GuerrillaShaderMaterials:N0} materials drawn with them");
         // Written straight into their files: with Guerrilla's buildings the layers pass 2 GB. The zone
         // files are stored compressed, as the game's own zonescript_world.vpp_pc is: the game reads the
         // archive's stored bytes through a 20 MB pool, and with Guerrilla's objects they come to 26 MB.
-        Packfile.Write(Path.Combine(output, World + "_l0.vpp_pc"), layer);
-        Packfile.Write(Path.Combine(output, World + "_precache.vpp_pc"), precacheFiles.Select(f => (f.Key, f.Value)).ToList());
-        Packfile.Write(Path.Combine(output, World + "_l1.vpp_pc"), layer1);
-        Packfile.Write(Path.Combine(output, "zonescript_" + World + ".vpp_pc"), zonescript, compressed: true);
+        // The precache is stored compressed too, as Guerrilla's and Armageddon's own precaches are: its
+        // textures and chunk files take half the room (402 MB stored plainly, about 186 MB compressed).
+        Packfile.Write(OverrideLayout.NewArchive(overrides, OverrideLayout.World, World + "_l0.vpp_pc"), layer);
+        Packfile.Write(OverrideLayout.NewArchive(overrides, OverrideLayout.World, World + "_precache.vpp_pc"), precacheFiles.Select(f => (f.Key, f.Value)).ToList(), compressed: true);
+        Packfile.Write(OverrideLayout.NewArchive(overrides, OverrideLayout.World, World + "_l1.vpp_pc"), layer1);
+        Packfile.Write(OverrideLayout.NewArchive(overrides, OverrideLayout.World, "zonescript_" + World + ".vpp_pc"), zonescript, compressed: true);
         // Guerrilla's activities' managed layers (the demolitions masters' barrels, propane tanks, ammo boxes, walkers and
         // turret) as Armageddon's: see GuerrillaActivityLayers.
         foreach (string line in GuerrillaActivityLayers.Write(activityLayers, game, overrides, modFolder, schema, PropsOf, GameplayProps, LodProps,
@@ -1404,8 +1408,8 @@ public static class GuerrillaWorld
         Directory.CreateDirectory(tables);
         File.WriteAllBytes(Path.Combine(tables, "territories.xtbl"), territories);
         var (orbitals, sets) = GuerrillaTimeOfDay.Build(rfgMisc, districts);
-        File.WriteAllBytes(Path.Combine(output, World + ".gtodx"), orbitals);
-        foreach (var (name, set) in sets) File.WriteAllBytes(Path.Combine(output, $"{World}_{name.Replace(' ', '_').ToLowerInvariant()}.dtodx"), set);
+        File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.World, World + ".gtodx"), orbitals);
+        foreach (var (name, set) in sets) File.WriteAllBytes(OverrideLayout.NewFile(overrides, OverrideLayout.World, $"{World}_{name.Replace(' ', '_').ToLowerInvariant()}.dtodx"), set);
         log($"Districts: {string.Join(", ", districts.Select(d => $"{d.Guerrilla} ({d.Name})"))}, each with Guerrilla's time of day ({World}_<name>.dtodx), " +
             $"in the territory {World} (table.vpp_pc\\territories.xtbl)");
         // Room for the world's textures in the game's texture name table (see GuerrillaBitmaps): a slot
@@ -1427,7 +1431,7 @@ public static class GuerrillaWorld
         log($"Effects: {effectGroups.Count} effect groups added to Armageddon's effects asset list ({effectsList.Containers.Count} groups; effects.vpp_pc\\vfx_containers.asm_pc)");
         log($"Textures: {textureFiles.Count:N0} texture files; the game's texture name table gets {extraSlots:N0} more slots " +
             $"({GuerrillaBitmaps.Capacity(bitmaps):N0} → {GuerrillaBitmaps.Capacity(bitmaps) + extraSlots:N0}; misc.vpp_pc\\bitmaps_pc)");
-        log($"World {World}: {zones.Count} zones, start {World}_{start.Col:00}_{start.Row:00}; written into {output}");
+        log($"World {World}: {zones.Count} zones, start {World}_{start.Col:00}_{start.Row:00}; written into {OverrideLayout.Folder(overrides, OverrideLayout.World)}");
         GuerrillaSky.Write(cache, rfgCache, modFolder, log);
         GuerrillaSky.WriteStars(guerrilla, modFolder, log);
         GuerrillaSky.WriteCorona(rfgCache, modFolder, log);

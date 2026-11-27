@@ -79,14 +79,16 @@ int Fail(const std::wstring& message) {
 // The Guerrilla world's format this RFA-Mod's mods need: the world builder's GuerrillaWorld.Format
 // (raised whenever a world built before won't work with the mods any more), which it writes into
 // mods\guerrilla_world\world.txt ("RFA-Mod Guerrilla world, format N") once a world is built.
-constexpr int kGuerrillaWorldFormat = 13;
+constexpr int kGuerrillaWorldFormat = 14;
 
-// When a Guerrilla world is here (overrides\build\pc\cache\rfg_l0.vpp_pc) but its stamp is missing
+// When a Guerrilla world is here (overrides\build\pc\cache\guerrilla\world\rfg_l0.vpp_pc, or at the top of the cache
+// from a build before each part had a folder) but its stamp is missing
 // (built before worlds were stamped) or names another format, says what to do and asks whether to
 // start the game anyway. False: don't start it.
 bool CheckGuerrillaWorld() {
     const std::wstring root = rfa::RootDir();
-    if (!FileExists(root + L"\\overrides\\build\\pc\\cache\\rfg_l0.vpp_pc")) return true;  // no world built here
+    const std::wstring cache = root + L"\\overrides\\build\\pc\\cache\\";
+    if (!FileExists(cache + L"guerrilla\\world\\rfg_l0.vpp_pc") && !FileExists(cache + L"rfg_l0.vpp_pc")) return true;  // no world built here
     int format = 0;
     FILE* file = nullptr;
     if (_wfopen_s(&file, (root + L"\\mods\\guerrilla_world\\world.txt").c_str(), L"r") == 0 && file) {

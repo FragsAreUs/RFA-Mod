@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using RfaFormats.Guerrilla;
 using RfaFormats.Textures;
 
 namespace RfaFormats.Interface;
@@ -424,10 +425,10 @@ public static partial class GuerrillaHud
             byte[] main = Packfile.CreateContainer(documentTemplate, [(name + ".vint_doc", documentBytes), (name + ".lua", scriptBytes)]);
             byte[] art = Packfile.CreateContainer(textureTemplate, ownTextures
                 ? [(textureFile + ".cpeg_pc", pegHeader), (textureFile + ".gpeg_pc", pegData)] : []);
-            Write(Path.Combine(cacheOut, name + ".str2_pc"), main);
-            Write(Path.Combine(cacheOut, name + "2.str2_pc"), art);
-            Write(Path.Combine(cacheOut, name + ".vint_doc"), documentBytes);
-            Write(Path.Combine(cacheOut, name + ".lua"), scriptBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".str2_pc"), main);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + "2.str2_pc"), art);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".vint_doc"), documentBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".lua"), scriptBytes);
 
             containers.Containers.RemoveAll(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
                                                  c.Name.Equals(name + "2", StringComparison.OrdinalIgnoreCase));
@@ -470,10 +471,10 @@ public static partial class GuerrillaHud
             byte[] scriptBytes = Encoding.Latin1.GetBytes(TilesScript(name));
             byte[] main = Packfile.CreateContainer(documentTemplate, [(name + ".vint_doc", documentBytes), (name + ".lua", scriptBytes)]);
             byte[] art = Packfile.CreateContainer(textureTemplate, [(textureFile + ".cpeg_pc", pegHeader), (textureFile + ".gpeg_pc", pegData)]);
-            Write(Path.Combine(cacheOut, name + ".str2_pc"), main);
-            Write(Path.Combine(cacheOut, name + "2.str2_pc"), art);
-            Write(Path.Combine(cacheOut, name + ".vint_doc"), documentBytes);
-            Write(Path.Combine(cacheOut, name + ".lua"), scriptBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".str2_pc"), main);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + "2.str2_pc"), art);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".vint_doc"), documentBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".lua"), scriptBytes);
             containers.Containers.RemoveAll(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
                                                  c.Name.Equals(name + "2", StringComparison.OrdinalIgnoreCase));
             containers.Containers.Add(Entry(documentEntry, name, Packfile.FromBytes(name + ".str2_pc", main),
@@ -518,10 +519,10 @@ public static partial class GuerrillaHud
             byte[] scriptBytes = Encoding.Latin1.GetBytes(HandbookPictureScript(name));
             byte[] main = Packfile.CreateContainer(documentTemplate, [(name + ".vint_doc", documentBytes), (name + ".lua", scriptBytes)]);
             byte[] art = Packfile.CreateContainer(textureTemplate, [(textureFile + ".cpeg_pc", pegHeader), (textureFile + ".gpeg_pc", pegData)]);
-            Write(Path.Combine(cacheOut, name + ".str2_pc"), main);
-            Write(Path.Combine(cacheOut, name + "2.str2_pc"), art);
-            Write(Path.Combine(cacheOut, name + ".vint_doc"), documentBytes);
-            Write(Path.Combine(cacheOut, name + ".lua"), scriptBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".str2_pc"), main);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + "2.str2_pc"), art);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".vint_doc"), documentBytes);
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, name + ".lua"), scriptBytes);
             containers.Containers.RemoveAll(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
                                                  c.Name.Equals(name + "2", StringComparison.OrdinalIgnoreCase));
             containers.Containers.Add(Entry(documentEntry, name, Packfile.FromBytes(name + ".str2_pc", main),
@@ -567,7 +568,7 @@ public static partial class GuerrillaHud
         {
             var (at, length) = SheetTableInProject(projectText);
             string gameSheets = ReadText(gameMisc, projectText.Substring(at, length) + ".xtbl");
-            Write(Path.Combine(cacheOut, sheetTable + ".xtbl"),
+            Write(OverrideLayout.NewFile(overridesFolder, OverrideLayout.Hud, sheetTable + ".xtbl"),
                   Encoding.Latin1.GetBytes(WithSheets(gameSheets, guerrillaSheetsText, sheetsBrought, wholeTextures)));
         }
         string miscOut = Path.Combine(cacheOut, "misc.vpp_pc");
@@ -605,13 +606,14 @@ public static partial class GuerrillaHud
         {
             Path.Combine(cacheOut, "misc.vpp_pc", "rfg.vint_proj"),
             Path.Combine(cacheOut, "interface.vpp_pc", "vint_doc_containers.asm_pc"),
-            Path.Combine(cacheOut, SheetTableName + ".xtbl"),
         };
+        // The new files: in the HUD's folder (guerrilla\hud\), or at the top of the cache from an older build.
+        var newFiles = new List<string> { SheetTableName + ".xtbl" };
         foreach (string document in Documents.Select(d => d.Name).Concat(ZoneDocuments()))
             foreach (string file in new[] { ".str2_pc", "2.str2_pc", ".vint_doc", ".lua" })
-                files.Add(Path.Combine(cacheOut, document + file));
-        if (Directory.Exists(cacheOut))
-            files.AddRange(Directory.GetFiles(cacheOut, GuerrillaHandbook.PictureDocumentPrefix + "*"));
+                newFiles.Add(document + file);
+        newFiles.AddRange(OverrideLayout.FindAll(overridesFolder, GuerrillaHandbook.PictureDocumentPrefix + "*").Select(f => Path.GetFileName(f)));
+        var deleted = newFiles.Distinct(StringComparer.OrdinalIgnoreCase).SelectMany(name => OverrideLayout.Delete(overridesFolder, name)).ToList();
         if (scriptsFolder != null)
         {
             files.Add(Path.Combine(scriptsFolder, DistrictsFile));
@@ -625,12 +627,12 @@ public static partial class GuerrillaHud
             files.Add(Path.Combine(scriptsFolder, GuerrillaHudMessages.FileName));
         }
         files.AddRange(OldFiles(overridesFolder));
-        var report = new List<string>();
         foreach (string file in files.Where(File.Exists))
         {
             File.Delete(file);
-            report.Add($"Removed {(file.StartsWith(overridesFolder, StringComparison.OrdinalIgnoreCase) ? Path.GetRelativePath(overridesFolder, file) : file)}");
+            deleted.Add(file);
         }
+        var report = deleted.Select(file => $"Removed {(file.StartsWith(overridesFolder, StringComparison.OrdinalIgnoreCase) ? Path.GetRelativePath(overridesFolder, file) : file)}").ToList();
         if (report.Count == 0) report.Add("Nothing of Guerrilla's HUD was installed");
         return report;
     }

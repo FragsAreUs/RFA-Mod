@@ -235,6 +235,8 @@ RFA_AUDIO_API int rfa_audio_archive_bank_names(const wchar_t* archive, char* tex
 
 /* The buses an event's plays go through that duck other buses. Returns how many (fills at most max). */
 RFA_AUDIO_API int rfa_audio_event_ducking_buses(uint32_t event_id, uint32_t* buses, int max);
+/* The same for a node played alone (a voice line's, rfa_audio_resolve_dialogue's). */
+RFA_AUDIO_API int rfa_audio_node_ducking_buses(uint32_t node_id, uint32_t* buses, int max);
 
 /* A sound starts (delta 1) or ends (-1) on a bus outside this engine (Wwise's, while some banks still play there):
    it ducks the buses that bus ducks, as a sound of ours would. */
@@ -248,12 +250,52 @@ RFA_AUDIO_API int rfa_audio_is_playing(uint32_t playing_id);
 typedef void (*rfa_audio_end_callback)(uint32_t playing_id, uint32_t event_id, uint64_t object, int voices, void* user);
 RFA_AUDIO_API void rfa_audio_set_end_callback(rfa_audio_end_callback callback, void* user);
 
+/* Called when a play's first voice starts (virtual or not), with its bank and medium: the game's hybrid hands a voice
+   line's lip-sync block (rfa_audio_medium_prefix) to the game then. Called outside the engine's lock, as the end
+   callback is. */
+typedef void (*rfa_audio_start_callback)(uint32_t playing_id, uint32_t bank_id, uint32_t medium_id, void* user);
+RFA_AUDIO_API void rfa_audio_set_start_callback(rfa_audio_start_callback callback, void* user);
+
+/* The bytes a bank's medium has before its RIFF (a voice line's lip-sync block, "DMAV"): copies at most max, returns how
+   many there are (0 none). */
+RFA_AUDIO_API int rfa_audio_medium_prefix(uint32_t bank_id, uint32_t medium_id, uint8_t* out, int max);
+
+/* Voices (step D). A voice bank's dialogue events (object type 15): Armageddon's are a lookup of (persona, line). */
+RFA_AUDIO_API int rfa_audio_bank_dialogue_events(uint32_t bank_id, uint32_t* ids, int max);
+/* The node a dialogue event gives for its arguments' values (Armageddon's: the persona, the line): 0 none. */
+RFA_AUDIO_API uint32_t rfa_audio_resolve_dialogue(uint32_t dialogue_event, const uint32_t* values, int count);
+/* A dialogue event's lines: for each, its keys (one an argument, in keys[i * arguments + k]) and its node. Returns how
+   many there are (fills at most max); *arguments gets how many keys each has. */
+RFA_AUDIO_API int rfa_audio_dialogue_lines(uint32_t dialogue_event, int* arguments, uint32_t* keys, uint32_t* nodes, int max);
+
 /* ---- Game objects, the listener, game parameters, switches and states ------------------------------- */
 
 /* A game object's place and the way it faces (front may be null). */
 RFA_AUDIO_API void rfa_audio_set_position(uint64_t object, const float position[3], const float front[3]);
 /* The listener: its place, front and up (front and up may be null: z forward, y up). */
 RFA_AUDIO_API void rfa_audio_set_listener(const float position[3], const float front[3], const float up[3]);
+
+/* Space. An object's obstruction and occlusion (0-100, as Wwise's SetObjectObstructionAndOcclusion takes them, x100):
+   init.bnk's curves (ENVS) turn them into volume and low-pass, each only if it is on. */
+RFA_AUDIO_API void rfa_audio_set_obstruction(uint64_t object, float obstruction, float occlusion);
+/* An object's environments (as Wwise's SetGameObjectEnvironmentsValues: at most 4, each an effect of init.bnk's FXPR and
+   how much of it, 0-1): its 3D sounds are sent to those reverbs (EFX), by that much. Count 0 takes them all away. */
+RFA_AUDIO_API void rfa_audio_set_environments(uint64_t object, const uint32_t* environments, const float* values, int count);
+/* Doppler: 0 off (the default), 1 as sound travels (343 m/s); the speeds are measured from the places given. */
+RFA_AUDIO_API void rfa_audio_set_doppler(float factor);
+/* Guerrilla's occlusion (Red Faction: Guerrilla's own, ported): how muffled each 3D sound is, from rays round the listener.
+   A ray, as the game casts it: its direction (Guerrilla's AUDIOLIB_RAYCAST_DIRECTION: 0 up, 1 down, 2 north (+z), then
+   round clockwise to 9 north-west; 10-17 the same eight tilted up, 18-25 tilted down), what it hit in order (up to 3: how
+   far from the listener, in metres, and Guerrilla's audiolib_material_type: 0 clear, 1 reflect thin, 2 reflect thick,
+   3 absorb thin, 4 absorb thick, 5 ground) and whether it was blocked within 20 m. */
+RFA_AUDIO_API void rfa_audio_set_listener_ray(int direction, int hits, const float* distances, const int* materials, int blocked);
+/* Which occlusion 3D sounds get: 0 (the default) the obstruction and occlusion rfa_audio_set_obstruction gives, through
+   init.bnk's curves (Armageddon's way); 1 Guerrilla's, from the listener's rays (its volume and low-pass rules). */
+RFA_AUDIO_API void rfa_audio_set_occlusion_model(int model);
+/* Guerrilla's occlusion now: the voices it muffled at the last update (the return), the most of them (0-5), the listener's
+   enclosure (0 open to 1 shut in: its rays blocked within 20 m, weighted) and the room's reverb type (Guerrilla's
+   AUDIOLIB_REVERB_ROOM_TYPE: 6 stone room, 13 hallway, 19 quarry, 22 sewer pipe, 25 medium room, 28 large hall). */
+RFA_AUDIO_API int rfa_audio_occlusion_status(float* most, float* enclosure, int* reverb_type);
 /* A game parameter on an object, or for every object (object 0). game_distance is the engine's own: the
    object's distance from the listener, unless it is set here. */
 RFA_AUDIO_API void rfa_audio_set_parameter(uint64_t object, uint32_t parameter, float value);

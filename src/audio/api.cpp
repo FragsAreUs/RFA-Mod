@@ -31,11 +31,17 @@ int CopyText(const std::string& text, char* out, int size)
     return static_cast<int>(text.size());
 }
 
-// Reports the ends taken out under the lock, outside it.
+// Reports the starts and the ends taken out under the lock, outside it.
 void Report(std::vector<EndNote> ends, rfa_audio_end_callback callback, void* user)
 {
     if (!callback) return;
     for (const EndNote& e : ends) callback(e.playingId, e.eventId, e.object, e.voices, user);
+}
+
+void ReportStarts(std::vector<StartNote> starts, rfa_audio_start_callback callback, void* user)
+{
+    if (!callback) return;
+    for (const StartNote& s : starts) callback(s.playingId, s.bankId, s.mediumId, user);
 }
 
 template <typename Item>
@@ -139,8 +145,9 @@ int NamedIds(const Library& lib, uint32_t* ids, int* kinds, int max)
     for (auto& [bankId, bank] : lib.Banks()) {
         put(RFA_AUDIO_NAMED_BANK, bankId);
         for (uint32_t e : bank->events) put(RFA_AUDIO_NAMED_EVENT, e);
+        for (uint32_t id : bank->dialogueEvents) put(RFA_AUDIO_NAMED_DIALOGUE, id);
         for (auto& [id, type] : bank->unread)
-            if (type == 15) put(RFA_AUDIO_NAMED_DIALOGUE, id);
+            if (type == 15) put(RFA_AUDIO_NAMED_DIALOGUE, id);  // (one not read as laid out)
         for (uint32_t b : bank->buses) {
             put(RFA_AUDIO_NAMED_BUS, b);
             if (const Bus* bus = lib.FindBus(b)) {
@@ -152,6 +159,10 @@ int NamedIds(const Library& lib, uint32_t* ids, int* kinds, int max)
             const Node* n = lib.FindNode(id);
             if (!n) continue;
             curves(n->curves);
+            for (const Node::Layer& l : n->layerList) {
+                curves(l.curves);
+                put(RFA_AUDIO_NAMED_PARAMETER, l.crossfadeParameter);
+            }
             put(RFA_AUDIO_NAMED_STATE_GROUP, n->stateGroup);
             if (n->type != TypeSwitch) continue;
             put(n->onState ? RFA_AUDIO_NAMED_STATE_GROUP : RFA_AUDIO_NAMED_SWITCH_GROUP, n->group);
@@ -193,6 +204,48 @@ int rfa_audio_named_ids(uint32_t* ids, int* kinds, int max)
 {
     std::lock_guard<std::mutex> hold(E().lock);
     return NamedIds(E().library, ids, kinds, max);
+}
+
+void rfa_audio_set_obstruction(uint64_t object, float obstruction, float occlusion)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().SetObstruction(object, obstruction, occlusion);
+}
+
+void rfa_audio_set_environments(uint64_t object, const uint32_t* environments, const float* values, int count)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().SetEnvironments(object, environments, values, count);
+}
+
+void rfa_audio_set_doppler(float factor)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().SetDoppler(factor);
+}
+
+void rfa_audio_set_listener_ray(int direction, int hits, const float* distances, const int* materials, int blocked)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().SetListenerRay(direction, hits, distances, materials, blocked != 0);
+}
+
+void rfa_audio_set_occlusion_model(int model)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().SetOcclusionModel(model);
+}
+
+int rfa_audio_occlusion_status(float* most, float* enclosure, int* reverb_type)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    float m = 0, e = 0;
+    int r = 0;
+    int voices = E().OcclusionStatus(m, e, r);
+    if (most) *most = m;
+    if (enclosure) *enclosure = e;
+    if (reverb_type) *reverb_type = r;
+    return voices;
 }
 
 int rfa_audio_event_reach(uint32_t event_id)
@@ -292,10 +345,17 @@ int rfa_audio_bank_parameters(uint32_t bank_id, uint32_t* ids, int max)
     if (!bank) return 0;
     std::set<uint32_t> seen;
     std::vector<uint32_t> items;
+    auto add = [&](uint32_t parameter) {
+        if (parameter && seen.insert(parameter).second) items.push_back(parameter);
+    };
     for (uint32_t id : bank->nodes)
-        if (const Node* n = E().library.FindNode(id))
-            for (const Curve& c : n->curves)
-                if (seen.insert(c.parameter).second) items.push_back(c.parameter);
+        if (const Node* n = E().library.FindNode(id)) {
+            for (const Curve& c : n->curves) add(c.parameter);
+            for (const Node::Layer& l : n->layerList) {  // a layer's own curves, and its crossfade
+                for (const Curve& c : l.curves) add(c.parameter);
+                if (!l.children.empty()) add(l.crossfadeParameter);
+            }
+        }
     return Fill(items, ids, max);
 }
 
@@ -334,17 +394,25 @@ int rfa_audio_parameter_range(uint32_t bank_id, uint32_t parameter, float* min, 
     if (!bank) return 0;
     bool any = false;
     float low = 0, high = 0;
+    auto take = [&](const std::vector<CurvePoint>& points) {
+        for (const CurvePoint& p : points) {
+            if (!any) low = high = p.x;
+            any = true;
+            low = std::min(low, p.x);
+            high = std::max(high, p.x);
+        }
+    };
     for (uint32_t id : bank->nodes)
-        if (const Node* n = E().library.FindNode(id))
+        if (const Node* n = E().library.FindNode(id)) {
             for (const Curve& c : n->curves)
-                if (c.parameter == parameter && !c.points.empty()) {
-                    if (!any) low = high = c.points.front().x;
-                    any = true;
-                    for (const CurvePoint& p : c.points) {
-                        low = std::min(low, p.x);
-                        high = std::max(high, p.x);
-                    }
-                }
+                if (c.parameter == parameter) take(c.points);
+            for (const Node::Layer& l : n->layerList) {
+                for (const Curve& c : l.curves)
+                    if (c.parameter == parameter) take(c.points);
+                if (l.crossfadeParameter == parameter)
+                    for (const auto& [child, points] : l.children) take(points);
+            }
+        }
     if (min) *min = low;
     if (max) *max = high;
     return any ? 1 : 0;
@@ -451,6 +519,14 @@ void rfa_audio_pause_playing(uint32_t playing_id, int pause)
     E().PausePlay(playing_id, pause != 0);
 }
 
+int rfa_audio_node_ducking_buses(uint32_t node_id, uint32_t* buses, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    std::vector<uint32_t> found = E().NodeDuckingBuses(node_id);
+    for (int i = 0; i < max && i < static_cast<int>(found.size()); i++) buses[i] = found[i];
+    return static_cast<int>(found.size());
+}
+
 int rfa_audio_event_ducking_buses(uint32_t event_id, uint32_t* buses, int max)
 {
     std::lock_guard<std::mutex> hold(E().lock);
@@ -522,6 +598,51 @@ void rfa_audio_set_log_callback(rfa_audio_log_callback callback, void* user, int
     E().quietLogged.clear();
 }
 
+void rfa_audio_set_start_callback(rfa_audio_start_callback callback, void* user)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().startCallback = callback;
+    E().startUser = user;
+}
+
+int rfa_audio_medium_prefix(uint32_t bank_id, uint32_t medium_id, uint8_t* out, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    return E().MediumPrefix(bank_id, medium_id, out, max);
+}
+
+int rfa_audio_bank_dialogue_events(uint32_t bank_id, uint32_t* ids, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    Bank* bank = E().library.FindBank(bank_id);
+    return bank ? Fill(bank->dialogueEvents, ids, max) : 0;
+}
+
+uint32_t rfa_audio_resolve_dialogue(uint32_t dialogue_event, const uint32_t* values, int count)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    const DialogueEvent* d = E().library.FindDialogueEvent(dialogue_event);
+    return d && values && count > 0 ? d->Resolve(values, static_cast<size_t>(count)) : 0;
+}
+
+int rfa_audio_dialogue_lines(uint32_t dialogue_event, int* arguments, uint32_t* keys, uint32_t* nodes, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    const DialogueEvent* d = E().library.FindDialogueEvent(dialogue_event);
+    if (!d) return 0;
+    const size_t args = d->arguments.size();
+    if (arguments) *arguments = static_cast<int>(args);
+    int n = 0;
+    for (const auto& [path, node] : d->paths) {
+        if (n < max) {
+            for (size_t k = 0; keys && k < args && k < path.size(); k++) keys[static_cast<size_t>(n) * args + k] = path[k];
+            if (nodes) nodes[n] = node;
+        }
+        n++;
+    }
+    return n;
+}
+
 void rfa_audio_set_end_callback(rfa_audio_end_callback callback, void* user)
 {
     std::lock_guard<std::mutex> hold(E().lock);
@@ -574,23 +695,33 @@ void rfa_audio_remove_object(uint64_t object)
 void rfa_audio_tick(void)
 {
     std::vector<EndNote> ends;
+    std::vector<StartNote> starts;
     rfa_audio_end_callback callback;
+    rfa_audio_start_callback startCallback;
     void* user;
+    void* startUser;
     {
         std::lock_guard<std::mutex> hold(E().lock);
         E().Update();
         ends = E().TakeEnds();
         callback = E().endCallback;
         user = E().endUser;
+        starts = E().TakeStarts();
+        startCallback = E().startCallback;
+        startUser = E().startUser;
     }
+    ReportStarts(std::move(starts), startCallback, startUser);
     Report(std::move(ends), callback, user);
 }
 
 int rfa_audio_render(float* out, int frames)
 {
     std::vector<EndNote> ends;
+    std::vector<StartNote> starts;
     rfa_audio_end_callback callback;
+    rfa_audio_start_callback startCallback;
     void* user;
+    void* startUser;
     int rendered;
     {
         std::lock_guard<std::mutex> hold(E().lock);
@@ -598,7 +729,11 @@ int rfa_audio_render(float* out, int frames)
         ends = E().TakeEnds();
         callback = E().endCallback;
         user = E().endUser;
+        starts = E().TakeStarts();
+        startCallback = E().startCallback;
+        startUser = E().startUser;
     }
+    ReportStarts(std::move(starts), startCallback, startUser);
     Report(std::move(ends), callback, user);
     return rendered;
 }

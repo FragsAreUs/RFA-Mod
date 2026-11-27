@@ -47,6 +47,69 @@ Vec3 Normalized(const Vec3& a, const Vec3& fallback)
     return l > 1e-6f ? Vec3{a.x / l, a.y / l, a.z / l} : fallback;
 }
 
+// ---- Guerrilla's occlusion ----
+// Red Faction: Guerrilla works out how muffled each 3D sound is from rays round the listener (the names are those of
+// Re-Mars-tered's PDB; the numbers its exe's and its misc.vpp_pc's foley_settings.xtbl's). The game casts one of 26
+// directions a frame (gameaudio_update_listener_los: rfa_sound casts them as it does); audiolib keeps the first hits of
+// each (audiolib_listener_raycast), works out the room they make (audiolib_internal_fov_determine_room_size_and_shape)
+// and, for each sound, which rays point its way and what they hit before it (audiolib_internal_fov_compute_occlusion,
+// 0-5); audiolib_3d_calc_volume turns that into less volume and a low-pass. Armageddon kept a port of it whose value
+// (clamped to 0-1 and halved towards the last) it gives Wwise as obstruction, which its banks' curves ignore.
+// docs\game-notes.md: "Guerrilla's occlusion".
+
+// The 26 directions (AUDIOLIB_RAYCAST_DIRECTION order), as audiolib_raycast_direction_vectors has them (not all of
+// length 1: Guerrilla's dots and rays use them so).
+constexpr float GuerrillaRays[26][3] = {
+    {0, 1, 0},           {0, -1, 0},              {0, 0, 1},           {0.707f, 0, 0.707f},       {1, 0, 0},
+    {0.707f, 0, -0.707f}, {0, 0, -1},             {-0.707f, 0, -0.707f}, {-1, 0, 0},              {-0.707f, 0, 0.707f},
+    {0, 0.707f, 1},      {0.707f, 0.707f, 0.707f}, {1, 0.707f, 0},     {0.707f, 0.707f, -0.707f}, {0, 0.707f, -1},
+    {-0.707f, 0.707f, -0.707f}, {-1, 0.707f, 0}, {-0.707f, 0.707f, 0.707f}, {0, -0.353f, 1},      {0.707f, -0.353f, 0.707f},
+    {1, -0.353f, 0},     {0.707f, -0.353f, -0.707f}, {0, -0.353f, -1},  {-0.707f, -0.353f, -0.707f}, {-1, -0.353f, 0},
+    {-0.707f, -0.353f, 0.707f}};
+// Each direction and those round it, itself first (audiolib_raycast_surrounding_directions; 255 ends a list).
+constexpr uint8_t GuerrillaNeighbours[26][9] = {
+    {0, 17, 10, 11, 12, 13, 14, 15, 16},      {1, 25, 18, 19, 20, 21, 22, 23, 24},    {2, 25, 9, 17, 18, 10, 19, 3, 11},
+    {3, 18, 2, 10, 19, 11, 20, 4, 12},        {4, 19, 3, 11, 20, 12, 21, 5, 13},     {5, 20, 4, 12, 21, 13, 22, 6, 14},
+    {6, 21, 5, 13, 22, 14, 23, 7, 15},        {7, 22, 6, 14, 23, 15, 24, 8, 16},     {8, 23, 7, 15, 24, 16, 25, 9, 17},
+    {9, 24, 8, 16, 25, 17, 18, 2, 10},        {10, 0, 17, 9, 2, 11, 3, 255, 255},    {11, 0, 10, 2, 3, 12, 4, 255, 255},
+    {12, 0, 11, 3, 4, 13, 5, 255, 255},       {13, 0, 12, 4, 5, 14, 6, 255, 255},    {14, 0, 13, 5, 6, 15, 7, 255, 255},
+    {15, 0, 14, 6, 7, 16, 8, 255, 255},       {16, 0, 15, 7, 8, 17, 9, 255, 255},    {17, 0, 16, 8, 10, 2, 255, 255, 0},
+    {18, 1, 9, 25, 2, 3, 19, 255, 255},       {19, 1, 2, 18, 3, 4, 20, 255, 255},    {20, 1, 3, 19, 4, 5, 21, 255, 255},
+    {21, 1, 4, 20, 5, 6, 22, 255, 255},       {22, 1, 5, 21, 6, 7, 23, 255, 255},    {23, 1, 6, 22, 7, 8, 24, 255, 255},
+    {24, 1, 7, 23, 8, 9, 25, 255, 255},       {25, 1, 8, 24, 9, 2, 18, 255, 255}};
+// What a hit adds to a blocker's value, by its material (audiolib_material_type 0-5) and the ray's direction: level,
+// upwards (up and the eight tilted up), downwards (down and the eight tilted down: the ground below takes the value away).
+constexpr float GuerrillaLevelMaterial[6] = {0, 0.02f, 0.07f, 0.12f, 0.17f, 0.27f};
+constexpr float GuerrillaUpMaterial[6] = {0, 0.05f, 0.1f, 0.2f, 0.3f, 0.5f};
+constexpr float GuerrillaDownMaterial[5] = {0, 0.05f, 0.1f, 0.2f, 0.3f};
+constexpr int GuerrillaGround = 5;
+// foley_settings.xtbl: Occlusion (max_occlusions: the hits of each ray that count; volume_factor, max_vol_occlusion,
+// occlusion_lpf_add), listener_field_of_view's minimum_reverb_fov, general_settings' default_dist_min.
+constexpr int GuerrillaMaxOcclusions = 1;
+constexpr float GuerrillaOcclusionVolumeFactor = 0.05f, GuerrillaMaxVolumeOcclusion = 0.4f, GuerrillaOcclusionLowPassAdd = 0.02f;
+constexpr float GuerrillaMinimumReverbFov = 0.75f, GuerrillaDefaultDistanceMin = 5;
+// The room sizes (audiolib_room_volume_small, _large, _huge, _canyon; m^3).
+constexpr float GuerrillaRoomSmall = 450, GuerrillaRoomLarge = 800, GuerrillaRoomHuge = 2000, GuerrillaRoomCanyon = 7000;
+
+// A ray's weight in the listener's enclosure (the game's table 0x165E300 in Re-Mars-tered): up 2, tilted up 1, level 0.5,
+// down and tilted down 0.1.
+float GuerrillaRayWeight(int direction)
+{
+    return direction == 0 ? 2.0f : direction == 1 ? 0.1f : direction <= 9 ? 0.5f : direction <= 17 ? 1.0f : 0.1f;
+}
+
+// Where a volume curve on the distance starts to fall (Guerrilla's per-sound dist_min): the last place it still has
+// its first value; the nearest such of a sound's curves is kept. One that never falls says nothing.
+void NoteFall(const Curve& c, float& distanceMin)
+{
+    for (size_t i = 1; i < c.points.size(); i++)
+        if (c.points[i].y < c.points[0].y - 0.01f) {
+            float at = c.points[i - 1].x;
+            if (distanceMin < 0 || at < distanceMin) distanceMin = at;
+            return;
+        }
+}
+
 // How much level OpenAL Soft's panning loses for a mono sound in each direction, measured on a loopback device of the
 // given layout (and HRTF): noise played from each direction of a grid, and the output's power (all channels) against
 // the noise's. Wwise pans at a constant power (the channels' powers add up to the sound's, whichever way it comes from);
@@ -202,6 +265,8 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
         return false;
     }
     // Sources: as many as allowed, mono or stereo. HRTF only when asked (headphones).
+    // Four sends a source for the environments' reverbs (a game object has at most four: SetGameObjectEnvironmentsValues).
+    attributes.insert(attributes.end(), {ALC_MAX_AUXILIARY_SENDS, 4});
     attributes.insert(attributes.end(), {ALC_MONO_SOURCES, maxSources, ALC_STEREO_SOURCES, maxSources / 2 + 1,
                                          ALC_HRTF_SOFT, settings.hrtf ? ALC_TRUE : ALC_FALSE, 0});
     context = al.alcCreateContext(device, attributes.data());
@@ -224,6 +289,16 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
     directChannels = al.alIsExtensionPresent("AL_SOFT_direct_channels_remix") ? AL_REMIX_UNMATCHED_SOFT
                    : al.alIsExtensionPresent("AL_SOFT_direct_channels") ? AL_TRUE : 0;
     canUnspatialize = al.alIsExtensionPresent("AL_SOFT_source_spatialize") != AL_FALSE;
+    canSpread = al.alIsExtensionPresent("AL_EXT_SOURCE_RADIUS") != AL_FALSE;
+    maxSends = 0;
+    if (al.HasEffects()) {
+        ALCint sends = 0;
+        al.alcGetIntegerv(device, ALC_MAX_AUXILIARY_SENDS, 1, &sends);
+        maxSends = std::clamp<int>(sends, 0, 4);
+    }
+    dopplerFactor = 0;
+    listenerSampledAt = -1;
+    listenerVelocity = {};
     // What OpenAL Soft's panning loses in each direction, against Wwise's constant power: made up for each voice
     // (ApplySource). Measured on a loopback device of this one's layout, with HRTF if this one has it.
     ALCint hrtfOn = 0, mode = 0;
@@ -255,6 +330,9 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
                 std::vector<EndNote> done;
                 rfa_audio_end_callback callback;
                 void* user;
+                std::vector<StartNote> started;
+                rfa_audio_start_callback startTold;
+                void* startUserHere;
                 {
                     std::lock_guard<std::mutex> held(lock);
                     if (stopThread) break;
@@ -262,7 +340,12 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
                     done = TakeEnds();
                     callback = endCallback;
                     user = endUser;
+                    started = TakeStarts();
+                    startTold = startCallback;
+                    startUserHere = startUser;
                 }
+                if (startTold)
+                    for (const StartNote& s : started) startTold(s.playingId, s.bankId, s.mediumId, startUserHere);
                 if (callback)
                     for (const EndNote& e : done) callback(e.playingId, e.eventId, e.object, e.voices, user);
                 Sleep(10);
@@ -297,6 +380,15 @@ void Engine::Close()
     if (al.HasFilters())
         for (auto& [source, filter] : sourceFilters) al.alDeleteFilters(1, &filter);
     sourceFilters.clear();
+    if (al.HasFilters())
+        for (auto& [source, filters] : sendFilters) al.alDeleteFilters(static_cast<ALsizei>(filters.size()), filters.data());
+    sendFilters.clear();
+    if (al.HasEffects())
+        for (auto& [environment, r] : reverbSlots) {
+            al.alDeleteAuxiliaryEffectSlots(1, &r.slot);
+            al.alDeleteEffects(1, &r.effect);
+        }
+    reverbSlots.clear();
     actionValues.clear();
     busActionValues.clear();
     stateChanges.clear();
@@ -637,16 +729,18 @@ void Engine::Execute(const Action& action, Play& play)
     case ActionSetPitch: case ActionResetPitch: case ActionSetLowPass: case ActionResetLowPass: {
         // On a node (a bus is the mix's, step 3), for the event's object or every one; "all" resets every node's.
         const uint32_t kind = action.Kind();
+        // Each moves to its value over the action's fade, along its curve (at once with no fade).
+        const double fade = std::max(0, action.fadeMs) / 1000.0;
         auto apply = [&](ActionValues& v) {
             switch (kind) {
-            case ActionSetVolume: v.volume = action.value; break;
-            case ActionMute: v.muted = true; break;
-            case ActionUnmute: v.muted = false; break;
-            case ActionResetVolume: v.volume = 0; break;
-            case ActionSetPitch: v.pitch = action.value; break;
-            case ActionResetPitch: v.pitch = 0; break;
-            case ActionSetLowPass: v.lowPass = action.value; break;
-            case ActionResetLowPass: v.lowPass = 0; break;
+            case ActionSetVolume: v.volume.Go(action.value, now, fade, action.fadeCurve); break;
+            case ActionMute: v.mute.Go(1, now, fade, action.fadeCurve); break;
+            case ActionUnmute: v.mute.Go(0, now, fade, action.fadeCurve); break;
+            case ActionResetVolume: v.volume.Go(0, now, fade, action.fadeCurve); break;
+            case ActionSetPitch: v.pitch.Go(action.value, now, fade, action.fadeCurve); break;
+            case ActionResetPitch: v.pitch.Go(0, now, fade, action.fadeCurve); break;
+            case ActionSetLowPass: v.lowPass.Go(action.value, now, fade, action.fadeCurve); break;
+            case ActionResetLowPass: v.lowPass.Go(0, now, fade, action.fadeCurve); break;
             }
         };
         if (action.Scope() == ScopeAll || action.Scope() == ScopeAllBut) {
@@ -661,8 +755,8 @@ void Engine::Execute(const Action& action, Play& play)
         } else if (library.FindBus(action.target)) {
             apply(busActionValues[action.target]);  // a bus: for every sound through it
         }
-        for (auto it = actionValues.begin(); it != actionValues.end();) it = it->second.Empty() ? actionValues.erase(it) : std::next(it);
-        for (auto it = busActionValues.begin(); it != busActionValues.end();) it = it->second.Empty() ? busActionValues.erase(it) : std::next(it);
+        for (auto it = actionValues.begin(); it != actionValues.end();) it = it->second.Empty(now) ? actionValues.erase(it) : std::next(it);
+        for (auto it = busActionValues.begin(); it != busActionValues.end();) it = it->second.Empty(now) ? busActionValues.erase(it) : std::next(it);
         break;
     }
     case ActionPause: case ActionResume: {
@@ -1091,6 +1185,8 @@ bool Engine::BeginVoice(Instance& in, bool counted)
     v.codec = CodecOf(v.medium.format);
     v.length = v.medium.Seconds();
     GameObject& object = Object(in.play->object);
+    if (in.node)
+        if (const Node* positioning = PositioningNode(in.node); positioning && positioning->OnPaths()) StartPath(v, positioning);
     Level level = LevelOf(in, object);
     v.threeD = level.threeD;
     v.priority = level.priority;
@@ -1099,6 +1195,10 @@ bool Engine::BeginVoice(Instance& in, bool counted)
     v.distance = level.distance;
     v.levelDb = level.db + GainToDb(level.fadeGain);
     v.startedAt = now;
+    if (!in.play->startNoted && in.node) {
+        in.play->startNoted = true;
+        starts.push_back({in.play->playingId, in.node->bankId, v.mediumId});
+    }
     auto count = [&] {
         if (counted) return;
         liveVoices.push_back(&v);
@@ -1188,6 +1288,11 @@ void Engine::ReleaseSource(Voice& v)
     if (!v.source) return;
     al.alSourceStop(v.source);
     al.alSourcei(v.source, AL_BUFFER, 0);  // detaches its buffer, or unqueues a stream's
+    for (int i = 0; i < maxSends; i++) {   // its sends go: the next voice on the source sets its own
+        if (v.sentTo[i]) al.alSource3i(v.source, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, i, AL_FILTER_NULL);
+        v.sentTo[i] = 0;
+        v.sentGain[i] = 0;
+    }
     freeSources.push_back(v.source);
     v.source = 0;
     if (v.buffers[0]) {
@@ -1214,6 +1319,7 @@ bool Engine::BeginOnSource(Voice& v)
     // 2D: a stereo sound's channels go straight to the speakers' (HRTF on, OpenAL Soft would place them at ±30° and
     // filter them: 2.5 dB quieter than Wwise), a mono one isn't spatialized. 3D: placed (and through HRTF if it is on).
     if (directChannels) al.alSourcei(source, AL_DIRECT_CHANNELS_SOFT, !v.threeD && v.channels > 1 ? directChannels : AL_FALSE);
+    if (canSpread) al.alSourcef(source, AL_SOURCE_RADIUS, 0.0f);  // (a source is used again: ApplySource sets a spread's)
     if (canUnspatialize) al.alSourcei(source, AL_SOURCE_SPATIALIZE_SOFT, v.threeD ? AL_TRUE : AL_FALSE);
     if (v.decoded) {
         al.alSourcei(source, AL_BUFFER, static_cast<ALint>(v.decoded->buffer));
@@ -1313,6 +1419,70 @@ void Engine::ServiceStream(Voice& v)
 
 // The voice's place relative to the listener, in OpenAL's terms: the listener's right is +x, up +y, front -z.
 // The game's axes are left-handed (x right, y up, z forward), so right = up × front.
+Vec3 Engine::ToListenerDirection(const Vec3& direction) const
+{
+    Vec3 front = Normalized(listenerFront, {0, 0, 1});
+    Vec3 right = Normalized(Cross(listenerUp, front), {1, 0, 0});
+    Vec3 up = Cross(front, right);
+    return {Dot(direction, right), Dot(direction, up), -Dot(direction, front)};
+}
+
+// A reverb's slot, made the first time (at most 16; past them, or with no such reverb, none: 0).
+ALuint Engine::ReverbSlotFor(uint32_t environment)
+{
+    if (auto it = reverbSlots.find(environment); it != reverbSlots.end()) return it->second.slot;
+    const Reverb* rv = library.FindReverb(environment);
+    if (!rv || reverbSlots.size() >= 16 || !al.HasEffects()) return 0;
+    ReverbSlot r;
+    al.alGetError();
+    al.alGenEffects(1, &r.effect);
+    al.alGenAuxiliaryEffectSlots(1, &r.slot);
+    if (al.alGetError() != AL_NO_ERROR) return 0;
+    // Wwise's Matrix Reverb as EFX's reverb: its time, its high-frequency ratio turned round (EFX's is the high
+    // frequencies' decay against the lows'), its pre-delay; its wet level on the slot.
+    al.alEffecti(r.effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
+    al.alEffectf(r.effect, AL_REVERB_DECAY_TIME, std::clamp(rv->seconds, 0.1f, 20.0f));
+    al.alEffectf(r.effect, AL_REVERB_DECAY_HFRATIO, std::clamp(rv->hfRatio > 0 ? 1.0f / rv->hfRatio : 1.0f, 0.1f, 2.0f));
+    al.alEffectf(r.effect, AL_REVERB_REFLECTIONS_DELAY, std::clamp(rv->preDelay, 0.0f, 0.3f));
+    al.alEffectf(r.effect, AL_REVERB_LATE_REVERB_DELAY, std::clamp(rv->preDelay + 0.011f, 0.0f, 0.1f));
+    al.alAuxiliaryEffectSloti(r.slot, AL_EFFECTSLOT_EFFECT, static_cast<ALint>(r.effect));
+    al.alAuxiliaryEffectSlotf(r.slot, AL_EFFECTSLOT_GAIN, std::clamp(DbToGain(rv->wetDb), 0.0f, 1.0f));
+    reverbSlots[environment] = r;
+    return r.slot;
+}
+
+// A voice's sends: one to each of its object's environments (a 3D voice; a 2D one has none), by the environment's
+// amount, set again only when they change.
+void Engine::ApplySends(Voice& v, const GameObject& object, bool spatial)
+{
+    if (!maxSends || !v.source) return;
+    auto& filters = sendFilters[v.source];
+    if (filters.empty()) {
+        filters.resize(static_cast<size_t>(maxSends));
+        al.alGenFilters(maxSends, filters.data());
+        for (ALuint f : filters) al.alFilteri(f, AL_FILTER_TYPE, AL_FILTER_LOWPASS);
+    }
+    for (int i = 0; i < maxSends; i++) {
+        uint32_t environment = 0;
+        float gain = 0;
+        if (spatial && i < static_cast<int>(object.environments.size())) {
+            environment = object.environments[static_cast<size_t>(i)].first;
+            gain = object.environments[static_cast<size_t>(i)].second;
+        }
+        if (environment == v.sentTo[i] && std::abs(gain - v.sentGain[i]) < 0.01f) continue;
+        ALuint slot = environment ? ReverbSlotFor(environment) : 0;
+        if (slot) {
+            al.alFilterf(filters[static_cast<size_t>(i)], AL_LOWPASS_GAIN, gain);
+            al.alFilterf(filters[static_cast<size_t>(i)], AL_LOWPASS_GAINHF, 1.0f);
+            al.alSource3i(v.source, AL_AUXILIARY_SEND_FILTER, static_cast<ALint>(slot), i, static_cast<ALint>(filters[static_cast<size_t>(i)]));
+        } else {
+            al.alSource3i(v.source, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, i, AL_FILTER_NULL);
+        }
+        v.sentTo[i] = environment;
+        v.sentGain[i] = gain;
+    }
+}
+
 Vec3 Engine::ToListener(const Vec3& position) const
 {
     Vec3 front = Normalized(listenerFront, {0, 0, 1});
@@ -1341,13 +1511,36 @@ float PanningLoss::At(const Vec3& p) const
 void Engine::ApplySource(Voice& v, const Level& level, const GameObject& object)
 {
     if (!v.source) return;
-    const bool centred = !(level.threeD && v.channels == 1 && object.placed);  // played at the listener: in the middle
-    // What OpenAL Soft's panning loses for a mono voice, where it is (MeasurePanning), made up as Wwise pans.
-    const Vec3 place = centred ? Vec3{} : ToListener(object.position);
-    float makeUp = v.channels != 1 || !panning.valid ? 0.0f : centred ? panning.centre : panning.At(place);
+    const bool onPath = v.path.node && level.threeD && v.channels == 1;
+    const bool centred = !onPath && !(level.threeD && v.channels == 1 && object.placed);  // played at the listener: in the middle
+    // What OpenAL Soft's panning loses for a mono voice, where it is (MeasurePanning), made up as Wwise pans. One on its
+    // paths is around the listener already (x right, y up, z ahead: OpenAL's -z).
+    const Vec3 pathPlace = onPath ? PathPlace(v) : Vec3{};
+    const Vec3 place = centred ? Vec3{} : onPath ? Vec3{pathPlace.x, pathPlace.y, -pathPlace.z} : ToListener(object.position);
+    // Wwise's spread (the share of the whole circle a sound covers) as OpenAL Soft's source radius: a sound of radius r
+    // at d covers 2 asin(r / d), and all around once r reaches d (half of Wwise's spread already).
+    const float wide = centred ? 0.0f : std::min(1.0f, level.spread / 50.0f);
+    if (canSpread && v.channels == 1 && !centred) {
+        float d = Length(place);
+        float radius = wide >= 1.0f ? d * 1.01f : d * std::sin(wide * 3.14159265f / 2.0f);
+        al.alSourcef(v.source, AL_SOURCE_RADIUS, radius);
+    }
+    float makeUp = v.channels != 1 || !panning.valid ? 0.0f
+                 : centred ? panning.centre
+                 : panning.At(place) * (1.0f - wide) + panning.centre * wide;  // a spread sound pans as one in the middle
     float gain = DbToGain(level.db + std::clamp(makeUp, 0.0f, 12.0f)) * level.fadeGain;
     al.alSourcef(v.source, AL_GAIN, std::min(gain, 16.0f));
     al.alSourcef(v.source, AL_PITCH, std::clamp(std::pow(2.0f, level.pitchCents / 1200.0f), 0.05f, 8.0f));
+    // Doppler (with it on): the object's speed against the listener's, as the listener sees it; none for one at the
+    // listener, on its paths, or whose places stopped coming.
+    Vec3 speed{};
+    if (dopplerFactor > 0 && !centred && !onPath) {
+        Vec3 mine = now - object.sampledAt < 0.25 ? object.velocity : Vec3{};
+        Vec3 theirs = now - listenerSampledAt < 0.25 ? listenerVelocity : Vec3{};
+        speed = ToListenerDirection(Minus(mine, theirs));
+    }
+    al.alSource3f(v.source, AL_VELOCITY, speed.x, speed.y, speed.z);
+    ApplySends(v, object, level.threeD && !centred);
     if (!centred) {
         al.alSource3f(v.source, AL_POSITION, place.x, place.y, place.z);
     } else {
@@ -1371,6 +1564,22 @@ void Engine::ApplySource(Voice& v, const Level& level, const GameObject& object)
     }
 }
 
+float Engine::Ramp::At(double now) const
+{
+    if (seconds <= 0 || now >= start + seconds) return to;
+    if (now <= start) return from;
+    return from + (to - from) * CurveShape(shape, static_cast<float>((now - start) / seconds));
+}
+
+void Engine::Ramp::Go(float value, double now, double fadeSeconds, uint32_t fadeShape)
+{
+    from = At(now);  // from where it is now, mid-fade included
+    to = value;
+    start = now;
+    seconds = fadeSeconds;
+    shape = fadeShape;
+}
+
 void Engine::LogQuiet(const Instance& in, const GameObject& object, float levelDb)
 {
     if (!logCallback || quietLogsLeft <= 0 || !in.play || !quietLogged.insert(in.play->eventId).second) return;
@@ -1392,7 +1601,7 @@ void Engine::LogQuiet(const Instance& in, const GameObject& object, float levelD
         if (n->stateGroup) text += " (state group " + Hex(n->stateGroup) + ")";
         for (uint64_t on : {object.id, uint64_t(0)})
             if (auto set = actionValues.find(ActionKey(n->id, on)); set != actionValues.end())
-                text += " (set " + Number(set->second.volume) + (set->second.muted ? ", muted" : "") + ")";
+                text += " (set " + Number(set->second.volume.At(now)) + (set->second.MuteGain(now) < 1 ? ", muted" : "") + ")";
         if (!n->parent) bus = n->bus;
     }
     text += ". Buses:";
@@ -1412,7 +1621,7 @@ void Engine::LogQuiet(const Instance& in, const GameObject& object, float levelD
             if (auto state = states.find(b->stateGroup); state != states.end())
                 text += " (state " + Hex(state->second) + ": " + Number(StateValuesFor(b->stateGroup, state->second, b).volume) + ")";
         if (auto set = busActionValues.find(id); set != busActionValues.end())
-            text += " (set " + Number(set->second.volume) + (set->second.muted ? ", muted" : "") + ")";
+            text += " (set " + Number(set->second.volume.At(now)) + (set->second.MuteGain(now) < 1 ? ", muted" : "") + ")";
         if (auto duck = busDuckDb.find(id); duck != busDuckDb.end()) text += " (ducked " + Number(duck->second) + ")";
     }
     logCallback(text.c_str(), logUser);
@@ -1428,10 +1637,97 @@ float Engine::ParameterValue(const GameObject& object, uint32_t parameter, float
 
 // A voice's level: its nodes' volumes and curves (each node up to the top), the bus's, the random ranges picked;
 // the fades apart. Placing, priority and the too-quiet rule come from the first node with its own, or the top.
+const Node* Engine::PositioningNode(const Node* n) const
+{
+    for (int depth = 0; n && depth < 64; depth++) {
+        if (n->ownPositioning || !n->parent) return n;
+        n = library.FindNode(n->parent);
+    }
+    return nullptr;
+}
+
+// Wwise's paths, as Armageddon's are (tools\research\audio_layers_dump.cpp): flat, around the listener at 60-100 m,
+// each a few points with the time to the next (mostly two, 5 s apart: a sound drifting past), some with a random range.
+// Step modes take one path a play (the next, or one at random); continuous ones go on from path to path.
+void Engine::StartPath(Voice& v, const Node* positioning)
+{
+    const uint32_t count = static_cast<uint32_t>(positioning->paths.size());
+    uint32_t path = 0;
+    if (positioning->pathMode & 1) {
+        path = std::uniform_int_distribution<uint32_t>(0, count - 1)(random);
+    } else {
+        uint32_t& next = nextPath[positioning->id];
+        path = next % count;
+        next = path + 1;
+    }
+    v.path.node = positioning;
+    v.path.path = path;
+    const Node::Path& p = positioning->paths[path];
+    v.path.dx = p.rangeX > 0 ? std::uniform_real_distribution<float>(-p.rangeX, p.rangeX)(random) : 0.0f;
+    v.path.dz = p.rangeZ > 0 ? std::uniform_real_distribution<float>(-p.rangeZ, p.rangeZ)(random) : 0.0f;
+    v.path.start = now;
+}
+
+Vec3 Engine::PathPlace(const Voice& v) const
+{
+    const Node& n = *v.path.node;
+    const Node::Path* p = &n.paths[v.path.path];
+    auto duration = [&](const Node::Path& path) {
+        double ms = 0;
+        for (uint32_t i = 0; i + 1 < path.count; i++) ms += std::max(0, n.pathPoints[path.first + i].ms);
+        return ms / 1000.0;
+    };
+    double elapsed = std::max(0.0, now - v.path.start);
+    double length = duration(*p);
+    if (n.pathMode & 2) {
+        // Continuous: on to the next path (in turn) at the end of each, round again if they loop.
+        double total = 0;
+        for (const Node::Path& each : n.paths) total += duration(each) + std::max(0, n.pathTransitionMs) / 1000.0;
+        if (total > 0 && n.pathLoops) elapsed = std::fmod(elapsed, total);
+        uint32_t index = v.path.path;
+        for (size_t guard = 0; guard < n.paths.size() && elapsed > length + std::max(0, n.pathTransitionMs) / 1000.0; guard++) {
+            elapsed -= length + std::max(0, n.pathTransitionMs) / 1000.0;
+            index = (index + 1) % n.paths.size();
+            p = &n.paths[index];
+            length = duration(*p);
+        }
+    } else if (n.pathLoops && length > 0) {
+        elapsed = std::fmod(elapsed, length);
+    }
+    // Along the path's points, in straight lines, each over its time; at the last once it is done.
+    Vec3 place{n.pathPoints[p->first + p->count - 1].x, n.pathPoints[p->first + p->count - 1].y, n.pathPoints[p->first + p->count - 1].z};
+    for (uint32_t i = 0; i + 1 < p->count; i++) {
+        const Node::PathPoint& a = n.pathPoints[p->first + i];
+        const Node::PathPoint& b = n.pathPoints[p->first + i + 1];
+        double seconds = std::max(0, a.ms) / 1000.0;
+        if (elapsed > seconds) {
+            elapsed -= seconds;
+            continue;
+        }
+        float t = seconds > 0 ? static_cast<float>(elapsed / seconds) : 1.0f;
+        place = {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
+        break;
+    }
+    place.x += v.path.dx;
+    place.z += v.path.dz;
+    return place;
+}
+
 Engine::Level Engine::LevelOf(const Instance& in, const GameObject& object) const
 {
     Level level;
     level.distance = object.placed ? Length(Minus(object.position, listenerPosition)) : 0.0f;
+    if (in.voice && in.voice->path.node) level.distance = Length(PathPlace(*in.voice));  // on its paths, around the listener
+    // Obstruction and occlusion (0-100, the game's for its object): init.bnk's curves give a volume and a low-pass,
+    // each only if it is on (Armageddon's four are off, so its Wwise does nothing with them). Not with Guerrilla's
+    // occlusion (below), which the game's obstruction is Armageddon's port of.
+    if (occlusionModel == 0 && (object.obstruction > 0 || object.occlusion > 0)) {
+        const ObstructionCurves& c = library.Obstruction();
+        if (c.obstructionVolumeOn) level.db += GainToDb(c.obstructionVolume.GainAt(object.obstruction));
+        if (c.obstructionLowPassOn) level.lowPass += c.obstructionLowPass.ValueAt(object.obstruction);
+        if (c.occlusionVolumeOn) level.db += GainToDb(c.occlusionVolume.GainAt(object.occlusion));
+        if (c.occlusionLowPassOn) level.lowPass += c.occlusionLowPass.ValueAt(object.occlusion);
+    }
     for (const Instance* i = &in; i; i = i->parent) {
         level.fadeGain *= i->fade.At(now);
         level.db += i->randomVolume;
@@ -1444,39 +1740,60 @@ Engine::Level Engine::LevelOf(const Instance& in, const GameObject& object) cons
         return level;
     }
     float curveGain = 1.0f;
+    float distanceMin = -1;  // where its volume starts to fall by distance, if it does (for Guerrilla's occlusion)
     bool placed = false, prioritised = false, quietRule = false;
     const Node* n = in.node;
     const Node* priorityNode = nullptr;
     const Attenuation* attenuation = nullptr;
+    const Node* below = nullptr;  // the node of the tree under n that this instance plays through (its child there)
+    auto applyCurve = [&](const Curve& c) {
+        float x = ParameterValue(object, c.parameter, level.distance);
+        if (c.property == PropertyVolume) {
+            curveGain *= c.GainAt(x);
+            if (c.parameter == GameDistance) NoteFall(c, distanceMin);
+        } else if (c.property == PropertyPitch) level.pitchCents += c.ValueAt(x);
+        else if (c.property == PropertyLowPass) level.lowPass += c.ValueAt(x);
+    };
     for (int depth = 0; n && depth < 64; depth++) {
         level.db += n->volume;
         level.pitchCents += n->pitch;
         level.lowPass += n->lowPass;
-        for (const Curve& c : n->curves) {
-            float x = ParameterValue(object, c.parameter, level.distance);
-            if (c.property == PropertyVolume) curveGain *= c.GainAt(x);
-            else if (c.property == PropertyPitch) level.pitchCents += c.ValueAt(x);
-            else if (c.property == PropertyLowPass) level.lowPass += c.ValueAt(x);
-        }
-        // A state group it follows (init.bnk's states: RF4_STATES and the like): its state's values.
+        for (const Curve& c : n->curves) applyCurve(c);
+        // A layer container: the layers the child played through is in, their own curves, and its crossfade there (its
+        // curve on the layer's game parameter, 0 silent to 255 full, as a gain).
+        if (n->type == TypeLayer && below)
+            for (const Node::Layer& layer : n->layerList)
+                for (const auto& [member, points] : layer.children) {
+                    if (member != below->id) continue;
+                    for (const Curve& c : layer.curves) applyCurve(c);
+                    if (layer.crossfadeParameter && !points.empty())
+                        curveGain *= std::clamp(Curve::ValueAt(points, ParameterValue(object, layer.crossfadeParameter, level.distance)) / 255.0f, 0.0f, 1.0f);
+                }
+        // A state group it follows (init.bnk's states: RF4_STATES and the like): its state's values, or those of the
+        // state object it names for that state.
         if (n->stateGroup) {
-            if (const StateGroup* g = library.FindStateGroup(n->stateGroup)) {
-                auto state = states.find(n->stateGroup);
-                if (state != states.end())
-                    if (auto v = g->states.find(state->second); v != g->states.end()) {
-                        level.db += v->second.volume;
-                        level.pitchCents += v->second.pitch;
-                        level.lowPass += v->second.lowPass;
-                    }
+            auto state = states.find(n->stateGroup);
+            if (state != states.end()) {
+                const StateValues* v = nullptr;
+                if (auto own = n->stateObjects.find(state->second); own != n->stateObjects.end() && own->second)
+                    v = library.FindStateObject(own->second);
+                if (!v)
+                    if (const StateGroup* g = library.FindStateGroup(n->stateGroup))
+                        if (auto it = g->states.find(state->second); it != g->states.end()) v = &it->second;
+                if (v) {
+                    level.db += v->volume;
+                    level.pitchCents += v->pitch;
+                    level.lowPass += v->lowPass;
+                }
             }
         }
         // Set by an action (set volume, pitch or low-pass; mute) on this node, for this object or every one.
         for (uint64_t on : {object.id, uint64_t(0)})
             if (auto set = actionValues.find(ActionKey(n->id, on)); set != actionValues.end()) {
-                level.db += set->second.volume;
-                level.pitchCents += set->second.pitch;
-                level.lowPass += set->second.lowPass;
-                if (set->second.muted) level.fadeGain = 0;
+                level.db += set->second.volume.At(now);
+                level.pitchCents += set->second.pitch.At(now);
+                level.lowPass += set->second.lowPass.At(now);
+                level.fadeGain *= set->second.MuteGain(now);
             }
         bool top = n->parent == 0;
         if (!placed && (n->ownPositioning || top)) {
@@ -1497,16 +1814,46 @@ Engine::Level Engine::LevelOf(const Instance& in, const GameObject& object) cons
             level.bus = n->bus;
             break;
         }
+        below = n;
         n = library.FindNode(n->parent);
     }
     // Its attenuation: volume and low-pass by the distance (Armageddon's; ours are flat).
     if (attenuation) {
-        if (attenuation->volumeDry >= 0) curveGain *= attenuation->curves[attenuation->volumeDry].GainAt(level.distance);
+        if (attenuation->volumeDry >= 0) {
+            curveGain *= attenuation->curves[attenuation->volumeDry].GainAt(level.distance);
+            NoteFall(attenuation->curves[attenuation->volumeDry], distanceMin);
+        }
         if (attenuation->lowPass >= 0) level.lowPass += attenuation->curves[attenuation->lowPass].ValueAt(level.distance);
+        if (attenuation->spread >= 0) level.spread = std::clamp(attenuation->curves[attenuation->spread].ValueAt(level.distance), 0.0f, 100.0f);
+        // Its cone: heard as is inside the inner angle (around the way the sound faces), with the outer volume and
+        // low-pass outside the outer one, and in a straight line between (the angles are whole cones, in degrees).
+        if (attenuation->cone && object.placed) {
+            Vec3 toListener = Normalized(Minus(listenerPosition, object.position), object.front);
+            float cosine = std::clamp(Dot(Normalized(object.front, Vec3{0, 0, 1}), toListener), -1.0f, 1.0f);
+            float angle = std::acos(cosine) * 180.0f / 3.14159265f;
+            float inner = attenuation->coneInner / 2, outer = std::max(attenuation->coneOuter / 2, inner + 0.01f);
+            float t = std::clamp((angle - inner) / (outer - inner), 0.0f, 1.0f);
+            level.db += attenuation->coneOuterDb * t;
+            level.lowPass += attenuation->coneLowPass * t;
+        }
         // Priority by distance: offset in full at the attenuation's end, in part nearer.
         if (priorityNode && priorityNode->priorityByDistance && attenuation->maxDistance > 0) {
             float part = std::min(1.0f, level.distance / attenuation->maxDistance);
             level.priority = std::clamp(level.priority + static_cast<int>(std::lround(priorityNode->distanceOffset * part)), 0, 100);
+        }
+    }
+    // Guerrilla's occlusion (model 1): what stands between the listener and a placed 3D sound takes from its volume, as
+    // audiolib_3d_calc_volume does (the volume by distance less the occlusion x volume_factor, but never more than
+    // max_vol_occlusion of it), and adds a low-pass (occlusion_lpf_add a whole occlusion, less below 1; Guerrilla's
+    // low-pass is 0-1, ours Wwise's 0-100). Not for sounds on paths round the listener.
+    if (occlusionModel == 1 && level.threeD && object.placed && !(in.voice && in.voice->path.node) && level.distance > 0) {
+        level.occlusion = GuerrillaOcclusion(Minus(object.position, listenerPosition), level.distance,
+                                             distanceMin >= 0 ? distanceMin : GuerrillaDefaultDistanceMin);
+        if (level.occlusion > 0) {
+            float volume = std::min(1.0f, DbToGain(level.db) * curveGain);
+            if (volume > 0)
+                curveGain *= (volume - std::min(level.occlusion * GuerrillaOcclusionVolumeFactor, volume * GuerrillaMaxVolumeOcclusion)) / volume;
+            level.lowPass += std::min(level.occlusion, 1.0f) * GuerrillaOcclusionLowPassAdd * 100;
         }
     }
     level.db += GainToDb(curveGain);
@@ -1530,6 +1877,10 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
         return;
     }
     Level level = LevelOf(in, object);
+    if (level.occlusion > 0) {
+        occludedVoices++;
+        mostOcclusion = std::max(mostOcclusion, level.occlusion);
+    }
     v.levelDb = level.db + GainToDb(level.fadeGain);
     v.distance = level.distance;
     v.priority = level.priority;
@@ -1803,6 +2154,8 @@ void Engine::Update()
     ClockNow();
     RunPending();
     UpdateMix();
+    occludedVoices = 0;
+    mostOcclusion = 0;
     for (auto& [id, play] : plays) {
         GameObject& object = Object(play->object);
         size_t count = play->roots.size();
@@ -1849,6 +2202,29 @@ int Engine::Render(float* out, int frames)
     return rendered;
 }
 
+// The bytes before a medium's RIFF (a voice line's lip-sync block): read from its bank's media file.
+int Engine::MediumPrefix(uint32_t bankId, uint32_t mediumId, uint8_t* out, int max)
+{
+    const Bank* bank = library.FindBank(bankId);
+    if (!bank || !bank->mediaFile) return 0;
+    auto entry = bank->media.find(mediumId);
+    if (entry == bank->media.end()) return 0;
+    // (A voice medium's size in the index leaves its block out: 8 KB is read, which holds the largest block, 6 KB, and
+    // its RIFF; less if the media file ends before.)
+    uint8_t head[8192];
+    uint32_t size = sizeof head;
+    if (!bank->mediaFile->ReadAt(entry->second.offset, head, size)) {
+        size = std::min<uint32_t>(sizeof head, entry->second.size);
+        if (size < 8 || !bank->mediaFile->ReadAt(entry->second.offset, head, size)) return 0;
+    }
+    for (uint32_t at = 0; at + 4 <= size; at += 4)
+        if (memcmp(head + at, "RIFF", 4) == 0) {
+            if (out && max > 0) memcpy(out, head, std::min<uint32_t>(at, static_cast<uint32_t>(max)));
+            return static_cast<int>(at);
+        }
+    return 0;
+}
+
 std::vector<EndNote> Engine::TakeEnds()
 {
     std::vector<EndNote> taken;
@@ -1871,13 +2247,225 @@ void Engine::SetPosition(uint64_t object, const float* position, const float* fr
     if (position) {
         o.position = {position[0], position[1], position[2]};
         o.placed = true;
+        Measure(o.velocity, o.sampled, o.sampledAt, o.position);
     }
     if (front) o.front = {front[0], front[1], front[2]};
 }
 
+// From places 20 ms apart or more (the game gives a sound object's every 33 ms), smoothed; a jump past 150 m/s (a
+// teleport, a new place) counts as standing still.
+void Engine::Measure(Vec3& velocity, Vec3& sampled, double& sampledAt, const Vec3& place)
+{
+    if (sampledAt < 0 || now - sampledAt > 1.0) {
+        sampled = place;
+        sampledAt = now;
+        velocity = {};
+        return;
+    }
+    double dt = now - sampledAt;
+    if (dt < 0.02) return;
+    Vec3 v{static_cast<float>((place.x - sampled.x) / dt), static_cast<float>((place.y - sampled.y) / dt), static_cast<float>((place.z - sampled.z) / dt)};
+    if (Length(v) > 150.0f) v = {};
+    velocity = {velocity.x * 0.6f + v.x * 0.4f, velocity.y * 0.6f + v.y * 0.4f, velocity.z * 0.6f + v.z * 0.4f};
+    sampled = place;
+    sampledAt = now;
+}
+
+void Engine::SetObstruction(uint64_t object, float obstruction, float occlusion)
+{
+    GameObject& o = Object(object);
+    o.obstruction = std::clamp(obstruction, 0.0f, 100.0f);
+    o.occlusion = std::clamp(occlusion, 0.0f, 100.0f);
+}
+
+// A ray of the listener's, as Guerrilla's audiolib_listener_raycast keeps it (at most 3 hits; valid if it hit within 45 m),
+// the room worked out again, and the listener's enclosure (Guerrilla's gameaudio_update_listener_los: the weights of the
+// rays blocked within 20 m over all the weights; its listener_fov).
+void Engine::SetListenerRay(int direction, int hits, const float* distances, const int* materials, bool blocked)
+{
+    if (direction < 0 || direction >= 26) return;
+    ListenerRay& r = listenerRays[direction];
+    r.hits = std::clamp(hits, 0, 3);
+    r.blocked = blocked;
+    r.valid = r.hits > 0 && !(distances && distances[0] > 45);
+    if (r.valid)
+        for (int i = 0; i < r.hits; i++) {
+            r.distance[i] = distances ? distances[i] : 10000.0f;
+            r.material[i] = materials ? materials[i] : 1;
+        }
+    WorkOutRoom();
+    float shut = 0, all = 0;
+    for (int i = 0; i < 26; i++) {
+        all += GuerrillaRayWeight(i);
+        if (listenerRays[i].blocked) shut += GuerrillaRayWeight(i);
+    }
+    listenerEnclosure = shut / all;
+}
+
+int Engine::OcclusionStatus(float& most, float& enclosure, int& reverbType) const
+{
+    most = mostOcclusion;
+    enclosure = listenerEnclosure;
+    reverbType = room.reverbType;
+    return occludedVoices;
+}
+
+// How far the room goes one way (audiolib_figure_raycast_distance, for a level direction 2-9): its ray's first hit, or
+// the tilted-up or tilted-down one's when it differs a lot (by 30% or 60%: the level ray met something low or high), or
+// their middle; without the level ray, the others' (one alone halfway to 22.5 m). -1: nothing that way.
+float Engine::RayDistance(int direction) const
+{
+    const ListenerRay& level = listenerRays[direction];
+    const ListenerRay& up = listenerRays[direction + 8];
+    const ListenerRay& down = listenerRays[direction + 16];
+    if (level.valid) {
+        float d = level.distance[0];
+        float upApart = up.valid ? std::fabs(up.distance[0] - d) : -1.0f;
+        float downApart = down.valid ? std::fabs(down.distance[0] - d) : -1.0f;
+        float upFar = d * 0.3f, downFar = d * 0.6f;
+        if (upApart > 0) {
+            if (downApart > 0) return upApart > upFar && downApart > downFar ? (up.distance[0] + down.distance[0]) * 0.5f : d;
+            return upApart > upFar ? up.distance[0] : d;
+        }
+        return downApart > 0 && downApart > downFar ? down.distance[0] : d;
+    }
+    if (up.valid) return down.valid ? (up.distance[0] + down.distance[0]) * 0.5f : (up.distance[0] + 22.5f) * 0.5f;
+    if (down.valid) return (down.distance[0] + 22.5f) * 0.5f;
+    return -1.0f;
+}
+
+// The room round the listener (audiolib_internal_fov_determine_room_size_and_shape): its lengths each way and height, a
+// shape (0 even; 1 long one way; 3 long and under 3 m high; 4 40 m high or more), a size by its volume (small, medium,
+// large, huge; none past a canyon's, when it keeps its last reverb type) and a reverb type from those.
+void Engine::WorkOutRoom()
+{
+    Room& r = room;
+    r.northSouth = RayDistance(2) + RayDistance(6);
+    r.northEastSouthWest = RayDistance(3) + RayDistance(7);
+    r.eastWest = RayDistance(4) + RayDistance(8);
+    r.northWestSouthEast = RayDistance(3) + RayDistance(7);  // Guerrilla's own: the north-east and south-west rays again
+    r.height = listenerRays[0].valid && listenerRays[1].valid ? listenerRays[0].distance[0] + listenerRays[1].distance[0] : 40.0f;
+    auto longer = [](float a, float b) { return (a > b && a > b * 1.7f) || (b > a && b > a * 1.7f); };
+    int shape = 0;
+    if (longer(r.northSouth, r.eastWest) || longer(r.northEastSouthWest, r.northWestSouthEast)) shape = 1;
+    if (shape == 1 && r.height < 3) shape = 3;
+    else if (r.height >= 40) shape = 4;
+    r.shape = shape;
+    float across = r.northSouth - r.eastWest >= 0 ? r.northSouth : r.eastWest;
+    float diagonal = r.northEastSouthWest - r.northWestSouthEast >= 0 ? r.northEastSouthWest : r.northWestSouthEast;
+    r.volume = across * r.height * diagonal;
+    int size;
+    if (GuerrillaRoomSmall > r.volume) size = 0;
+    else if (GuerrillaRoomLarge > r.volume) size = 1;
+    else if (GuerrillaRoomHuge > r.volume) size = 2;
+    else if (GuerrillaRoomCanyon > r.volume) size = 3;
+    else {
+        r.size = -1;
+        r.valid = false;
+        return;
+    }
+    r.size = size;
+    switch (shape) {
+    case 0:
+    case 1: r.reverbType = size == 1 ? 6 : size == 2 ? 28 : size == 3 ? 19 : 25; break;  // stone room, large hall, quarry, medium room
+    case 2: r.reverbType = 13; break;                                                  // hallway
+    case 3: r.reverbType = 22; break;                                                  // sewer pipe
+    case 4: r.reverbType = 19; break;                                                  // quarry
+    default: r.reverbType = 1;                                                         // generic
+    }
+    r.valid = true;
+}
+
+// How muffled a sound is (audiolib_internal_fov_compute_occlusion, 0-5): the ray pointing most its way (a dot over 0.7)
+// and those round it that point its way too; each hit of theirs that counts (max_occlusions), not clear, within 45 m and
+// before the sound (its distance less a part of its minimum distance) is a blocker, valued 0.1, more the straighter its
+// ray points at the sound (and the nearer the listener, straight on), more by its material, and weighted by that ray's
+// dot; the average of the blockers. Shut in (the enclosure over minimum_reverb_fov), a muffled sound is more so: by half
+// the enclosure, a fifth in an open kind of room.
+float Engine::GuerrillaOcclusion(const Vec3& toSound, float distance, float distanceMin) const
+{
+    if (!(distance > 0)) return 0;
+    const float before = distanceMin > distance ? distance * 0.9f : distance - (1 - distanceMin / distance) * distanceMin;
+    const Vec3 way = Normalized(toSound, Vec3{0, 0, 1});
+    float dots[26];
+    int best = -1;
+    float bestDot = -1;
+    for (int i = 0; i < 26; i++) {
+        dots[i] = -100000.0f;
+        if (!listenerRays[i].valid) continue;
+        dots[i] = Dot(Vec3{GuerrillaRays[i][0], GuerrillaRays[i][1], GuerrillaRays[i][2]}, way);
+        if (dots[i] > 0 && dots[i] > bestDot) {
+            bestDot = dots[i];
+            best = i;
+        }
+    }
+    float occlusion = 0;
+    if (best >= 0 && bestDot > 0.7f) {
+        float sum = 0;
+        int blockers = 0;
+        for (int k = 0; k < 9; k++) {
+            const int n = GuerrillaNeighbours[best][k];
+            if (n >= 26) break;
+            const float dot = dots[n];
+            if (!(dot > 0.7f)) continue;
+            const ListenerRay& r = listenerRays[n];
+            const int hits = std::min(r.hits, GuerrillaMaxOcclusions);
+            for (int h = 0; h < hits && r.valid; h++) {
+                const float at = r.distance[h];
+                const int material = r.material[h];
+                if (!(at < 45) || material == 0 || !(at > 0) || !(before > at)) continue;
+                float value = 0.1f;
+                if (dot > 0.8660254f) {  // within 30 degrees, 15, 10 (and near: within 2 m)
+                    value += 0.1f;
+                    if (dot > 0.9659258f) {
+                        value += 0.1f;
+                        if (dot > 0.9848077f && at < 2) value += std::fabs((2 - at) * 0.6f);
+                    }
+                }
+                if (material >= 1 && material <= 5) {
+                    if (n == 1 || n >= 18) value = material == GuerrillaGround ? 0.0f : value + GuerrillaDownMaterial[material];
+                    else if (n == 0 || n >= 10) value += GuerrillaUpMaterial[material];
+                    else value += GuerrillaLevelMaterial[material];
+                }
+                sum += value * std::fabs(dot);
+                blockers++;
+            }
+        }
+        if (blockers > 0) occlusion = std::clamp(sum / blockers, 0.0f, 5.0f);
+    }
+    if (listenerEnclosure > GuerrillaMinimumReverbFov) {
+        const int t = room.reverbType;
+        const bool open = t == 10 || t == 11 || (t >= 16 && t <= 21) || t == 29;  // arena, hangar, forest .. parking lot, plate
+        if (open) {
+            if (occlusion > 0.01f) occlusion += listenerEnclosure * 0.2f;
+        } else if (occlusion > 0.1f) {
+            occlusion += listenerEnclosure * 0.5f;
+        }
+        occlusion = std::clamp(occlusion, 0.0f, 5.0f);
+    }
+    return occlusion;
+}
+
+void Engine::SetEnvironments(uint64_t object, const uint32_t* ids, const float* values, int count)
+{
+    GameObject& o = Object(object);
+    o.environments.clear();
+    for (int i = 0; ids && values && i < count && i < 4; i++)
+        if (ids[i] && values[i] > 0) o.environments.emplace_back(ids[i], std::min(values[i], 1.0f));
+}
+
+void Engine::SetDoppler(float factor)
+{
+    dopplerFactor = std::clamp(factor, 0.0f, 10.0f);
+    if (context) al.alDopplerFactor(dopplerFactor);
+}
+
 void Engine::SetListener(const float* position, const float* front, const float* up)
 {
-    if (position) listenerPosition = {position[0], position[1], position[2]};
+    if (position) {
+        listenerPosition = {position[0], position[1], position[2]};
+        Measure(listenerVelocity, listenerSampled, listenerSampledAt, listenerPosition);
+    }
     listenerFront = front ? Vec3{front[0], front[1], front[2]} : Vec3{0, 0, 1};
     listenerUp = up ? Vec3{up[0], up[1], up[2]} : Vec3{0, 1, 0};
 }
@@ -1995,10 +2583,10 @@ void Engine::BusLevel(uint32_t busId, Level& level) const
             }
         }
         if (auto set = busActionValues.find(id); set != busActionValues.end()) {
-            level.db += set->second.volume;
-            level.pitchCents += set->second.pitch;
-            level.lowPass += set->second.lowPass;
-            if (set->second.muted) level.fadeGain = 0;
+            level.db += set->second.volume.At(now);
+            level.pitchCents += set->second.pitch.At(now);
+            level.lowPass += set->second.lowPass.At(now);
+            level.fadeGain *= set->second.MuteGain(now);
         }
         if (auto duck = busDuckDb.find(id); duck != busDuckDb.end()) level.db += duck->second;
     }
@@ -2173,13 +2761,20 @@ std::vector<uint32_t> Engine::EventDuckingBuses(uint32_t eventId) const
     for (uint32_t actionId : event->actions) {
         const Action* a = library.FindAction(actionId);
         if (!a || a->Kind() != ActionPlay) continue;
-        const Node* n = library.FindNode(a->target);
-        for (int depth = 0; n && n->parent && depth < 64; depth++) n = library.FindNode(n->parent);
-        if (!n) continue;
-        for (uint32_t bus : BusChain(n->bus))
-            if (const Bus* b = library.FindBus(bus); b && !b->ducks.empty() && std::find(found.begin(), found.end(), bus) == found.end())
-                found.push_back(bus);
+        for (uint32_t bus : NodeDuckingBuses(a->target))
+            if (std::find(found.begin(), found.end(), bus) == found.end()) found.push_back(bus);
     }
+    return found;
+}
+
+std::vector<uint32_t> Engine::NodeDuckingBuses(uint32_t nodeId) const
+{
+    std::vector<uint32_t> found;
+    const Node* n = library.FindNode(nodeId);
+    for (int depth = 0; n && n->parent && depth < 64; depth++) n = library.FindNode(n->parent);
+    if (!n) return found;
+    for (uint32_t bus : BusChain(n->bus))
+        if (const Bus* b = library.FindBus(bus); b && !b->ducks.empty()) found.push_back(bus);
     return found;
 }
 

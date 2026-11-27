@@ -23,7 +23,8 @@ public partial class SoundPreview : UserControl
 {
     const ulong SoundObject = 1, OriginalObject = 2;
 
-    sealed record EventItem(uint Id, string Name, string Tags);
+    // An event, or a voice bank's line (Node: its node, played alone, as the game's voice lines are).
+    sealed record EventItem(uint Id, string Name, string Tags, uint Node = 0);
     sealed record VoiceRow(string What, string Codec, string Format, string Loop, string Level, string Distance, string Time, string State);
 
     readonly Action<string> log;
@@ -31,6 +32,12 @@ public partial class SoundPreview : UserControl
     uint bankId, initBankId;
     string modFolder = "";
     List<EventItem> allEvents = [];
+    List<(uint Persona, uint Line, uint Node)> voiceLines = [];  // a voice bank's lines (its dialogue events')
+
+    // The voice bank's lines as items, named (persona: line) where the names are known; after the events.
+    IEnumerable<EventItem> LineItems() =>
+        voiceLines.Select(l => new EventItem(l.Node, $"{NameOf(l.Persona)}: {NameOf(l.Line)}", "voice line", l.Node))
+                  .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<uint, uint> parentOf = [], busOf = [];
     readonly Dictionary<uint, List<uint>> childrenOf = [];
     readonly Dictionary<uint, List<(uint Event, int FadeMs)>> stopsOf = [];
@@ -111,8 +118,10 @@ public partial class SoundPreview : UserControl
         }
         ReadTree();
         uint[] events = RfaAudio.BankEvents(bankId);
+        voiceLines = [.. RfaAudio.BankDialogueEvents(bankId).SelectMany(RfaAudio.DialogueLines)
+                                .Where(l => l.Keys.Length == 2).Select(l => (l.Keys[0], l.Keys[1], l.Node))];
         allEvents = [.. events.Select(Item).OrderBy(e => e.Name.Length == 8 && uint.TryParse(e.Name, System.Globalization.NumberStyles.HexNumber, null, out _) ? 1 : 0)
-                                          .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase)];
+                                          .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase), .. LineItems()];
         ShowEvents();
         BuildParameters();
         BuildSwitches();
@@ -273,7 +282,7 @@ public partial class SoundPreview : UserControl
             var tags = t.Result.tags;
             uint? selected = (EventList.SelectedItem as EventItem)?.Id;
             allEvents = [.. events.Select(e => new EventItem(e, NameOf(e), tags.GetValueOrDefault(e, "")))
-                                  .OrderBy(e => namesFound.ContainsKey(e.Id) ? 0 : 1).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase)];
+                                  .OrderBy(e => namesFound.ContainsKey(e.Id) ? 0 : 1).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase), .. LineItems()];
             ShowEvents(selected);
             int unnamed = events.Count(e => !namesFound.ContainsKey(e));
             CountText.Text = $"{events.Length:N0} events" + (unnamed > 0 ? $" ({unnamed} not named: shown by id)" : "") +
@@ -360,6 +369,14 @@ public partial class SoundPreview : UserControl
     void OnEventChosen(object sender, SelectionChangedEventArgs e)
     {
         if (EventList.SelectedItem is not EventItem item) return;
+        if (item.Node != 0)
+        {
+            // A voice line: what its node plays (the game resolves the persona's dialogue event to it, and plays it alone).
+            DetailsBox.Text = $"{item.Name}: a voice line, played as the game plays one (its node {item.Node:X8}, alone)\n\n" +
+                              Named(RfaAudio.Describe(item.Node));
+            OriginalButton.IsEnabled = false;
+            return;
+        }
         var info = RfaAudio.GetEventInfo(item.Id);
         var lines = new List<string> { item.Name + (item.Name != item.Id.ToString("X8") ? $" ({item.Id:X8})" : "") };
         var what = new List<string>();
@@ -423,7 +440,7 @@ public partial class SoundPreview : UserControl
     {
         if (EventList.SelectedItem is not EventItem item || bankId == 0) return;
         ApplyPlace();
-        uint id = RfaAudio.Post(item.Id, SoundObject);
+        uint id = item.Node != 0 ? RfaAudio.PlayNode(item.Node, SoundObject) : RfaAudio.Post(item.Id, SoundObject);
         if (id == 0) StatusText.Text = $"{item.Name} didn't post";
         else playing[id] = item.Id;
     }

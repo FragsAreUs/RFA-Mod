@@ -1,0 +1,139 @@
+<UserControl x:Class="RfaEditor.VintView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- An interface document (.vint_doc: a menu or a HUD screen): drawn from its elements, its tree and properties, its
+         Lua script with the elements it names linked both ways; redrawn live as properties change or its files are saved -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" MinWidth="300" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="340" MinWidth="220" />
+        </Grid.ColumnDefinitions>
+
+        <!-- The screen, and the script under it -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="120" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="220" MinHeight="40" />
+            </Grid.RowDefinitions>
+
+            <WrapPanel Grid.Row="0" Margin="0,0,0,6">
+                <ComboBox x:Name="ResolutionList" Width="110" Margin="0,0,8,4" SelectionChanged="OnResolutionChosen"
+                          ToolTip="The resolution laid out: the document's base values, with this resolution's own over them" />
+                <CheckBox x:Name="HiddenBox" Content="Show hidden" Click="OnRedraw" VerticalAlignment="Center" Margin="0,0,10,4"
+                          ToolTip="Also draw the elements that start hidden (faded): the scripts show them as they need them" />
+                <CheckBox x:Name="GameFontsBox" Content="Game fonts" IsChecked="True" Click="OnRedraw" VerticalAlignment="Center" Margin="0,0,10,4"
+                          ToolTip="Draw text with the game's own fonts (their letters cut from the font sheets); off: a stand-in font" />
+                <CheckBox x:Name="OutlineBox" Content="Outlines" Click="OnRedraw" VerticalAlignment="Center" Margin="0,0,10,4"
+                          ToolTip="Draw a thin box round every picture and text, to see where each is" />
+                <Button x:Name="SaveButton" Content="Save" Click="OnSave" Style="{StaticResource PrimaryButton}" Margin="0,0,6,4" MinWidth="64"
+                        ToolTip="Write your changes into the document (and the sub-documents you changed), in overrides, where the game reads them" />
+                <Button Content="Undo changes" Click="OnUndoChanges" Margin="0,0,6,4"
+                        ToolTip="Forget the changes not saved yet: back to the document as it is in its file" />
+                <Button x:Name="RestoreButton" Content="Restore original" Click="OnRestore" Margin="0,0,6,4"
+                        ToolTip="Go back to the game's own copy of this document (your saved changes to it are dropped)" />
+                <Button x:Name="GameButton" Content="Reload in game" Click="OnReloadInGame" Margin="0,0,10,4"
+                        ToolTip="Tell the running game to load this document again (vint_doc_reload), so it shows your saved files" />
+                <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="{StaticResource DimTextBrush}" TextWrapping="Wrap" Margin="0,0,0,4" />
+            </WrapPanel>
+
+            <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="6" ClipToBounds="True"
+                    Background="#FF141416">
+                <Viewbox Stretch="Uniform" Margin="6">
+                    <Grid>
+                        <Canvas x:Name="Screen" Width="1280" Height="720" ClipToBounds="True" Background="#FF202024"
+                                MouseLeftButtonDown="OnScreenClick" />
+                        <Canvas x:Name="Overlay" Width="{Binding Width, ElementName=Screen}" Height="{Binding Height, ElementName=Screen}"
+                                IsHitTestVisible="False" />
+                    </Grid>
+                </Viewbox>
+            </Border>
+
+            <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch" Background="Transparent" />
+            <TabControl x:Name="BottomTabs" Grid.Row="3" Grid.RowSpan="2" Margin="0,2,0,0">
+                <!-- The script -->
+                <TabItem Header="Script">
+                    <DockPanel>
+                        <DockPanel DockPanel.Dock="Top" Margin="0,2,0,4">
+                            <TextBlock x:Name="ScriptCount" DockPanel.Dock="Right" Foreground="{StaticResource DimTextBrush}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="ScriptTitle" Text="SCRIPT" Style="{StaticResource SectionTitle}" Margin="0" />
+                        </DockPanel>
+                        <RichTextBox x:Name="ScriptBox" IsReadOnly="True" IsReadOnlyCaretVisible="True" FontFamily="Consolas" FontSize="12"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" PreviewMouseLeftButtonUp="OnScriptClick"
+                                     ToolTip="The document's Lua script. Element names it uses are underlined: click one to pick that element." />
+                    </DockPanel>
+                </TabItem>
+                <!-- The animations: played over the screen, their tweens listed and changed -->
+                <TabItem x:Name="AnimationsTab" Header="Animations">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="280" MinWidth="200" />
+                        </Grid.ColumnDefinitions>
+                        <DockPanel Grid.Column="0">
+                            <WrapPanel DockPanel.Dock="Top" Margin="0,2,0,4">
+                                <ComboBox x:Name="AnimationList" Width="200" Margin="0,0,6,4" SelectionChanged="OnAnimationChosen"
+                                          ToolTip="The document's animations (the scripts play them, on the elements their tweens name)" />
+                                <Button x:Name="AnimationPlay" Content="Play" Click="OnAnimationPlay" Style="{StaticResource PrimaryButton}" Margin="0,0,6,4" MinWidth="60"
+                                        ToolTip="Play the animation over the screen (as it loops, by its own loop settings)" />
+                                <Button Content="Stop" Click="OnAnimationStop" Margin="0,0,10,4" MinWidth="60" ToolTip="Stop, and show the screen as the document starts it" />
+                                <Slider x:Name="AnimationTime" Width="220" Minimum="0" Maximum="1" Margin="0,0,8,4" VerticalAlignment="Center"
+                                        ValueChanged="OnAnimationScrub" ToolTip="Drag to see the screen at a moment of the animation" />
+                                <TextBlock x:Name="AnimationText" VerticalAlignment="Center" Foreground="{StaticResource DimTextBrush}" Margin="0,0,0,4" />
+                            </WrapPanel>
+                            <ListView x:Name="TweenList" SelectionMode="Single" SelectionChanged="OnTweenChosen" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Element" Width="150" DisplayMemberBinding="{Binding Target}" />
+                                        <GridViewColumn Header="Property" Width="80" DisplayMemberBinding="{Binding Property}" />
+                                        <GridViewColumn Header="Start" Width="54" DisplayMemberBinding="{Binding Start}" />
+                                        <GridViewColumn Header="Length" Width="54" DisplayMemberBinding="{Binding Length}" />
+                                        <GridViewColumn Header="From" Width="110" DisplayMemberBinding="{Binding From}" />
+                                        <GridViewColumn Header="To" Width="110" DisplayMemberBinding="{Binding To}" />
+                                        <GridViewColumn Header="Easing" Width="110" DisplayMemberBinding="{Binding Easing}" />
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                        <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="Transparent" />
+                        <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="TweenPanel" Margin="4,4,0,0" />
+                        </ScrollViewer>
+                    </Grid>
+                </TabItem>
+            </TabControl>
+        </Grid>
+
+        <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Center" VerticalAlignment="Stretch" Background="Transparent" />
+
+        <!-- The tree and the picked element's properties -->
+        <Grid Grid.Column="2" Margin="4,0,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="80" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="80" />
+            </Grid.RowDefinitions>
+            <DockPanel Grid.Row="0" Margin="0,0,0,4">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="AddButton" Content="Add" Click="OnAddElement" Margin="0,0,4,0"
+                            ToolTip="Add an element (a group, picture, text, ...) inside the picked one, or at the top when none is picked" />
+                    <Button Content="Copy" Click="OnCopyElement" Margin="0,0,4,0" ToolTip="Copy the picked element and everything in it, right after it" />
+                    <Button Content="Delete" Click="OnDeleteElement" ToolTip="Delete the picked element and everything in it" />
+                </StackPanel>
+                <TextBlock Text="ELEMENTS" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" Margin="0" />
+            </DockPanel>
+            <TreeView x:Name="ElementTree" Grid.Row="1" SelectedItemChanged="OnElementChosen" />
+            <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch" Background="Transparent" />
+            <TextBlock x:Name="PropertiesTitle" Grid.Row="3" Text="PROPERTIES" Style="{StaticResource SectionTitle}" Margin="0,2,0,4" />
+            <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="PropertyPanel" />
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</UserControl>
