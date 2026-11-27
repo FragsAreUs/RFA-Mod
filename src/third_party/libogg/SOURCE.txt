@@ -1,0 +1,9 @@
+libogg 1.3.5 (Xiph.Org Foundation, BSD-3-Clause: COPYING), the Ogg bitstream library libvorbis uses.
+
+Taken unchanged from the official release, fetched 2026-11-26 with the user's OK:
+  https://downloads.xiph.org/releases/ogg/libogg-1.3.5.tar.gz
+  SHA-256 0eb4b4b9420a0f51db142ba3f9c64b333f826532dc0f48c6410ae51f4799b664
+  (as Xiph lists it in https://downloads.xiph.org/releases/ogg/SHA256SUMS)
+Kept: COPYING, AUTHORS, README.md, include/ogg/ogg.h and os_types.h, src/bitwise.c, framing.c, crctable.h. The rest
+(build scripts, documentation, config_types.h, which Windows builds don't need) is left out.
+Its source: https://gitlab.xiph.org/xiph/ogg (tag v1.3.5).

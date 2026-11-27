@@ -56,6 +56,17 @@ int BoughtLevel(const char* name);
 int WeaponValue(const char* weapon);
 }  // namespace upgrades
 
+namespace nano_rifle {
+// Guerrilla's nano rifle on vehicles (nano_rifle.cpp): its seated riders' effects removed with the vehicle, a breaking
+// part given the vehicle's own materials, and a watch on drawing an empty material map.
+void Init();
+}  // namespace nano_rifle
+
+namespace curved_trail {
+// Guerrilla's "auto-aim curved trail" guns (the Enforcer) draw no tracer without a backpack's, as in Guerrilla (curved_trail.cpp).
+void Init();
+}  // namespace curved_trail
+
 namespace backpacks {
 // Reads mods\guerrilla_gear\backpacks.txt (the weapons build's) and the backpack key.
 void Init();

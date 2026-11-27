@@ -34,6 +34,7 @@
 #include "rfa_guerrilla.h"
 #include "campaign_api.h"
 #include "activity_base.h"
+#include "friendly_fire.h"
 #include <intrin.h>
 #include <string.h>
 
@@ -183,6 +184,8 @@ void GuerrillaCampaign_HumanDamaged(const void* record, float done) {
     if (!victim || *reinterpret_cast<const float*>(victim + 0xF24) <= 0.0f) return;
     using IsNpcFn = bool(__fastcall*)(BYTE* human, void* unused);
     if (!reinterpret_cast<IsNpcFn>(0x461130)(victim, nullptr)) return;
+    // ai_system::register_hit, just before (RM 0xACF4BF): Guerrilla's friendly fire; the record's +0xC is the kind.
+    campaign::friendly_fire::HumanDamaged(victim, attacker, done, *reinterpret_cast<const int*>(static_cast<const BYTE*>(record) + 0xC));
     ReportDamage(victim, attacker, done);
 }
 

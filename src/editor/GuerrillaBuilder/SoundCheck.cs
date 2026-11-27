@@ -1,4 +1,5 @@
 using System.IO;
+using RfaFormats;
 using RfaFormats.Audio;
 
 namespace GuerrillaBuilder;
@@ -33,11 +34,6 @@ static class SoundCheck
             ? Directory.EnumerateFiles(setup.Cache, "rfg*.bnk_pc").Where(f => !f.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase))
                        .Order(StringComparer.OrdinalIgnoreCase).ToList()
             : [];
-        if (bankFiles.Count == 0)
-        {
-            log.Line("Sound check: no sound banks of ours built here");
-            return true;
-        }
         try
         {
             RfaAudio.Open(loopback: true, ownThread: false, sampleRate: Rate, maxSources: 256, cacheMb: 256);
@@ -49,7 +45,11 @@ static class SoundCheck
         }
         try
         {
-            return Check(setup, bankFiles, log);
+            bool ours = true;
+            if (bankFiles.Count == 0) log.Line("Sound check: no sound banks of ours built here");
+            else ours = Check(setup, bankFiles, log);
+            bool armageddon = CheckArmageddon(setup, log);
+            return ours && armageddon;
         }
         finally
         {
@@ -209,6 +209,82 @@ static class SoundCheck
         foreach (string p in problems.Take(MostListed)) log.Line("Sound check: " + p);
         if (problems.Count > MostListed) log.Line($"Sound check: ... and {problems.Count - MostListed} more problems");
         if (problems.Count > 0) log.Line($"Sound check: {problems.Count} problems (above)");
+        return problems.Count == 0;
+    }
+
+    /// <summary>
+    /// Armageddon's own sound banks, read in place from the game's build\pc\cache\sounds.vpp_pc on the same engine (their
+    /// media are Wwise Vorbis): each must load, and each event is posted once at the listener, a loop stopped after a
+    /// second. A medium that can't be read or decoded is a problem. Their music, dialogue, states and synthesized sounds
+    /// aren't played yet (steps A2, D and M of the plan in docs\game-notes.md), so an event that makes no sound isn't one:
+    /// those are counted. About 10 s.
+    /// </summary>
+    static bool CheckArmageddon(Setup setup, BuildLog log)
+    {
+        string? archive = setup.Game == null ? null : Path.Combine(setup.Game, "build", "pc", "cache", "sounds.vpp_pc");
+        if (archive == null || !File.Exists(archive))
+        {
+            log.Line("Sound check of Armageddon's banks: skipped, its sounds.vpp_pc isn't found (GameDir under [Launcher])");
+            return true;
+        }
+        var started = DateTime.UtcNow;
+        var problems = new List<string>();
+        var names = new List<string>();
+        try
+        {
+            names = [.. Packfile.Open(archive).Entries.Select(e => e.Name)
+                        .Where(n => n.EndsWith(".bnk_pc", StringComparison.OrdinalIgnoreCase) && !n.EndsWith("_media.bnk_pc", StringComparison.OrdinalIgnoreCase))];
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            log.Line($"Sound check of Armageddon's banks: its sounds.vpp_pc can't be read: {e.Message}");
+            return false;
+        }
+        var events = new List<uint>();
+        var banks = new List<uint>();
+        foreach (string file in names)
+        {
+            string bank = file[..^".bnk_pc".Length];
+            try
+            {
+                uint id = RfaAudio.LoadBankFromArchive(archive, bank);
+                banks.Add(id);
+                events.AddRange(RfaAudio.BankEvents(id));
+            }
+            catch (InvalidDataException e) { problems.Add($"{bank}: doesn't load: {e.Message}"); }
+        }
+        var ended = new Dictionary<uint, int>();
+        RfaAudio.OnEnded((playing, _, _, voices) => ended[playing] = voices);
+        long failedBefore = RfaAudio.GetStatus().MediaFailed;
+        int sounded = 0, silent = 0;
+        double rendered = 0;
+        ulong nextObject = 500000;
+        foreach (uint e in events)
+        {
+            var info = RfaAudio.GetEventInfo(e);
+            ulong obj = nextObject++;
+            double start = RfaAudio.Time;
+            uint playing = RfaAudio.Post(e, obj);
+            if (playing == 0) continue;
+            bool done = Advance(info.Loops != 0 ? 1.0 : Math.Min(info.LongestSeconds >= 0 ? info.LongestSeconds : 1, 10) + 0.5, playing, ended);
+            if (!done)
+            {
+                RfaAudio.StopPlaying(playing);
+                Advance(0.5, playing, ended);
+            }
+            if (ended.TryGetValue(playing, out int voices) && voices > 0) sounded++;
+            else silent++;
+            rendered += RfaAudio.Time - start;
+            RfaAudio.RemoveObject(obj);
+        }
+        long failed = RfaAudio.GetStatus().MediaFailed - failedBefore;
+        if (failed > 0) problems.Add($"{failed} voices didn't start: their media couldn't be read or decoded");
+        foreach (uint id in banks) RfaAudio.UnloadBank(id);
+        RfaAudio.OnEnded(null);
+        log.Line($"Sound check of Armageddon's banks: {banks.Count} banks in sounds.vpp_pc, {events.Count:N0} events: {sounded:N0} made sound, " +
+                 $"{silent:N0} none yet (music, dialogue, states, synthesized sounds and switches the check doesn't set aren't played yet); " +
+                 $"{rendered:N0} s of sound rendered in {(DateTime.UtcNow - started).TotalSeconds:0} s");
+        foreach (string p in problems.Take(MostListed)) log.Line("Sound check of Armageddon's banks: " + p);
         return problems.Count == 0;
     }
 

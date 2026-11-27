@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -168,7 +169,8 @@ void ReadChildren(Reader& r, Node& node)
 
 // One object of the HIRC chunk. False if it isn't read to its exact end (a layout not known).
 bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Bank& bank, std::unique_ptr<Node>& node,
-                std::unique_ptr<Action>& action, std::unique_ptr<Event>& event, std::unique_ptr<Bus>& bus)
+                std::unique_ptr<Action>& action, std::unique_ptr<Event>& event, std::unique_ptr<Bus>& bus,
+                std::unique_ptr<Attenuation>& attenuation, std::unique_ptr<StateValues>& state)
 {
     Reader r(body, size);
     switch (type) {
@@ -181,7 +183,17 @@ bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Ba
         n.file = r.U32();
         if (n.streamType != 1) { r.U32(); r.U32(); }  // in the bank: its offset and size there
         r.U8();
-        if ((n.codec & 0xF) == 2) r.Skip(r.U32());     // a source plug-in's parameters (tone, silence)
+        if (n.IsSourcePlugin()) {
+            // A source plug-in's parameters: Wwise's silence has its length and its random range, less and more.
+            uint32_t bytes = r.U32();
+            if (n.IsSilence() && bytes >= 12) {
+                n.silenceSeconds = r.F32();
+                n.silenceLess = r.F32();
+                n.silenceMore = r.F32();
+                bytes -= 12;
+            }
+            r.Skip(bytes);
+        }
         ReadNodeBase(r, n);
         n.loopCount = r.S16();
         r.S16();
@@ -275,26 +287,32 @@ bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Ba
         Action& a = *action;
         a.type = r.U32();
         a.target = r.U32();
-        if (a.Kind() == ActionBreak) {
-            r.Skip(16);
-        } else {
-            // The head as WwiseBankWriter's ActionHead and Armageddon's: delay (and its random range), 33, the fade
-            // (and its range), its curve, ...
-            a.delayMs = r.S32();
-            r.S32();
-            r.S32();
-            r.U32();
-            a.fadeMs = r.S32();
-            r.S32();
-            r.S32();
-            // The rest depends on the kind (a play's bank id); not needed: taken as read.
-            if (a.Kind() == ActionPlay && r.Left() >= 4) {
-                r.Skip(r.Left() - 4);
-                a.bankId = r.U32();
-            } else {
-                r.Skip(r.Left());
+        // The head (WwiseBankWriter's ActionHead and Armageddon's): the delay and its random range, then the size of
+        // the parameters that follow (0 for a break or a post of another event).
+        a.delayMs = r.S32();
+        r.S32();
+        r.S32();
+        uint32_t params = r.U32();
+        if (params > r.Left()) { r.failed = true; break; }
+        Reader p(body + (size - r.Left()), params);
+        r.Skip(params);
+        if (params == 8) {
+            // A set state or set switch: the group and its value.
+            a.group = p.U32();
+            a.groupValue = p.U32();
+        } else if (params >= 13) {
+            // The fade, its random range, its curve; a "set" kind's value 4 bytes after (then its own random range).
+            a.fadeMs = p.S32();
+            p.S32();
+            p.S32();
+            a.fadeCurve = p.U8();
+            if (params >= 21) {
+                p.Skip(4);
+                a.value = p.F32();
             }
         }
+        if (a.Kind() == ActionPlay && r.Left() >= 4) a.bankId = r.U32();
+        r.Skip(r.Left());
         break;
     }
     case TypeEvent: {
@@ -309,17 +327,95 @@ bool ReadObject(uint32_t type, uint32_t id, const uint8_t* body, size_t size, Ba
         Bus& b = *bus;
         b.parent = r.U32();
         b.volume = r.F32();
-        r.F32(); r.F32(); r.F32();
+        b.lfe = r.F32();
+        b.pitch = r.F32();
+        b.lowPass = r.F32();
         b.killNewest = r.U8() != 0;
         b.mostAtOnce = r.U16();
-        r.Skip(r.Left());  // the rest (states, ducking, ...) isn't needed yet
+        r.Skip(3);
+        b.stateGroup = r.U32();
+        b.recoveryMs = static_cast<int>(r.U32());
+        b.maxDuckDb = r.F32();
+        r.U32();
+        uint32_t ducks = r.U32();
+        for (uint32_t i = 0; i < ducks && !r.failed; i++) {
+            Bus::Duck d;
+            d.bus = r.U32();
+            d.db = r.F32();
+            d.fadeOutMs = r.S32();
+            d.fadeInMs = r.S32();
+            d.curve = r.U8();
+            b.ducks.push_back(d);
+        }
+        // Its effects, as a node's (read, not played).
+        uint8_t slots = r.U8();
+        if (slots) {
+            r.U8();
+            for (uint8_t i = 0; i < slots && !r.failed; i++) {
+                r.U8();
+                r.U32();
+                r.U8();
+                r.Skip(r.U32());
+                r.U32();
+            }
+            b.effectSlots = slots;
+        }
+        uint16_t curves = r.U16();
+        for (uint16_t i = 0; i < curves && !r.failed; i++) b.curves.push_back(ReadCurve(r));
+        // Its states: each the state, a flag, the state object it uses (with 0, the group's own values).
+        uint32_t states = r.U32();
+        for (uint32_t i = 0; i < states && !r.failed; i++) {
+            uint32_t state = r.U32();
+            uint8_t custom = r.U8();
+            uint32_t object = r.U32();
+            b.stateObjects[state] = custom ? object : 0;
+        }
         break;
     }
-    case TypeAttenuation:
-        // Ours are flat: the fade is a curve on game_distance on the nodes (WwiseBankWriter.Attenuation).
-        bank.attenuations.push_back(id);
-        r.Skip(r.Left());
+    case TypeState: {
+        // A state object: volume, LFE, pitch and low-pass for one state, then how each is meant (4 bytes).
+        state = std::make_unique<StateValues>();
+        state->volume = r.F32();
+        state->lfe = r.F32();
+        state->pitch = r.F32();
+        state->lowPass = r.F32();
+        r.Skip(4);
+        bank.stateObjects.push_back(id);
         break;
+    }
+    case TypeAttenuation: {
+        // A cone (its inner and outer angles, the outer volume and low-pass), which curve each of volume (dry; and
+        // wet for the game's and the user's sends), low-pass and spread uses (-1: none), the curves (a scaling,
+        // then points), and curves on game parameters (read, not used). Ours are flat: our fades are curves on
+        // game_distance on the nodes (WwiseBankWriter.Attenuation).
+        attenuation = std::make_unique<Attenuation>();
+        Attenuation& at = *attenuation;
+        at.cone = r.U8() != 0;
+        if (at.cone) {
+            at.coneInner = r.F32();
+            at.coneOuter = r.F32();
+            at.coneOuterDb = r.F32();
+            at.coneLowPass = r.F32();
+        }
+        int8_t uses[5];
+        for (int8_t& u : uses) u = r.S8();
+        uint8_t count = r.U8();
+        for (uint8_t i = 0; i < count && !r.failed; i++) {
+            Curve c;
+            c.scaling = r.U8();
+            ReadPoints(r, r.U16(), c.points);
+            at.curves.push_back(std::move(c));
+        }
+        auto use = [&](int8_t index) { return index >= 0 && index < static_cast<int>(at.curves.size()) ? index : -1; };
+        at.volumeDry = use(uses[0]);
+        at.lowPass = use(uses[3]);
+        at.spread = use(uses[4]);
+        if (at.volumeDry >= 0) at.maxDistance = at.curves[at.volumeDry].LastX();
+        uint16_t onParameters = r.U16();
+        for (uint16_t i = 0; i < onParameters && !r.failed; i++) ReadCurve(r);
+        bank.attenuations.push_back(id);
+        break;
+    }
     default:
         bank.unknownObjects++;
         r.Skip(r.Left());
@@ -337,6 +433,26 @@ const Node::SwitchChild* Node::SwitchParams(uint32_t child) const
     return nullptr;
 }
 
+// Wwise's curve shapes (AkCurveInterpolation), from a segment's start (t 0) to its end (t 1). The forms are the usual
+// readings of Wwise's own graphs: the logarithmic ones rise fast, the exponential ones slow, the S ones ease in and out.
+float CurveShape(uint32_t shape, float t)
+{
+    constexpr float Pi = 3.14159265f;
+    t = std::clamp(t, 0.0f, 1.0f);
+    switch (shape) {
+    case 0: return 1.0f - std::pow(1.0f - t, 3.0f);                       // logarithmic, base 3
+    case 1: return std::sin(t * Pi / 2);                                  // sine (constant power, rising)
+    case 2: return 1.0f - std::pow(1.0f - t, 1.41f);                      // logarithmic, base 1.41
+    case 3: return 2.0f * t - 0.5f * (1.0f - std::cos(Pi * t));           // inverted S
+    case 5: return 0.5f * (1.0f - std::cos(Pi * t));                      // S
+    case 6: return std::pow(t, 1.41f);                                    // exponential, base 1.41
+    case 7: return 1.0f - std::cos(t * Pi / 2);                           // reciprocal sine
+    case 8: return t * t * t;                                             // exponential, base 3
+    case 9: return 0.0f;                                                  // constant: the start's value
+    default: return t;                                                    // 4 linear
+    }
+}
+
 float Curve::ValueAt(float x) const
 {
     if (points.empty()) return 0.0f;
@@ -348,7 +464,7 @@ float Curve::ValueAt(float x) const
         if (x > b.x) continue;
         if (a.shape == 9 || b.x <= a.x) return a.y;  // constant
         float t = (x - a.x) / (b.x - a.x);
-        return a.y + (b.y - a.y) * t;
+        return a.y + (b.y - a.y) * CurveShape(a.shape, t);
     }
     return points.back().y;
 }
@@ -380,6 +496,7 @@ bool ReadWemFormat(const uint8_t* bytes, size_t size, WemFormat& f, std::string&
             uint32_t rate;
             memcpy(&channels, body + 2, 2);
             memcpy(&rate, body + 4, 4);
+            memcpy(&f.avgBytesPerSecond, body + 8, 4);
             memcpy(&align, body + 12, 2);
             memcpy(&bits, body + 14, 2);
             f.channels = channels;
@@ -398,6 +515,19 @@ bool ReadWemFormat(const uint8_t* bytes, size_t size, WemFormat& f, std::string&
                 f.loopStart = start;
                 f.loopEnd = end;
             }
+        } else if (memcmp(chunk, "vorb", 4) == 0 && length >= 0x34 && available >= 0x34) {
+            // Wwise's Vorbis (bank version 48): its sample count, where its setup packet and first audio packet are
+            // in the data, and its two block sizes (as powers of 2).
+            uint32_t samples, setup, audio;
+            memcpy(&samples, body, 4);
+            memcpy(&setup, body + 0x18, 4);
+            memcpy(&audio, body + 0x1C, 4);
+            f.vorbisSamples = samples;
+            f.vorbisSetup = setup;
+            f.vorbisAudio = audio;
+            f.vorbisBlocks[0] = std::min(body[0x30], body[0x31]);
+            f.vorbisBlocks[1] = std::max(body[0x30], body[0x31]);
+            f.hasVorb = true;
         } else if (memcmp(chunk, "data", 4) == 0) {
             f.dataOffset = static_cast<uint32_t>(at + 8);
             f.dataBytes = length;
@@ -411,11 +541,19 @@ bool ReadWemFormat(const uint8_t* bytes, size_t size, WemFormat& f, std::string&
     if (f.tag == 2) {
         if (f.blockAlign != 36 * f.channels) { why = "Wwise ADPCM with blocks of " + std::to_string(f.blockAlign) + " bytes"; return false; }
         f.frames = static_cast<int64_t>(f.dataBytes / f.blockAlign) * 64;
+    } else if (f.tag == 0xFFFF) {
+        if (!f.hasVorb) { why = "Wwise Vorbis without the vorb chunk of bank version 48"; return false; }
+        if (f.channels > 2) { why = std::to_string(f.channels) + "-channel Wwise Vorbis (mono and stereo read)"; return false; }
+        if (f.vorbisBlocks[0] < 6 || f.vorbisBlocks[1] > 13 || f.vorbisSetup >= f.dataBytes || f.vorbisAudio >= f.dataBytes) {
+            why = "Wwise Vorbis with a vorb chunk not as Armageddon's";
+            return false;
+        }
+        f.frames = f.vorbisSamples;
     } else if (f.tag == 1 || f.tag == 0xFFFE) {
         if (f.bits != 16) { why = std::to_string(f.bits) + "-bit PCM (16 read)"; return false; }
         f.frames = f.dataBytes / (2u * f.channels);
     } else {
-        why = "codec " + std::to_string(f.tag) + " (PCM and Wwise ADPCM read)";
+        why = "codec " + std::to_string(f.tag) + " (PCM, Wwise ADPCM and Wwise Vorbis read)";
         return false;
     }
     if (f.hasLoop) {
@@ -442,14 +580,100 @@ bool MediaFile::Open(const std::wstring& path, std::string& why)
     return true;
 }
 
+bool MediaFile::OpenPart(const std::wstring& path, uint64_t partBase, uint64_t partSize, std::string& why)
+{
+    if (!Open(path, why)) return false;
+    base = partBase;
+    limit = partSize;
+    return true;
+}
+
 bool MediaFile::ReadAt(uint64_t offset, void* into, uint32_t size) const
 {
-    if (!handle) return false;
+    if (!handle || offset > limit || size > limit - offset) return false;
+    offset += base;
     OVERLAPPED at{};
     at.Offset = static_cast<DWORD>(offset);
     at.OffsetHigh = static_cast<DWORD>(offset >> 32);
     DWORD read = 0;
     return ReadFile(handle, into, size, &read, &at) && read == size;
+}
+
+// The game's archives, version 6 (see docs\game-notes.md, "Archives"; tools\research\vppx.py): a 2 KB header (its
+// magic 0x51890ACE and version at 0, its flags at 0x14C: 1 compressed, 2 condensed; at 0x154 the file count, then
+// the directory's, the names' and the data's sizes), the directory from 0x800 (24 bytes a file: its name's place,
+// 4 bytes, its offset in the data, its size, its packed size, 4 bytes), the names, the data, each part on a 2 KB
+// boundary.
+static bool ReadArchive(const std::wstring& archive, std::vector<std::pair<std::string, ArchiveFile>>& files, std::string& why)
+{
+    files.clear();
+    MediaFile file;
+    if (!file.Open(archive, why)) return false;
+    uint8_t header[0x16C];
+    if (!file.ReadAt(0, header, sizeof header)) {
+        why = "not one of the game's archives";
+        return false;
+    }
+    uint32_t magic, version, flags, count, directoryBytes, namesBytes;
+    memcpy(&magic, header, 4);
+    memcpy(&version, header + 4, 4);
+    memcpy(&flags, header + 0x14C, 4);
+    memcpy(&count, header + 0x154, 4);
+    memcpy(&directoryBytes, header + 0x15C, 4);
+    memcpy(&namesBytes, header + 0x160, 4);
+    if (magic != 0x51890ACE || version != 6 || count > 1000000 || directoryBytes < 24ull * count) {
+        why = "not an archive of Armageddon's (version 6)";
+        return false;
+    }
+    auto align = [](uint64_t n) { return (n + 0x7FF) & ~0x7FFull; };
+    const uint64_t namesAt = 0x800 + align(directoryBytes), dataAt = namesAt + align(namesBytes);
+    std::vector<uint8_t> directory(24ull * count), nameBytes(namesBytes);
+    if ((count && !file.ReadAt(0x800, directory.data(), static_cast<uint32_t>(directory.size()))) ||
+        (namesBytes && !file.ReadAt(namesAt, nameBytes.data(), namesBytes))) {
+        why = "its directory can't be read";
+        return false;
+    }
+    const bool compressed = (flags & 1) != 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t nameAt, offset, size;
+        memcpy(&nameAt, &directory[24ull * i], 4);
+        memcpy(&offset, &directory[24ull * i + 8], 4);
+        memcpy(&size, &directory[24ull * i + 12], 4);
+        if (nameAt >= nameBytes.size()) continue;
+        std::string fileName;
+        for (size_t c = nameAt; c < nameBytes.size() && nameBytes[c]; c++) fileName += static_cast<char>(tolower(nameBytes[c]));
+        ArchiveFile where;
+        where.offset = dataAt + offset;  // its place if uncompressed (a compressed one's isn't worked out here)
+        where.size = size;
+        where.compressed = compressed;
+        files.emplace_back(std::move(fileName), where);
+    }
+    return true;
+}
+
+bool ListArchive(const std::wstring& archive, std::vector<std::string>& names, std::string& why)
+{
+    std::vector<std::pair<std::string, ArchiveFile>> files;
+    if (!ReadArchive(archive, files, why)) return false;
+    names.clear();
+    for (auto& f : files) names.push_back(f.first);
+    return true;
+}
+
+bool FindInArchive(const std::wstring& archive, const std::vector<std::string>& names, std::vector<ArchiveFile>& found,
+                   std::vector<bool>& present, std::string& why)
+{
+    found.assign(names.size(), ArchiveFile{});
+    present.assign(names.size(), false);
+    std::vector<std::pair<std::string, ArchiveFile>> files;
+    if (!ReadArchive(archive, files, why)) return false;
+    for (auto& f : files)
+        for (size_t k = 0; k < names.size(); k++)
+            if (!present[k] && f.first == names[k]) {
+                present[k] = true;
+                found[k] = f.second;
+            }
+    return true;
 }
 
 namespace {
@@ -490,6 +714,68 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
 {
     std::vector<uint8_t> bytes;
     if (!ReadWholeFile(bankPath, bytes, why)) return nullptr;
+    std::unique_ptr<MediaFile> media;
+    std::string mediaProblem;
+    if (!mediaPath.empty() && GetFileAttributesW(mediaPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        media = std::make_unique<MediaFile>();
+        std::string problem;
+        if (!media->Open(mediaPath, problem)) {
+            media.reset();
+            mediaProblem = "its media file: " + problem;
+        }
+    } else if (!mediaPath.empty()) {
+        mediaProblem = "no media file beside it";
+    }
+    return Parse(bytes, bankPath, mediaPath, std::move(media), mediaProblem, why);
+}
+
+Bank* Library::LoadFromArchive(const std::wstring& archive, const std::string& name, std::string& why)
+{
+    std::string lower;
+    for (char c : name) lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    std::vector<ArchiveFile> found;
+    std::vector<bool> present;
+    if (!FindInArchive(archive, {lower + ".bnk_pc", lower + "_media.bnk_pc"}, found, present, why)) return nullptr;
+    if (!present[0]) {
+        why = name + ".bnk_pc isn't in that archive";
+        return nullptr;
+    }
+    if (found[0].compressed) {
+        why = "that archive is compressed (its banks are read from a copy, and their media aren't in it)";
+        return nullptr;
+    }
+    if (found[0].size > (64u << 20)) {
+        why = "too big for a bank";
+        return nullptr;
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(found[0].size));
+    MediaFile whole;
+    if (!whole.Open(archive, why) || (!bytes.empty() && !whole.ReadAt(found[0].offset, bytes.data(), static_cast<uint32_t>(bytes.size())))) {
+        why = "its bytes can't be read from the archive";
+        return nullptr;
+    }
+    std::unique_ptr<MediaFile> media;
+    std::string mediaProblem;
+    if (present[1] && !found[1].compressed) {
+        media = std::make_unique<MediaFile>();
+        std::string problem;
+        if (!media->OpenPart(archive, found[1].offset, found[1].size, problem)) {
+            media.reset();
+            mediaProblem = "its media file: " + problem;
+        }
+    } else {
+        mediaProblem = present[1] ? "its media file is compressed in the archive" : "no media file beside it in the archive";
+    }
+    std::wstring wideName(name.begin(), name.end());
+    Bank* bank = Parse(bytes, archive + L"\\" + wideName + L".bnk_pc", archive + L"\\" + wideName + L"_media.bnk_pc", std::move(media),
+                       mediaProblem, why);
+    if (bank) bank->armageddons = true;
+    return bank;
+}
+
+Bank* Library::Parse(const std::vector<uint8_t>& bytes, const std::wstring& bankPath, const std::wstring& mediaPath,
+                     std::unique_ptr<MediaFile> media, const std::string& mediaProblem, std::string& why)
+{
     auto bank = std::make_unique<Bank>();
     bank->path = bankPath;
     bank->mediaPath = mediaPath;
@@ -501,6 +787,12 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
     std::vector<std::unique_ptr<Action>> newActions;
     std::vector<std::unique_ptr<Event>> newEvents;
     std::vector<std::unique_ptr<Bus>> newBuses;
+    std::vector<std::unique_ptr<Attenuation>> newAttenuations;
+    std::vector<std::pair<uint32_t, StateValues>> newStates;
+    std::unordered_map<uint32_t, float> newDefaults;
+    std::unordered_map<uint32_t, StateGroup> newGroups;
+    float newThreshold = 0;
+    bool sawGlobals = false;
     bool sawHeader = false;
     size_t at = 0;
     while (at + 8 <= bytes.size()) {
@@ -530,14 +822,71 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
                 std::unique_ptr<Action> action;
                 std::unique_ptr<Event> event;
                 std::unique_ptr<Bus> bus;
-                if (!ReadObject(type, id, body + p + 12, size - 4, *bank, node, action, event, bus))
+                std::unique_ptr<Attenuation> attenuation;
+                std::unique_ptr<StateValues> state;
+                if (!ReadObject(type, id, body + p + 12, size - 4, *bank, node, action, event, bus, attenuation, state))
                     bank->problems.push_back("object " + Hex(id) + " (type " + std::to_string(type) + ") isn't laid out as read; left out");
                 else if (node) { node->id = id; node->type = type; node->bankId = bank->id; newNodes.push_back(std::move(node)); }
                 else if (action) { action->id = id; action->bankId = action->bankId ? action->bankId : bank->id; newActions.push_back(std::move(action)); }
                 else if (event) { event->id = id; event->bankId = bank->id; newEvents.push_back(std::move(event)); }
                 else if (bus) { bus->id = id; bus->bankId = bank->id; newBuses.push_back(std::move(bus)); }
+                else if (attenuation) { attenuation->id = id; attenuation->bankId = bank->id; newAttenuations.push_back(std::move(attenuation)); }
+                else if (state) newStates.emplace_back(id, *state);
                 p += 8 + size;
             }
+        } else if (memcmp(chunk, "STMG", 4) == 0 && length >= 12) {
+            // init.bnk's global settings: the volume threshold; the state groups (each its id, its default transition
+            // time, its states with what each does, its transitions); switch groups driven by game parameters; the
+            // game parameters' defaults.
+            Reader g(body, length);
+            newThreshold = g.F32();
+            uint32_t groups = g.U32();
+            for (uint32_t i = 0; i < groups && !g.failed; i++) {
+                StateGroup sg;
+                sg.id = g.U32();
+                sg.defaultTransitionMs = static_cast<int>(g.U32());
+                uint32_t states = g.U32();
+                for (uint32_t k = 0; k < states && !g.failed; k++) {
+                    uint32_t state = g.U32();
+                    g.U32();
+                    uint32_t bytes = g.U32();
+                    StateValues v;
+                    if (bytes >= 20) {
+                        g.U32();  // the state's id again
+                        v.volume = g.F32();
+                        v.lfe = g.F32();
+                        v.pitch = g.F32();
+                        v.lowPass = g.F32();
+                        g.Skip(bytes - 20);
+                    } else {
+                        g.Skip(bytes);
+                    }
+                    sg.states[state] = v;
+                }
+                uint32_t transitions = g.U32();
+                for (uint32_t k = 0; k < transitions && !g.failed; k++) {
+                    StateGroup::Transition t;
+                    t.from = g.U32();
+                    t.to = g.U32();
+                    t.ms = static_cast<int>(g.U32());
+                    sg.transitions.push_back(t);
+                }
+                newGroups[sg.id] = std::move(sg);
+            }
+            uint32_t switches = g.U32();
+            for (uint32_t i = 0; i < switches && !g.failed; i++) {
+                g.U32();
+                g.U32();
+                g.Skip(12ull * g.U32());
+            }
+            if (switches) bank->problems.push_back(std::to_string(switches) + " switch groups driven by game parameters (not read yet)");
+            uint32_t parameters = g.U32();
+            for (uint32_t i = 0; i < parameters && !g.failed; i++) {
+                uint32_t parameter = g.U32();
+                newDefaults[parameter] = g.F32();
+            }
+            if (g.failed || g.Left() != 0) bank->problems.push_back("its global settings (STMG) aren't laid out as read; left out");
+            else sawGlobals = true;
         }
         at += 8 + length;
     }
@@ -546,12 +895,9 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
 
     // Its media file: the VWSB index ("VWSBPC  ", 0, 2, 1, the bank's id, the header's size + 16, a count, then
     // (id, offset, 0, size) a medium).
-    if (!mediaPath.empty() && GetFileAttributesW(mediaPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        auto file = std::make_unique<MediaFile>();
-        std::string problem;
-        if (!file->Open(mediaPath, problem)) {
-            bank->problems.push_back("its media file: " + problem);
-        } else {
+    if (media) {
+        auto file = std::move(media);
+        {
             uint8_t head[28];
             if (!file->ReadAt(0, head, sizeof head) || memcmp(head, "VWSBPC  ", 8) != 0) {
                 bank->problems.push_back("its media file isn't a VWSB container");
@@ -573,8 +919,8 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
                 }
             }
         }
-    } else if (!mediaPath.empty()) {
-        bank->problems.push_back("no media file beside it");
+    } else if (!mediaProblem.empty()) {
+        bank->problems.push_back(mediaProblem);
     }
 
     // A bank loaded again replaces the one before.
@@ -583,6 +929,13 @@ Bank* Library::Load(const std::wstring& bankPath, const std::wstring& mediaPath,
     for (auto& a : newActions) { bank->actions.push_back(a->id); actions[a->id] = std::move(a); }
     for (auto& e : newEvents) { bank->events.push_back(e->id); events[e->id] = std::move(e); }
     for (auto& b : newBuses) { bank->buses.push_back(b->id); buses[b->id] = std::move(b); }
+    for (auto& a : newAttenuations) attenuations[a->id] = std::move(a);
+    for (auto& [id, v] : newStates) stateObjects[id] = v;
+    if (sawGlobals) {
+        volumeThreshold = newThreshold;
+        parameterDefaults = std::move(newDefaults);
+        stateGroups = std::move(newGroups);
+    }
     Bank* kept = bank.get();
     banks[bank->id] = std::move(bank);
     CheckLinks(*kept);
@@ -627,6 +980,8 @@ void Library::Unload(uint32_t bankId)
     for (uint32_t id : bank.actions) actions.erase(id);
     for (uint32_t id : bank.events) events.erase(id);
     for (uint32_t id : bank.buses) buses.erase(id);
+    for (uint32_t id : bank.attenuations) attenuations.erase(id);
+    for (uint32_t id : bank.stateObjects) stateObjects.erase(id);
     banks.erase(it);
 }
 
@@ -637,6 +992,35 @@ void Library::Clear()
     actions.clear();
     events.clear();
     buses.clear();
+    attenuations.clear();
+    stateObjects.clear();
+    parameterDefaults.clear();
+    stateGroups.clear();
+    volumeThreshold = 0;
+}
+
+const Attenuation* Library::FindAttenuation(uint32_t id) const
+{
+    auto it = attenuations.find(id);
+    return it == attenuations.end() ? nullptr : it->second.get();
+}
+
+float Library::ParameterDefault(uint32_t parameter) const
+{
+    auto it = parameterDefaults.find(parameter);
+    return it == parameterDefaults.end() ? 0.0f : it->second;
+}
+
+const StateValues* Library::FindStateObject(uint32_t id) const
+{
+    auto it = stateObjects.find(id);
+    return it == stateObjects.end() ? nullptr : &it->second;
+}
+
+const StateGroup* Library::FindStateGroup(uint32_t id) const
+{
+    auto it = stateGroups.find(id);
+    return it == stateGroups.end() ? nullptr : &it->second;
 }
 
 const Node* Library::FindNode(uint32_t id) const

@@ -1,0 +1,12 @@
+libvorbis 1.3.7 (Xiph.Org Foundation, BSD-3-Clause: COPYING), the reference Vorbis decoder, which RFA-Mod's sound
+engine (src\audio\) uses to decode the Wwise Vorbis of Red Faction: Armageddon's own sounds.
+
+Taken unchanged from the official release, fetched 2026-11-26 with the user's OK:
+  https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz
+  SHA-256 0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab
+  (as Xiph lists it in https://downloads.xiph.org/releases/vorbis/SHA256SUMS)
+Kept: COPYING, AUTHORS, include/vorbis/codec.h, lib/*.h, and the lib/*.c the decoder links with (analysis, bitrate,
+block, codebook, envelope, floor0, floor1, info, lookup, lpc, lsp, mapping0, mdct, psy, registry, res0, sharedbook,
+smallft, synthesis, window). Left out: the encoder (vorbisenc.c and its books/ and modes/), vorbisfile.c, the
+programs (barkmel.c, psytune.c, tone.c), build scripts, documentation, examples and tests.
+Its source: https://gitlab.xiph.org/xiph/vorbis (tag v1.3.7).

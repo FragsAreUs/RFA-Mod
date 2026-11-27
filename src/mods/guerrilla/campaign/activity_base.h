@@ -3,6 +3,9 @@
 // frame by the framework (activities.cpp), the kind's own logic in the virtual functions.
 #pragma once
 #include "activities.h"
+#include "world_objects.h"
+
+struct GuerrillaCampaignIcon;  // campaign_api.h
 
 namespace campaign::activities {
 
@@ -13,6 +16,7 @@ public:
 
     Mode GetMode() const { return mode_; }
     bool Modal() const { return modal_; }
+    bool CanAlwaysStart() const { return canAlwaysStart_; }
     State GetState() const { return state_; }
     unsigned Node() const { return node_; }
 
@@ -58,6 +62,20 @@ public:
     // is the time left in ms, the icon flashing under 6 s), false for none.
     virtual const char* Title() const { return ""; }
     virtual bool UiText(std::string& text, int& number) const { return false; }
+    // Natural spawning (do_activity_spawn_frame RM 0x7A83F0, natural_spawning.cpp): the nodes a run of this kind could
+    // start at now, for a player at `player` (collect_spawn_objects, vt+0xAC; false for none); the activity.xtbl row a run
+    // from one of them uses (get_base_activity_data 0x769320; null for none); and, once the spawner started a run there,
+    // what the kind keeps of it (a convoy end point's 10 minutes).
+    virtual bool CollectSpawnObjects(const Vector& player, std::vector<const world::Object*>& nodes) const { return false; }
+    virtual const BaseData* NodeBaseData(const world::Object& node) const { return nullptr; }
+    virtual bool NodeResting(const world::Object& node) const { return false; }  // a convoy end point's 10 minutes
+    virtual void NaturallySpawned(const world::Object& node) {}
+    // The maps (render_icons vt+0x74, while READY, STARTING or RUNNING; get_icon_image_name vt+0x88): the kind's
+    // temporary map icons now (how many written), its picture's name for the offer's hint (null for none), and where
+    // its icon for the node it was started at is (the GPS key's target: false while it has none).
+    virtual int MapIcons(GuerrillaCampaignIcon* icons, int most) const { return 0; }
+    virtual const char* IconImageName() const { return nullptr; }
+    virtual bool SpawnedIcon(unsigned node, Vector& at) const { return false; }
     Interface GetInterface() const { return interface_; }
     float InterfaceTime() const { return interfaceTime_; }  // seconds since the interface state changed
 
@@ -106,6 +124,22 @@ Activity* Get(Mode mode);
 void Register(Activity* activity);
 Mode CurrentMode();
 void SetCurrentMode(Mode mode);
+// Guerrilla's activity_none (RM 0x7699C0): no modal activity is current, and no offensive raid or house arrest is
+// loading, offered or starting (AnyRunning is its opposite).
+bool NoneActive();
+// The natural spawner (natural_spawning.cpp): its frame (activity_system_do_frame's every 4-6 s, RM 0x7ACBB0), its
+// level start, a modal run's end (its 90-120 s, activity_base_modal::activity_end_common 0x769950), the last node it
+// started (activity_get_last_spawned, for the GPS key: 0xFFFFFFFF none, and its kind), and the console's pass.
+void SpawnFrame();
+void SpawnLevelInit();
+void SpawnModalEnded();
+unsigned LastSpawnedNode(Mode* mode);
+void SetLastSpawned(unsigned node, Mode mode);
+void SpawnCommand();
+void OfferHintFrame();  // an offered run's frame: the hint once its 5 s after a natural spawn are up
+// Guerrilla's restricted group (activity_is_allowed_to_initialize RM 0x7551D0): mission vrail, convoy, courier and
+// both raids; one of them may initialize only while no other is offered, starting or running.
+bool RestrictedGroupAllows(Mode mode);
 // After a modal run ends, no other is offered for a while (Guerrilla's cooldown). A level's start clears it (Guerrilla's
 // level_init 0x797120, as a retry's reload does: ClearCooldown); the seconds left (CooldownLeft) for the log.
 void StartCooldown();
@@ -189,6 +223,16 @@ bool AreaDefenseScreen(Screen& screen);
 void AreaDefenseChoose(int choice);
 bool AreaDefenseTakePlayerDeath();
 void AreaDefenseReopened(const char* how);
+
+// Convoys (convoy.cpp): Guerrilla's convoy activity, its convoys driven by guerrilla_vehicles' convoys.cpp; whether it
+// runs the convoys (its table and theirs are there: else guerrilla_vehicles sends its own), and the console's start.
+Activity* MakeConvoy();
+bool ConvoysRun();
+bool ConvoyNodeDone(unsigned node);  // a convoy end point's convoy won
+void ConvoyReloadProgress();
+// For the HUD: the convoy's corner panel (false: none), and its route on the maps (x and z pairs; how many points).
+bool ConvoyScreen(Screen& screen);
+int ConvoyRoute(float* xz, int most);
 
 // Demolitions master (demolitions_master.cpp).
 Activity* MakeDemolitionsMaster();

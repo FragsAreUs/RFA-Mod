@@ -23,6 +23,7 @@ enum Action {
     TipContinue,  // closes a tool tip that paused the game (Guerrilla's tooltip_resume)
     MinimapZoomIn,   // Guerrilla's ZOOM IN MINIMAP (CBA_MINIMAP_ZOOM_IN)
     MinimapZoomOut,  // ZOOM OUT MINIMAP
+    GpsMarker,       // a nav beacon on the activity offered (Guerrilla's CBA_GPS_MARKER; G here)
     Count
 };
 

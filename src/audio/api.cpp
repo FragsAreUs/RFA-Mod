@@ -1,5 +1,8 @@
 // The flat C interface (rfa_audio.h): each call takes the engine's lock; the end callback is called outside it.
+// Built into a program or mod of its own (RFA_AUDIO_STATIC: the game's rfa_sound.dll), nothing is exported.
+#ifndef RFA_AUDIO_STATIC
 #define RFA_AUDIO_BUILD_DLL
+#endif
 #include "rfa_audio.h"
 
 #include "engine.h"
@@ -55,6 +58,14 @@ int rfa_audio_open(const rfa_audio_settings* settings, char* error, int error_si
 
 void rfa_audio_close(void) { E().Close(); }
 
+void rfa_audio_set_library_folder(const wchar_t* folder)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    std::wstring f = folder ? folder : L"";
+    if (!f.empty() && f.back() != L'\\' && f.back() != L'/') f += L'\\';
+    E().al.folder = f;
+}
+
 int rfa_audio_device_info(char* text, int size)
 {
     std::lock_guard<std::mutex> hold(E().lock);
@@ -67,6 +78,15 @@ uint32_t rfa_audio_load_bank(const wchar_t* bank_path, const wchar_t* media_path
     std::string why;
     uint32_t id = bank_path ? E().LoadBank(bank_path, media_path ? media_path : L"", why) : 0;
     if (!bank_path) why = "no bank named";
+    CopyText(id ? "" : why, error, error_size);
+    return id;
+}
+
+uint32_t rfa_audio_load_bank_from_archive(const wchar_t* archive, const char* bank_name, char* error, int error_size)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    std::string why = "no archive or bank named";
+    uint32_t id = archive && bank_name ? E().LoadBankFromArchive(archive, bank_name, why) : 0;
     CopyText(id ? "" : why, error, error_size);
     return id;
 }
@@ -284,6 +304,52 @@ void rfa_audio_stop_object(uint64_t object, int fade_ms)
 {
     std::lock_guard<std::mutex> hold(E().lock);
     E().StopObject(object, fade_ms);
+}
+
+void rfa_audio_pause_playing(uint32_t playing_id, int pause)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().PausePlay(playing_id, pause != 0);
+}
+
+int rfa_audio_event_ducking_buses(uint32_t event_id, uint32_t* buses, int max)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    std::vector<uint32_t> found = E().EventDuckingBuses(event_id);
+    for (int i = 0; i < max && i < static_cast<int>(found.size()); i++) buses[i] = found[i];
+    return static_cast<int>(found.size());
+}
+
+int rfa_audio_load_archive_banks(const wchar_t* archive, char* error, int error_size)
+{
+    std::vector<std::string> names;
+    std::string why;
+    if (!archive || !ListArchive(archive, names, why)) {
+        CopyText(archive ? why : "no archive named", error, error_size);
+        return -1;
+    }
+    int loaded = 0;
+    for (const std::string& n : names) {
+        if (n.size() < 7 || n.compare(n.size() - 7, 7, ".bnk_pc") != 0 || n.find("_media.") != std::string::npos) continue;
+        std::lock_guard<std::mutex> hold(E().lock);
+        std::string problem;
+        if (E().LoadBankFromArchive(archive, n.substr(0, n.size() - 7), problem)) loaded++;
+        else why = n + ": " + problem;
+    }
+    CopyText(loaded ? "" : why, error, error_size);
+    return loaded;
+}
+
+void rfa_audio_note_bus(uint32_t bus, int delta)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().NoteBus(bus, delta);
+}
+
+void rfa_audio_pause_all(int pause)
+{
+    std::lock_guard<std::mutex> hold(E().lock);
+    E().PauseAll(pause != 0);
 }
 
 int rfa_audio_is_playing(uint32_t playing_id)

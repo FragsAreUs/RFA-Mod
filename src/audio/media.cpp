@@ -64,13 +64,8 @@ ALenum Format16(const OpenAl& al, int channels)
 
 static uint64_t KeyOf(uint32_t bankId, uint32_t mediumId) { return (static_cast<uint64_t>(bankId) << 32) | mediumId; }
 
-bool MediaCache::Info(const Bank& bank, uint32_t mediumId, MediumInfo& info, std::string& why)
+bool ReadMediumInfo(const Bank& bank, uint32_t mediumId, MediumInfo& info, std::string& why)
 {
-    uint64_t key = KeyOf(bank.id, mediumId);
-    if (auto known = infos.find(key); known != infos.end()) {
-        info = known->second;
-        return true;
-    }
     auto entry = bank.media.find(mediumId);
     if (entry == bank.media.end() || !bank.mediaFile) {
         why = "its medium isn't in the media file";
@@ -82,38 +77,107 @@ bool MediaCache::Info(const Bank& bank, uint32_t mediumId, MediumInfo& info, std
         why = "its medium can't be read";
         return false;
     }
+    // A voice line of Armageddon's: a lip-sync block ("DMAV") first, the .wem after it on a 2 KB boundary. The voice
+    // banks' index gives the .wem's size alone: the medium's bytes are the block's and then that many.
+    uint32_t lipSync = 0;
+    if (size >= 4 && memcmp(head, "DMAV", 4) == 0) {
+        // Its own .wem only: one whose RIFF size is the size given (a block with no sound after it, which some are, is
+        // followed by the next medium, whose RIFF this would otherwise take).
+        for (uint32_t at = 2048; at <= 16384; at += 2048) {
+            uint8_t riff[8] = {};
+            uint32_t riffSize = 0;
+            if (bank.mediaFile->ReadAt(entry->second.offset + at, riff, 8) && memcmp(riff, "RIFF", 4) == 0) {
+                memcpy(&riffSize, riff + 4, 4);
+                if (riffSize + 8ull == entry->second.size) lipSync = at;
+                break;
+            }
+        }
+        if (!lipSync) {
+            why = "its medium is a lip-sync block with no sound after it";
+            return false;
+        }
+        size = std::min<uint32_t>(entry->second.size, sizeof head);
+        if (!bank.mediaFile->ReadAt(entry->second.offset + lipSync, head, size)) {
+            why = "its medium can't be read";
+            return false;
+        }
+    }
     MediumInfo read;
     read.bank = &bank;
     read.entry = entry->second;
     if (!ReadWemFormat(head, size, read.format, why)) return false;
-    if (read.format.dataOffset + static_cast<uint64_t>(read.format.dataBytes) > entry->second.size) {
+    read.format.lipSyncBytes = lipSync;
+    read.format.dataOffset += lipSync;
+    read.entry.size += lipSync;
+    if (read.format.dataOffset + static_cast<uint64_t>(read.format.dataBytes) > read.entry.size) {
         why = "its medium's data runs past its place in the media file";
         return false;
     }
-    infos[key] = read;
     info = read;
     return true;
 }
 
-std::shared_ptr<Decoded> MediaCache::Get(const MediumInfo& info, std::string& why)
+bool DecodeWhole(const MediumInfo& info, std::vector<int16_t>& samples, std::string& why)
 {
-    uint64_t key = KeyOf(info.bank->id, info.entry.id);
-    if (auto found = byKey.find(key); found != byKey.end()) {
-        entries.splice(entries.begin(), entries, found->second);  // now the most recent
-        return found->second->decoded;
-    }
     const WemFormat& f = info.format;
     std::vector<uint8_t> raw(f.dataBytes);
     if (f.dataBytes && !info.bank->mediaFile->ReadAt(info.entry.offset + static_cast<uint64_t>(f.dataOffset), raw.data(), f.dataBytes)) {
         why = "its medium's data can't be read";
+        return false;
+    }
+    if (f.IsVorbis()) return DecodeVorbisWhole(f, raw.data(), raw.size(), samples, why);
+    samples.assign(static_cast<size_t>(f.frames) * f.channels, 0);
+    if (f.IsAdpcm()) DecodeWwiseAdpcm(raw.data(), f.channels, f.frames / AdpcmBlockFrames, samples.data());
+    else if (!samples.empty()) memcpy(samples.data(), raw.data(), std::min(samples.size() * 2, raw.size()));
+    return true;
+}
+
+bool MediaCache::KnownInfo(const Bank& bank, uint32_t mediumId, MediumInfo& info) const
+{
+    auto known = infos.find(KeyOf(bank.id, mediumId));
+    if (known == infos.end()) return false;
+    info = known->second;
+    return true;
+}
+
+void MediaCache::PutInfo(const MediumInfo& info) { infos[KeyOf(info.bank->id, info.entry.id)] = info; }
+
+bool MediaCache::Info(const Bank& bank, uint32_t mediumId, MediumInfo& info, std::string& why)
+{
+    if (KnownInfo(bank, mediumId, info)) return true;
+    if (!ReadMediumInfo(bank, mediumId, info, why)) return false;
+    PutInfo(info);
+    return true;
+}
+
+std::shared_ptr<Decoded> MediaCache::Find(const MediumInfo& info)
+{
+    auto found = byKey.find(KeyOf(info.bank->id, info.entry.id));
+    if (found == byKey.end()) return nullptr;
+    entries.splice(entries.begin(), entries, found->second);  // now the most recent
+    return found->second->decoded;
+}
+
+std::shared_ptr<Decoded> MediaCache::Get(const MediumInfo& info, std::string& why)
+{
+    if (auto found = Find(info)) return found;
+    std::vector<int16_t> samples;
+    if (!DecodeWhole(info, samples, why)) return nullptr;
+    return Put(info, samples, why);
+}
+
+std::shared_ptr<Decoded> MediaCache::Put(const MediumInfo& info, const std::vector<int16_t>& samples, std::string& why)
+{
+    uint64_t key = KeyOf(info.bank->id, info.entry.id);
+    if (auto found = Find(info)) return found;  // another voice's read got there first
+    const WemFormat& f = info.format;
+    if (samples.size() < static_cast<size_t>(f.frames) * f.channels) {
+        why = "its medium decoded short";
         return nullptr;
     }
-    std::vector<int16_t> samples(static_cast<size_t>(f.frames) * f.channels);
-    if (f.IsAdpcm()) DecodeWwiseAdpcm(raw.data(), f.channels, f.frames / AdpcmBlockFrames, samples.data());
-    else if (!samples.empty()) memcpy(samples.data(), raw.data(), samples.size() * 2);
     auto decoded = FromSamples(samples.data(), static_cast<int>(f.frames), f.channels, f.rate, false, 0, why);
     if (!decoded) return nullptr;
-    decoded->codec = f.IsAdpcm() ? 2 : 1;
+    decoded->codec = CodecOf(f);
     if (f.hasLoop) {
         decoded->hasLoop = true;
         decoded->loopStart = f.loopStart;
@@ -250,8 +314,119 @@ bool Stream::DecodeRange(int64_t first, int count, int16_t* out)
     return true;
 }
 
+// ---- Wwise Vorbis streamed ----------------------------------------------------------------------------------------
+
+// Reads its data from `from` on, as much as a packet can take and more (a packet is at most 64 KB and 6 bytes).
+bool Stream::VorbisRead(uint64_t from)
+{
+    const WemFormat& f = info.format;
+    uint32_t bytes = static_cast<uint32_t>(std::min<uint64_t>(128 * 1024, f.dataBytes - from));
+    vorbisPiece.resize(bytes);
+    vorbisPieceAt = from;
+    return info.bank->mediaFile->ReadAt(info.entry.offset + f.dataOffset + from, vorbisPiece.data(), bytes);
+}
+
+bool Stream::VorbisPacket(const uint8_t*& packet, size_t& size)
+{
+    const WemFormat& f = info.format;
+    auto held = [&](uint64_t bytes) { return vorbisNext >= vorbisPieceAt && vorbisNext + bytes <= vorbisPieceAt + vorbisPiece.size(); };
+    if (vorbisNext + 6 > f.dataBytes) return false;
+    if (!held(6) && !VorbisRead(vorbisNext)) return false;
+    uint16_t length;
+    memcpy(&length, vorbisPiece.data() + (vorbisNext - vorbisPieceAt), 2);
+    if (vorbisNext + 6 + length > f.dataBytes) return false;
+    if (!held(6ull + length) && !VorbisRead(vorbisNext)) return false;
+    packet = vorbisPiece.data() + (vorbisNext - vorbisPieceAt) + 6;
+    size = length;
+    vorbisNext += 6ull + length;
+    return true;
+}
+
+bool Stream::VorbisSeek(int64_t frame)
+{
+    const WemFormat& f = info.format;
+    if (!vorbis) {
+        // Opened on first use (on the worker's thread, not under the engine's lock): its setup packet read first.
+        vorbisNext = f.vorbisSetup;
+        const uint8_t* setup;
+        size_t size;
+        std::string why;
+        auto decoder = std::make_unique<VorbisDecoder>();
+        if (!VorbisPacket(setup, size) || !decoder->Open(f, setup, size, why)) return false;
+        vorbis = std::move(decoder);
+    } else {
+        vorbis->Restart();
+    }
+    vorbisNext = f.vorbisAudio;
+    vorbisPending.clear();
+    vorbisPendingAt = 0;
+    position = 0;
+    // Decoded from the start and dropped up to `frame` (Armageddon's loops start at 0, so this is rare).
+    while (position < frame) {
+        size_t have = (vorbisPending.size() - vorbisPendingAt) / f.channels;
+        if (!have) {
+            vorbisPending.clear();
+            vorbisPendingAt = 0;
+            const uint8_t* packet;
+            size_t size;
+            if (!VorbisPacket(packet, size)) break;
+            vorbis->Decode(packet, size, vorbisPending);
+            continue;
+        }
+        int64_t drop = std::min<int64_t>(static_cast<int64_t>(have), frame - position);
+        vorbisPendingAt += static_cast<size_t>(drop) * f.channels;
+        position += drop;
+    }
+    position = frame;
+    return true;
+}
+
+int Stream::ReadVorbis(int16_t* out, int frames)
+{
+    const WemFormat& f = info.format;
+    if (!vorbis && !VorbisSeek(0)) {
+        failed = true;
+        ended = true;
+        return 0;
+    }
+    int written = 0;
+    while (written < frames && !ended) {
+        bool looping = loopsLeft != 1;
+        int64_t end = looping ? loopEnd + 1 : f.frames;
+        if (position >= end) {
+            if (looping) {
+                if (!VorbisSeek(loopStart)) {
+                    failed = ended = true;
+                    break;
+                }
+                if (loopsLeft > 1) loopsLeft--;
+                continue;
+            }
+            ended = true;
+            break;
+        }
+        size_t have = (vorbisPending.size() - vorbisPendingAt) / f.channels;
+        if (!have) {
+            vorbisPending.clear();
+            vorbisPendingAt = 0;
+            const uint8_t* packet;
+            size_t size;
+            if (VorbisPacket(packet, size)) vorbis->Decode(packet, size, vorbisPending);
+            else vorbisPending.assign(static_cast<size_t>(std::min<int64_t>(end - position, 4096)) * f.channels, 0);  // short: silence to its count
+            continue;
+        }
+        int n = static_cast<int>(std::min<int64_t>({static_cast<int64_t>(frames - written), static_cast<int64_t>(have), end - position}));
+        memcpy(out + static_cast<size_t>(written) * f.channels, vorbisPending.data() + vorbisPendingAt, static_cast<size_t>(n) * f.channels * 2);
+        vorbisPendingAt += static_cast<size_t>(n) * f.channels;
+        position += n;
+        written += n;
+    }
+    return written;
+}
+
 int Stream::Read(int16_t* out, int frames)
 {
+    if (info.format.IsVorbis()) return ReadVorbis(out, frames);
     const WemFormat& f = info.format;
     int written = 0;
     while (written < frames && !ended) {

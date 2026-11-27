@@ -10,6 +10,7 @@
 // (Guerrilla's second argument); icon: a picture in place of the tip's own, or null. False if the tip isn't known.
 #pragma once
 #include <windows.h>
+#include <string>
 
 namespace rfa::game { struct lua_State; }
 
@@ -19,6 +20,7 @@ void Read();                                                      // tool_tips.t
 bool Add(const char* name, int delayMs = 0, const char* icon = nullptr);  // ui_tool_tips_add_tip
 void Remove(const char* name);                                    // ui_tool_tips_remove_tip
 bool Played(const char* name);                                    // shown at least once (ui_tool_tips_tip_has_been_played)
+std::string KeysNamed(const std::string& text);                   // a text's [BUTTON:<action>] tags given their keys
 void Step(double seconds, bool playerAlive);                      // each HUD update in our world
 void LevelShutdown();                                             // a level load: the queue emptied, the game unpaused
 bool HoldsGame();                                                 // a tip that paused the game is up

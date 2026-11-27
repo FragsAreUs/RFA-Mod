@@ -117,6 +117,28 @@ cl %CFLAGS% /LD "%GOBJ%\main\*.obj" "%GOBJ%\campaign\*.obj" "%GOBJ%\gear\*.obj" 
 rem guerrilla_hud's scripts, which editor\GuerrillaBuilder.exe packs with Guerrilla's HUD documents (the part's
 rem data folder keeps its old name).
 xcopy /i /y /q "%GUERRILLA%\hud\*.lua" "%OUT%\mods\guerrilla_hud" >nul || goto :fail
+rem rfa_sound.dll: RFA-Mod's own sound engine in the game ([Audio] in rfa_mods.ini, off unless OwnPlayer=1): the
+rem engine's sources (src\audio\, 32-bit here, nothing exported) and its hooks (src\mods\rfa_sound\), compiled into a
+rem folder of their own, then one link. OpenAL Soft's 32-bit soft_oal.dll and its licences go in mods\openal\: the
+rem loader loads every DLL in mods\ itself as a mod, but none in its folders. The engine decodes Armageddon's Wwise
+rem Vorbis with libvorbis and libogg (src\third_party, BSD; compiled as C, their warnings left out) and ww2ogg's
+rem packed_codebooks.bin, which goes beside soft_oal.dll with its licence.
+set "TP=%ROOT%src\third_party"
+set VORBIS_INCLUDES=/I"%TP%\libogg\include" /I"%TP%\libvorbis\include" /I"%TP%\libvorbis\lib"
+if exist "%OBJ%\sound" rd /s /q "%OBJ%\sound"
+mkdir "%OBJ%\sound"
+cl /nologo /O2 /MT /W0 /DNDEBUG %VORBIS_INCLUDES% /c "%TP%\libogg\src\*.c" "%TP%\libvorbis\lib\*.c" /Fo"%OBJ%\sound\\" >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /DNDEBUG /DRFA_AUDIO_STATIC /I"%ROOT%src\audio" /I"%TP%\openal-soft\include" %VORBIS_INCLUDES% /c "%ROOT%src\audio\*.cpp" "%ROOT%src\mods\rfa_sound\*.cpp" /Fo"%OBJ%\sound\\" >> "%LOG%" 2>&1 || goto :fail
+cl %CFLAGS% /LD "%OBJ%\sound\*.obj" /Fe"%OUT%\mods\rfa_sound.dll" /link /IMPLIB:rfa_sound.lib /MAP:"%OUT%\mods\rfa_sound.map" user32.lib >> "%LOG%" 2>&1 || goto :fail
+if not exist "%OUT%\mods\openal" mkdir "%OUT%\mods\openal"
+copy /y "%TP%\openal-soft\Win32\soft_oal.dll" "%OUT%\mods\openal\soft_oal.dll" >nul || goto :fail
+copy /y "%TP%\openal-soft\COPYING" "%OUT%\mods\openal\soft_oal-COPYING.txt" >nul || goto :fail
+copy /y "%TP%\openal-soft\LICENSE-pffft" "%OUT%\mods\openal\soft_oal-LICENSE-pffft.txt" >nul || goto :fail
+copy /y "%TP%\openal-soft\SOURCE.txt" "%OUT%\mods\openal\soft_oal-SOURCE.txt" >nul || goto :fail
+copy /y "%TP%\ww2ogg\packed_codebooks.bin" "%OUT%\mods\openal\packed_codebooks.bin" >nul || goto :fail
+copy /y "%TP%\ww2ogg\COPYING" "%OUT%\mods\openal\packed_codebooks-COPYING.txt" >nul || goto :fail
+copy /y "%TP%\libvorbis\COPYING" "%OUT%\mods\openal\libvorbis-COPYING.txt" >nul || goto :fail
+copy /y "%TP%\libogg\COPYING" "%OUT%\mods\openal\libogg-COPYING.txt" >nul || goto :fail
 
 popd
 rem overrides\ mirrors the game folder (one folder per archive), so copy the whole tree.
@@ -134,21 +156,27 @@ rem Guerrilla builder's sound check, with OpenAL Soft's 64-bit soft_oal.dll (src
 rem its licence beside it. vcvarsall amd64's settings (made in a cmd of its own, above) are taken between setlocal
 rem and endlocal, so the 32-bit ones come back after it.
 if not exist "%OUT%\editor" mkdir "%OUT%\editor"
-if not exist "%OBJ%\audio64" mkdir "%OBJ%\audio64"
+rem Made afresh: libvorbis's and libogg's objects are linked by name, so none may be left from an older build.
+if exist "%OBJ%\audio64" rd /s /q "%OBJ%\audio64"
+mkdir "%OBJ%\audio64"
 if not exist "%ENV64%" (echo vcvarsall amd64 failed >> "%LOG%" & goto :fail_unpopped)
 setlocal
 for /f "usebackq tokens=1* delims==" %%a in ("%ENV64%") do set "%%a=%%b"
 del "%ENV64%" >nul 2>&1
 echo Building the sound engine (64-bit) ...
 pushd "%OBJ%\audio64"
-cl %CFLAGS% /DNDEBUG /I"%ROOT%src\third_party\openal-soft\include" /LD "%ROOT%src\audio\*.cpp" /Fe"%OUT%\editor\rfa_audio.dll" /link /IMPLIB:rfa_audio.lib user32.lib >> "%LOG%" 2>&1
-set "AUDIOBUILT=%ERRORLEVEL%"
+set "AUDIOBUILT=1"
+cl /nologo /O2 /MT /W0 /DNDEBUG %VORBIS_INCLUDES% /c "%TP%\libogg\src\*.c" "%TP%\libvorbis\lib\*.c" >> "%LOG%" 2>&1 && cl %CFLAGS% /DNDEBUG /I"%TP%\openal-soft\include" %VORBIS_INCLUDES% /LD "%ROOT%src\audio\*.cpp" "%OBJ%\audio64\*.obj" /Fe"%OUT%\editor\rfa_audio.dll" /link /IMPLIB:rfa_audio.lib user32.lib >> "%LOG%" 2>&1 && set "AUDIOBUILT=0"
 popd
 endlocal & set "AUDIOBUILT=%AUDIOBUILT%"
 if not "%AUDIOBUILT%"=="0" goto :fail_unpopped
-copy /y "%ROOT%src\third_party\openal-soft\Win64\soft_oal.dll" "%OUT%\editor\soft_oal.dll" >nul || goto :fail_unpopped
-copy /y "%ROOT%src\third_party\openal-soft\COPYING" "%OUT%\editor\soft_oal-COPYING.txt" >nul || goto :fail_unpopped
-copy /y "%ROOT%src\third_party\openal-soft\SOURCE.txt" "%OUT%\editor\soft_oal-SOURCE.txt" >nul || goto :fail_unpopped
+copy /y "%TP%\openal-soft\Win64\soft_oal.dll" "%OUT%\editor\soft_oal.dll" >nul || goto :fail_unpopped
+copy /y "%TP%\openal-soft\COPYING" "%OUT%\editor\soft_oal-COPYING.txt" >nul || goto :fail_unpopped
+copy /y "%TP%\openal-soft\SOURCE.txt" "%OUT%\editor\soft_oal-SOURCE.txt" >nul || goto :fail_unpopped
+copy /y "%TP%\ww2ogg\packed_codebooks.bin" "%OUT%\editor\packed_codebooks.bin" >nul || goto :fail_unpopped
+copy /y "%TP%\ww2ogg\COPYING" "%OUT%\editor\packed_codebooks-COPYING.txt" >nul || goto :fail_unpopped
+copy /y "%TP%\libvorbis\COPYING" "%OUT%\editor\libvorbis-COPYING.txt" >nul || goto :fail_unpopped
+copy /y "%TP%\libogg\COPYING" "%OUT%\editor\libogg-COPYING.txt" >nul || goto :fail_unpopped
 
 rem The editor is C# and needs the .NET 10 SDK. Its build leftovers go to build\editor, made afresh
 rem each time (they keep the path they were made through, and the drive letter can change). The

@@ -240,7 +240,7 @@ public static class GuerrillaWeapons
     public const string RigList = "rigs.txt";
     public static readonly string[] TableFiles =
         ["weapons.xtbl", "items_3d.xtbl", "items_inventory.xtbl", "ammo.xtbl", "weapon_firing_patterns.xtbl", "aim_drift.xtbl", "camera_shake.xtbl", "projectiles.xtbl",
-         "melee.xtbl", MeleeGroupTable, BulletGroupTable];
+         "melee.xtbl", MeleeGroupTable, BulletGroupTable, "matfx_fades.xtbl"];
 
     /// <summary>
     /// Both games' melee groups' and bullet groups' tables: a group, then for a material and a kind of piece (solid,
@@ -296,6 +296,13 @@ public static class GuerrillaWeapons
 
     /// <summary>Guerrilla's empty weapon model (its jetter turret heads' and others'), the base of a turret gun's tags-only model.</summary>
     const string NullWeaponMesh = "null_weapon";
+
+    /// <summary>
+    /// The tracer Guerrilla's shots draw when their weapon names none (its Tracer_effect_handle, set by tracers_level_init_pre
+    /// RM 0x6E4C20 from this name; tracers_create RM 0x6EDBE0 takes it for an effect of −1). Armageddon's tracers do the same
+    /// with its own file of this name (0x6F8710, [0x18DB814]), so the weapons name Guerrilla's ("rfg_" + it) instead.
+    /// </summary>
+    const string DefaultTracer = "wep_bullet_tracer_a";
 
     /// <summary>The fields of Guerrilla's weapon entries naming an effect the weapon plays.</summary>
     static readonly string[] EffectFields =
@@ -366,7 +373,7 @@ public static class GuerrillaWeapons
     static IReadOnlyList<string> EffectsOf(Packfile guerrillaMisc)
     {
         var weapons = Read(guerrillaMisc, "weapons.xtbl");
-        var effects = new List<string>();
+        var effects = new List<string> { DefaultTracer };
         foreach (string name in CampaignWeapons.Concat(TurretWeapons))
             if (CampaignEntry(weapons, name) is { } entry)
                 foreach (string field in EffectFields)
@@ -647,7 +654,7 @@ public static class GuerrillaWeapons
         readonly Packfile guerrillaMisc, guerrillaItems, gameItems, gameMisc;
         readonly Packfile? guerrillaItemsMp;  // items_mp.vpp_pc: the multiplayer's items (six of the backpacks)
         readonly XtblFile rfgWeapons, rfgItems, rfgInventory, rfgPatterns, rfgDrift, rfgShakes, gameShakes;
-        readonly XtblFile weapons, items, inventory, ammo, patterns, drift, projectiles, meleeMoves, rfgMelee, meleeGroups, rfgMeleeGroups, bulletGroups, rfgBulletGroups;
+        readonly XtblFile weapons, items, inventory, ammo, patterns, drift, projectiles, meleeMoves, rfgMelee, meleeGroups, rfgMeleeGroups, bulletGroups, rfgBulletGroups, fades;
         readonly HashSet<string> effectMaterials;  // the materials Armageddon's rfg_effect_materials.xtbl has
         readonly HashSet<string> emptyEffects;     // Guerrilla's effects with neither a visual nor a sound
         readonly HashSet<string> meleeRoom;  // Guerrilla's melee moves that fit in the game's table
@@ -725,7 +732,7 @@ public static class GuerrillaWeapons
         public IEnumerable<(string File, XtblFile Table)> Tables =>
             [("weapons.xtbl", weapons), ("items_3d.xtbl", items), ("items_inventory.xtbl", inventory), ("ammo.xtbl", ammo),
              ("weapon_firing_patterns.xtbl", patterns), ("aim_drift.xtbl", drift), ("camera_shake.xtbl", gameShakes), ("projectiles.xtbl", projectiles),
-             ("melee.xtbl", meleeMoves), (MeleeGroupTable, meleeGroups), (BulletGroupTable, bulletGroups)];
+             ("melee.xtbl", meleeMoves), (MeleeGroupTable, meleeGroups), (BulletGroupTable, bulletGroups), ("matfx_fades.xtbl", fades)];
 
         public Builder(string guerrilla, string game, string modFolder)
         {
@@ -751,6 +758,7 @@ public static class GuerrillaWeapons
             patterns = Read(gameMisc, "weapon_firing_patterns.xtbl");
             drift = Read(gameMisc, "aim_drift.xtbl");
             projectiles = Read(gameMisc, "projectiles.xtbl");
+            fades = Read(gameMisc, "matfx_fades.xtbl");
             meleeMoves = Read(gameMisc, "melee.xtbl");
             rfgMelee = Read(guerrillaMisc, "melee.xtbl");
             meleeGroups = Read(gameMisc, MeleeGroupTable);
@@ -805,6 +813,35 @@ public static class GuerrillaWeapons
             string? made = looping ? Sounds.Loop(cue, WeaponBus) : Sounds.OneShot(cue, WeaponBus);
             if (made == null) AnimationSoundsLeft.Add(cue);
             return made;
+        }
+
+        /// <summary>Our row of Armageddon's material effect fades for Guerrilla's nano rifle.</summary>
+        const string NanoFadeName = "rfg_Nano";
+
+        /// <summary>
+        /// Guerrilla's nano rifle's look on what it hits, as a row of Armageddon's matfx_fades.xtbl (added once; the name
+        /// returned). vehicle::start_nano_rifle_fade_out (RM 0xBB6190) and human::start_nano_rifle_fade_out (RM 0xAD33A0)
+        /// take the material effect from material_effects_get_nano_rifle_matfx_id (RM 0x6EDB80): nanorifle_damage while
+        /// only hit, reconstructor_shards once killed; Armageddon's fade (0x604540) takes its Damaged_Material_Effect and
+        /// Death_Material_Effect (0x6F7EB0) the same way. Both effects are Armageddon's of the same name (alike: its
+        /// reconstructor_shards lacks Guerrilla's Stencil_test and Stencil_clear, flags its matfx.xtbl has dropped, as
+        /// with stealth_pack). Guerrilla changes no gravity on what dissolves and plays no effect on a vehicle, so the
+        /// gravity factors are 1 and there is no Additional_Death_Effect (Guerrilla's people play wep_nanorifle_chunk_a
+        /// on six bones as they dissolve: not yet).
+        /// </summary>
+        string NanoFade()
+        {
+            if (!fades.Entries.Any(e => XtblFile.EntryName(e).Equals(NanoFadeName, StringComparison.OrdinalIgnoreCase)))
+            {
+                var row = new XtblElement("Material_Effect_Fade");
+                row.AddElement("Name", NanoFadeName);
+                row.AddElement("Damaged_Material_Effect", "nanorifle_damage");
+                row.AddElement("Death_Material_Effect", "reconstructor_shards");
+                row.AddElement("Gravity_Factor_Human", "1.0");
+                row.AddElement("Gravity_Factor_Non_Human", "1.0");
+                (fades.Table ?? throw new InvalidDataException("Armageddon's matfx_fades.xtbl has no table")).AddElement(row);
+            }
+            return NanoFadeName;
         }
 
         /// <summary>One weapon: its item, inventory item, ammo and entry.</summary>
@@ -994,14 +1031,13 @@ public static class GuerrillaWeapons
             {
                 var penetrating = shot.AddElement("Penetrating_Bullet");
                 if (G("Max_AI_Penetrating_Distance") is { } distance) penetrating.AddElement("Max_AI_Penetrating_Dist", distance);
-                if (Effect(g, "Tracer_Effect", notes) is { } tracer) penetrating.AddElement("Tracer_Effect", tracer);
+                if (Tracer(g, notes) is { } tracer) penetrating.AddElement("Tracer_Effect", tracer);
                 if (Descendant(g, "Tracer_Frequency") is { } frequency) penetrating.AddElement("Tracer_Frequency", frequency);
             }
             else
             {
                 var bullet = shot.AddElement("Bullet");
-                // Guerrilla names a tracer effect for few weapons; without one its tracer system draws its own (as Armageddon's).
-                if (Effect(g, "Tracer_Effect", notes) is { } tracer) bullet.AddElement("Tracer_Effect", tracer);
+                if (Tracer(g, notes) is { } tracer) bullet.AddElement("Tracer_Effect", tracer);
                 if (Descendant(g, "Tracer_Frequency") is { } frequency) bullet.AddElement("Tracer_Frequency", frequency);
             }
             // What its shots play where they land, on each material, and the holes they leave: Guerrilla's bullet group.
@@ -1075,6 +1111,12 @@ public static class GuerrillaWeapons
                     if (worldExplosions.Contains(ourExplosion)) f.AddElement(ourField, ourExplosion);
                     else notes.Add($"{field} {explosion}: not in the world's explosion table (build the world again: it adds the weapons' explosions it can); left out");
                 }
+            // Guerrilla's nano rifle dissolves what it kills: on each hit of a vehicle (vehicle::process_bullet_hit, RM
+            // 0xBC27A0, for a weapon of class nano_rifle) and when a vehicle it killed blows up (vehicle_blow_up, RM
+            // 0xBB727A) it calls vehicle::start_nano_rifle_fade_out (RM 0xBB6190). Armageddon kept that function as its
+            // material effect fade (0x604540), called from the same two places (0x604CC6, 0x5FE02B) with the firing mode's
+            // Material_Effect_Fade, so the gun names a fade row holding Guerrilla's choices (NanoFade).
+            if ((g.ValueOf("Weapon_Class")?.Trim() ?? "").Equals("nano_rifle", StringComparison.OrdinalIgnoreCase)) f.AddElement("Material_Effect_Fade", NanoFade());
             if (G("Default_Refire_Delay") is { } refire)
             {
                 f.AddElement("Player_Refire_Delay_ms", refire);
@@ -2294,6 +2336,21 @@ public static class GuerrillaWeapons
             string ours = GuerrillaEffectTables.Added(effect);
             if (worldEffects.Contains(ours)) return ours;
             notes.Add($"{field} {effect}: not in the world's effect tables yet (build the world again); left out");
+            return null;
+        }
+
+        /// <summary>
+        /// The tracer a weapon's shots draw: the one it names, else Guerrilla's own fallback (<see cref="DefaultTracer"/>,
+        /// what Guerrilla's tracers_create plays for a weapon naming none). Without it Armageddon's tracer code would play
+        /// its own fallback of the same name, Armageddon's file. A weapon whose Tracer_Frequency is 0 draws none in either game.
+        /// </summary>
+        string? Tracer(XtblElement g, List<string> notes)
+        {
+            if (Descendant(g, "Tracer_Effect") != null) return Effect(g, "Tracer_Effect", notes);
+            if (Descendant(g, "Tracer_Frequency")?.Trim() is "0") return null;
+            string ours = GuerrillaEffectTables.Added(DefaultTracer);
+            if (worldEffects.Contains(ours)) return ours;
+            notes.Add($"its tracer {DefaultTracer} (Guerrilla's fallback): not in the world's effect tables yet (build the world again); Armageddon's plays");
             return null;
         }
 

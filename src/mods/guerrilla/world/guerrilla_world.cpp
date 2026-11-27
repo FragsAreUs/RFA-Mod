@@ -489,6 +489,9 @@ BuiltTable g_builtTables[] = {
     {"camera_shake.xtbl", "Camera shakes", {}},  // Guerrilla's weapons' where they differ from Armageddon's of the name
     {"projectiles.xtbl", "Projectiles", {}},     // Guerrilla's thrown and launched weapons'; Armageddon holds 100, its own 91
     {"melee.xtbl", "Melee moves", {}},           // Guerrilla's (the hammer's swings, ...), each rfg_; Armageddon holds 32, its own 22
+    // Armageddon's material effect fades with Guerrilla's nano rifle's (rfg_Nano: what a hit and a kill look like on a
+    // vehicle, its riders and a person), which its firing mode names; read before the weapons, its list as long as the table.
+    {"matfx_fades.xtbl", "Material effect fades", {}},
     // Guerrilla's melee groups and bullet groups (what a melee hit or a shot shows and sounds like on each material:
     // the hammer's, the gutter's, a gun's butt; a bullet's, the rail driver's), each rfg_, which its weapons name;
     // Armageddon's own kept. The game makes room for as many as each table has.
@@ -12168,6 +12171,10 @@ int GuerrillaWorld_Buildings(float x, float z, float halfSize, GuerrillaWorldBui
     ReleaseSRWLockShared(&g_buildingStatesLock);
     return count;
 }
+
+// The game's Direct3D 11 device, as the game made it (see CreateDevice), for the parts that draw with it themselves
+// (guerrilla_hud's fog of war on the world map); null before the game has made it or while this part isn't running.
+void* GuerrillaWorld_D3DDevice() { return guerrilla_world::Running() ? g_device : nullptr; }
 
 namespace {
 

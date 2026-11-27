@@ -36,8 +36,9 @@ bool OpenAl::Load(std::string& error)
     if (module) return true;
     // soft_oal.dll, as OpenAL Soft's own binaries name it, beside us; OpenAL32.dll there as a second choice
     // (OpenAL Soft renamed, as its readme suggests). Never the system's router: we want this one.
+    const std::wstring where = folder.empty() ? OwnFolder() : folder;
     for (const wchar_t* name : {L"soft_oal.dll", L"OpenAL32.dll"}) {
-        std::wstring candidate = OwnFolder() + name;
+        std::wstring candidate = where + name;
         if (GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         // LOAD_WITH_ALTERED_SEARCH_PATH: what it needs is looked for beside it.
         HMODULE loaded = LoadLibraryExW(candidate.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -50,7 +51,10 @@ bool OpenAl::Load(std::string& error)
         break;
     }
     if (!module) {
-        error = "OpenAL Soft (soft_oal.dll) isn't beside rfa_audio.dll";
+        std::string asked;
+        for (wchar_t c : folder) asked += c < 128 ? static_cast<char>(c) : '?';
+        error = folder.empty() ? "OpenAL Soft (soft_oal.dll) isn't beside rfa_audio.dll"
+                               : "OpenAL Soft (soft_oal.dll) isn't in " + asked;
         return false;
     }
     HMODULE m = static_cast<HMODULE>(module);
@@ -82,6 +86,7 @@ bool OpenAl::Load(std::string& error)
     Find(m, alGetSourcei, "alGetSourcei", missing);
     Find(m, alGetSourcef, "alGetSourcef", missing);
     Find(m, alSourcePlay, "alSourcePlay", missing);
+    Find(m, alSourcePause, "alSourcePause", missing);
     Find(m, alSourceStop, "alSourceStop", missing);
     Find(m, alSourceRewind, "alSourceRewind", missing);
     Find(m, alSourceQueueBuffers, "alSourceQueueBuffers", missing);
@@ -99,6 +104,12 @@ bool OpenAl::Load(std::string& error)
     alcLoopbackOpenDeviceSOFT = reinterpret_cast<LPALCLOOPBACKOPENDEVICESOFT>(alcGetProcAddress(nullptr, "alcLoopbackOpenDeviceSOFT"));
     alcIsRenderFormatSupportedSOFT = reinterpret_cast<LPALCISRENDERFORMATSUPPORTEDSOFT>(alcGetProcAddress(nullptr, "alcIsRenderFormatSupportedSOFT"));
     alcRenderSamplesSOFT = reinterpret_cast<LPALCRENDERSAMPLESSOFT>(alcGetProcAddress(nullptr, "alcRenderSamplesSOFT"));
+    // EFX (its filters, for Wwise's low-pass): OpenAL Soft exports them; without them sounds aren't filtered.
+    alGenFilters = reinterpret_cast<LPALGENFILTERS>(GetProcAddress(m, "alGenFilters"));
+    alDeleteFilters = reinterpret_cast<LPALDELETEFILTERS>(GetProcAddress(m, "alDeleteFilters"));
+    alFilteri = reinterpret_cast<LPALFILTERI>(GetProcAddress(m, "alFilteri"));
+    alFilterf = reinterpret_cast<LPALFILTERF>(GetProcAddress(m, "alFilterf"));
+    if (!alGenFilters || !alDeleteFilters || !alFilteri || !alFilterf) alGenFilters = nullptr;
     return true;
 }
 

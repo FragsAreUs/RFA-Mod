@@ -186,6 +186,34 @@ local Building_rim_handles, Building_rim_shown = {}, {}
 local Explosive_handles, Explosive_rings, Explosive_shown = {}, {}, {}
 local Marker_handles, Marker_shown = {}, {}
 local Marker_rim_handles, Marker_rim_shown = {}, {}
+-- The convoy's route (cartographer::render_convoy_routes RM 0x870940, drawn by render_path_route 0x861410: its arrow
+-- picture along the path in the EDF's colours, a lighter one moving along it) and the nav beacon (render_player_marker
+-- 0x871B30: ui_map_icon_end_point, yellow, bobbing; beyond the rim, on it), from the mod (rfg_map_route,
+-- rfg_map_route_point, rfg_map_beacon). The arrows a fixed set, made once; those not needed hidden. They have a group of
+-- their own in the turned map: Armageddon's interface draws a document's elements through one 256-slot buffer
+-- (Process_stack 0x28C3B18), and a group's children past the slots left aren't drawn (the world map lost its picture so).
+local ROUTE_ARROWS = 32
+local ROUTE_PICTURE = "rfg_ui_fsmap_icon_arrow"
+local ROUTE_COLOUR = { 148, 13, 0 }
+local ROUTE_LIT_COLOUR = { 252, 22, 0 }
+local ROUTE_ARROW_PART = 0.6			-- an arrow's size, of an icon's (ours: Guerrilla's strip width isn't read)
+local BEACON_PICTURE = "rfg_ui_map_icon_end_point"
+local BEACON_COLOUR = { 250, 230, 0 }
+local Has_route = false
+-- Guerrilla's GPS route to the nav beacon (render_mini RM 0x882328: its arrow picture at each point, 10 m apart, turned
+-- toward the next, coloured by the mod: rfg_map_gps, rfg_map_gps_point; those within 45 of Guerrilla's pixels past the
+-- map's edge), in a group of its own in the turned map. An arrow is Guerrilla's 18 x 10 pixels, by the zoom's icon scale.
+local GPS_ARROWS = 64
+local GPS_LENGTH, GPS_WIDTH, GPS_MARGIN = 18 / PIXELS_PER_UNIT, 10 / PIXELS_PER_UNIT, 45 / PIXELS_PER_UNIT
+local Gps_handles, Gps_shown = {}, {}
+-- Both sets of arrows in groups of 16 inside their own group. The draw list (Process_stack, above) takes each group's
+-- children, the hidden ones too, before it draws them with the slots left; the turned map's own 149 and those above it
+-- left the GPS group's 64 no room (2026-11-26 14:4x: the route's 32 arrows drawn, none of the GPS's).
+local ARROWS_A_GROUP = 16
+local Gps_logged = false				-- the first frame with a GPS route, for the log
+local Route_handles, Route_shown = {}, {}
+local Beacon_handles = {}				-- [1] in the turned map, [2] in the rim's layer
+local Beacon_shown = {}
 local Tag_handles = {}
 local Decal_handles, Decal_shown = {}, {}
 local Has_rings = false				-- the mod gives the campaign's rings (rfg_map_rings)
@@ -413,6 +441,52 @@ local function build_map()
 			vint_set_property(Marker_rim_handles[i], "visible", false)
 			vint_set_property(Marker_rim_handles[i], "auto_offset", "c")
 			vint_set_property(Marker_rim_handles[i], "depth", -7)
+		end
+	end
+	-- The convoy's route, under the blips (Guerrilla drew it after the map, before its vehicles and people), and the nav
+	-- beacon (after the frame: on the rim's layer when it is beyond the rim, else in the turned map over the icons).
+	-- Both arrow groups at depth -1, over the zones' pictures (0). The interface draws a group's children by depth (a
+	-- signed byte, the higher first: further back), equal depths by the element's address, the higher first
+	-- (0xC65400); groups come from a pool above the pictures', so at the tiles' depth 0 the groups were drawn first,
+	-- under the tiles (2026-11-26 18:45: the GPS arrows placed but not seen). At the blips' -1 they come before the
+	-- blips, as Guerrilla's minimap drew its routes after the map and before its people and vehicles.
+	Has_route = _GetAnyGlobalSilent("rfg_map_route") ~= nil
+	if Has_route then
+		local route_group = make("rfg_minimap_route", "group", turn)
+		vint_set_property(route_group, "depth", -1)
+		-- (No math library in the interface's Lua: the parts are counted.)
+		local part, parts = 0, 0
+		for i = 1, ROUTE_ARROWS do
+			if (i - 1) % ARROWS_A_GROUP == 0 then
+				parts = parts + 1
+				part = make("rfg_minimap_route_part" .. parts, "group", route_group)
+				vint_set_property(part, "depth", 0)
+			end
+			Route_handles[i] = picture("rfg_minimap_route" .. i, part, ROUTE_PICTURE)
+			vint_set_property(Route_handles[i], "visible", false)
+			vint_set_property(Route_handles[i], "auto_offset", "c")
+			vint_set_property(Route_handles[i], "depth", 0)
+		end
+		local gps_group = make("rfg_minimap_gps", "group", turn)
+		vint_set_property(gps_group, "depth", -1)
+		parts = 0
+		for i = 1, GPS_ARROWS do
+			if (i - 1) % ARROWS_A_GROUP == 0 then
+				parts = parts + 1
+				part = make("rfg_minimap_gps_part" .. parts, "group", gps_group)
+				vint_set_property(part, "depth", 0)
+			end
+			Gps_handles[i] = picture("rfg_minimap_gps" .. i, part, ROUTE_PICTURE)
+			vint_set_property(Gps_handles[i], "visible", false)
+			vint_set_property(Gps_handles[i], "auto_offset", "c")
+		end
+		Beacon_handles[1] = picture("rfg_minimap_beacon", turn, BEACON_PICTURE)
+		Beacon_handles[2] = picture("rfg_minimap_beacon_rim", icon_layer, BEACON_PICTURE)
+		for i = 1, 2 do
+			vint_set_property(Beacon_handles[i], "visible", false)
+			vint_set_property(Beacon_handles[i], "auto_offset", "c")
+			vint_set_property(Beacon_handles[i], "tint", BEACON_COLOUR[1], BEACON_COLOUR[2], BEACON_COLOUR[3])
+			vint_set_property(Beacon_handles[i], "depth", -8)
 		end
 	end
 	-- The campaign's rings, over the blips (Guerrilla drew its decals after them), cut by the octagon.
@@ -869,13 +943,20 @@ local function place_others(map_x, map_y, heading, radius, world_scale)
 			allowed[best.i] = true
 		end
 	end
-	-- Sticky ones (1, 2) in the rim's layer, the others in the turned map; each Guerrilla's icon size.
+	-- Sticky ones (1, 2, 4) in the rim's layer, the others in the turned map; each Guerrilla's icon size. A convoy's (4):
+	-- of those pushed out to the rim, only the first is drawn (render_temp_icons 0x8713AA).
 	local used, used_rim = 0, 0
+	local convoy_on_rim = false
 	for i = 1, count do
 		local mx, my, picture, placement, r, g, b, age = rfg_map_marker(i)
 		if placement ~= 2 or allowed[i] then
-			local sticky = placement == 1 or placement == 2
-			local x, y, shown = on_minimap((mx - map_x) * world_scale, (my - map_y) * world_scale, sticky)
+			local sticky = placement == 1 or placement == 2 or placement == 4
+			local dx, dy = (mx - map_x) * world_scale, (my - map_y) * world_scale
+			local x, y, shown = on_minimap(dx, dy, sticky)
+			if placement == 4 and shown and (x ~= dx or y ~= dy) then
+				shown = not convoy_on_rim
+				convoy_on_rim = true
+			end
 			local on_rim = sticky and Icons_on_rim
 			local handle = nil
 			if shown and on_rim and used_rim < MARKERS then
@@ -910,6 +991,100 @@ local function place_others(map_x, map_y, heading, radius, world_scale)
 	end
 	hide_from(Marker_handles, Marker_shown, used + 1, MARKERS)
 	hide_from(Marker_rim_handles, Marker_rim_shown, used_rim + 1, MARKERS)
+end
+
+-- The convoy's route (an arrow every arrow's width, those inside the radius) and the nav beacon.
+local function place_route(map_x, map_y, heading, world_scale)
+	local used = 0
+	local units = Icon_units * ROUTE_ARROW_PART
+	local count = rfg_map_route(units / world_scale, map_x, map_y, (FRAME / 2) / world_scale)
+	for i = 1, count do
+		if used >= ROUTE_ARROWS then
+			break
+		end
+		local mx, my, angle, lit = rfg_map_route_point(i)
+		if mx ~= nil then
+			used = used + 1
+			local handle = Route_handles[used]
+			vint_set_property(handle, "anchor", (mx - map_x) * world_scale, (my - map_y) * world_scale)
+			vint_set_property(handle, "rotation", angle)
+			size_icon(handle, ROUTE_PICTURE, units)
+			local colour = ROUTE_COLOUR
+			if lit then
+				colour = ROUTE_LIT_COLOUR
+			end
+			vint_set_property(handle, "tint", colour[1], colour[2], colour[3])
+			if not Route_shown[used] then
+				vint_set_property(handle, "visible", true)
+				Route_shown[used] = true
+			end
+		end
+	end
+	for i = used + 1, ROUTE_ARROWS do
+		if Route_shown[i] then
+			vint_set_property(Route_handles[i], "visible", false)
+			Route_shown[i] = nil
+		end
+	end
+	-- The GPS route's arrows (points made at each search, every 2 s).
+	local gps_used = 0
+	local zoom = Icon_units / ICON_UNITS
+	local reach = FRAME / 2 + GPS_MARGIN
+	local gps_count = rfg_map_gps(false)
+	for i = 1, gps_count do
+		if gps_used >= GPS_ARROWS then
+			break
+		end
+		local mx, my, angle, r, g, b = rfg_map_gps_point(i)
+		if mx ~= nil then
+			local x, y = (mx - map_x) * world_scale, (my - map_y) * world_scale
+			if x * x + y * y <= reach * reach then
+				gps_used = gps_used + 1
+				local handle = Gps_handles[gps_used]
+				local w, h = picture_size(handle, ROUTE_PICTURE)
+				vint_set_property(handle, "anchor", x, y)
+				vint_set_property(handle, "rotation", angle)
+				vint_set_property(handle, "scale", GPS_LENGTH * zoom / w, GPS_WIDTH * zoom / h)
+				vint_set_property(handle, "tint", r, g, b)
+				if not Gps_shown[gps_used] then
+					vint_set_property(handle, "visible", true)
+					Gps_shown[gps_used] = true
+				end
+			end
+		end
+	end
+	for i = gps_used + 1, GPS_ARROWS do
+		if Gps_shown[i] then
+			vint_set_property(Gps_handles[i], "visible", false)
+			Gps_shown[i] = nil
+		end
+	end
+	if gps_count > 0 and not Gps_logged then
+		Gps_logged = true
+		log("GPS route: " .. gps_used .. " of its " .. gps_count .. " arrows within the minimap's reach, shown", true)
+	end
+	local shown, bx, by, size = rfg_map_beacon()
+	local which = 0
+	if shown then
+		local dx, dy = (bx - map_x) * world_scale, (by - map_y) * world_scale
+		local x, y = on_minimap(dx, dy, true)
+		if Icons_on_rim and (x ~= dx or y ~= dy) then
+			which = 2
+			vint_set_property(Beacon_handles[2], "anchor", turned(x, y))
+		else
+			which = 1
+			vint_set_property(Beacon_handles[1], "anchor", x, y)
+			vint_set_property(Beacon_handles[1], "rotation", heading)
+		end
+		size_icon(Beacon_handles[which], BEACON_PICTURE, Icon_units * (size or 1))
+	end
+	for i = 1, 2 do
+		local want = i == which
+		if Beacon_shown[i] ~= want then
+			vint_set_property(Beacon_handles[i], "visible", want)
+			Beacon_shown[i] = want
+		end
+	end
 end
 
 -- The radio tags not found yet within the radius: a green ring each, over 750 ms of every 3 s (by the sweep's clock,
@@ -1043,6 +1218,13 @@ local function place_map(map_x, map_y, heading, speed, shown)
 		log("the minimap's rings stopped: " .. tostring(decals_problem), true)
 	end
 	place_north(heading)
+	if Has_route then
+		local route_ok, route_problem = pcall(place_route, map_x, map_y, heading, world_scale)
+		if not route_ok then
+			Has_route = false
+			log("the minimap's convoy route and nav beacon stopped: " .. tostring(route_problem), true)
+		end
+	end
 	-- What other mods give, on their own: should it fail, the map goes on without it.
 	if Has_others then
 		local ok, problem = pcall(place_others, map_x, map_y, heading, radius, world_scale)

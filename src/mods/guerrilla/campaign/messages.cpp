@@ -17,8 +17,9 @@ namespace {
 struct Message {
     const char* tag;   // static text: Guerrilla's string tag, or a tool tip's name
     const char* icon;  // static text, or null
-    int kind;          // 0 a minor HUD message, 1 a tool tip, 2 a minor message with a number, 3 a primary message
-    int ms;            // a tool tip's time on screen, or kind 2's number
+    int kind;          // 0 a minor HUD message, 1 a tool tip, 2 a minor message with a number, 3 a primary message,
+                       // 4 a primary message with a picture's name for its %ls (the icon) and its time on screen
+    int ms;            // a tool tip's time on screen, kind 2's number, or kind 4's time on screen
 };
 
 std::deque<Message> g_queue;
@@ -47,6 +48,10 @@ void Tip(const char* name, int ms) {
 
 void Primary(const char* tag) {
     if (tag) Add({tag, nullptr, 3, 0});
+}
+
+void PrimaryPicture(const char* tag, const char* picture, int ms) {
+    if (tag) Add({tag, picture, 4, ms});
 }
 
 }  // namespace campaign::messages

@@ -43,6 +43,9 @@ KeyAction g_actions[keys::Count] = {
     {L"TipContinue", "Close a tool tip that paused the game", "", L"Enter", nullptr, nullptr},
     {L"MinimapZoomIn", "Minimap: zoom in (to 40 m)", "", L"PageUp", nullptr, nullptr},
     {L"MinimapZoomOut", "Minimap: zoom out (to 80 m)", "", L"PageDown", nullptr, nullptr},
+    // Guerrilla's PC key was V (controls_set_default_bindings RM 0x7021F0: CBA_GPS_MARKER, scan code 0x2F), which one of
+    // Armageddon's own actions has by default (its table at 0xF7F078); G, which none of Armageddon's defaults use.
+    {L"GpsMarker", "Nav beacon on the activity offered", "", L"G", nullptr, nullptr},
 };
 constexpr wchar_t kSection[] = L"GuerrillaKeys";
 

@@ -35,6 +35,19 @@ local ICON_SCALE = 0.5                  -- Guerrilla's map icons (40 x 40 pictur
 local HIGHLIGHT_REACH = 14              -- an icon this close to the crosshair (screen units) is highlighted
 local ON_SCREEN_MARGIN = 40
 local MAP_DEPTH = 30                    -- behind the document's deepest parts (20)
+local Fog_element = false               -- the fog of war's element (guerrilla_hud draws the fog there), false for none
+local Has_fog = false                   -- whether guerrilla_hud has rfg_map_fog
+-- The convoy's route (cartographer::render_convoy_routes RM 0x870940: its arrow picture along the path, EDF red with a
+-- lighter one moving along) and the nav beacon (render_player_marker 0x871B30: ui_map_icon_end_point, yellow, bobbing),
+-- from the mod (rfg_map_route, rfg_map_route_point, rfg_map_beacon). The arrows a fixed set, made with the map.
+local ROUTE_ARROWS = 96
+local ROUTE_PICTURE = "rfg_ui_fsmap_icon_arrow"
+local ROUTE_COLOUR = { 148, 13, 0 }
+local ROUTE_LIT_COLOUR = { 252, 22, 0 }
+local ROUTE_STEP = 12                   -- screen units from one arrow to the next
+local ROUTE_SCALE = 0.3                 -- an arrow's size (its picture's)
+local BEACON_PICTURE = "rfg_ui_map_icon_end_point"
+local BEACON_COLOUR = { 250, 230, 0 }
 
 -- The hints' keys: Guerrilla's own PC key pictures (its sheet ui_bms_pc_buttons, from interface-pc), each
 -- 31 units square (the mouse wheel's 62 wide), anchored at their right edge as the document's pictures are.
@@ -46,8 +59,20 @@ local WHEEL_EXTRA = 31                  -- the wheel's picture is this much wide
 local HIDDEN = { "control_meter", "morale_meter", "district_filter_main", "fullscreen_map", "hint_group4" }
 
 local Map = 0                           -- our group: the map, over the black ground
+local Route_group = 0                   -- in Map: the convoy route's arrows
+local Icon_group = 0                    -- in Map: the map's icons and the campaign's
 local World = 0
 local Marker = 0
+local Route_handles, Route_shown = {}, {}
+-- Guerrilla's GPS route to the nav beacon (render_full RM 0x881B30: its arrow picture at each point, turned toward the
+-- next, coloured by the mod: rfg_map_gps, rfg_map_gps_point), in a group of its own over the convoy's route. An arrow
+-- Guerrilla's 18 x 10 (its map icons' 26), here by our icons' size.
+local GPS_ARROWS = 128
+local GPS_LENGTH, GPS_WIDTH = 13.8, 7.7	-- screen units
+local Gps_group = 0
+local Gps_handles, Gps_shown = {}, {}
+local Beacon = 0
+local Beacon_shown = false
 local Tile_handles = {}
 local Tile_shown = {}
 local Icons = {}                        -- { handle, x, y, picture, caption, description } on the world map
@@ -116,6 +141,44 @@ local function build_map()
 		vint_set_property(Tile_handles[i], "visible", false)
 		vint_set_property(Tile_handles[i], "depth", 8)
 	end
+	-- Guerrilla's fog of war over the parts of the world not yet seen (fog_of_war_render_fog_layer): drawn by guerrilla_hud
+	-- itself where this element comes, over the world and zone pictures, under the route, the icons and the player.
+	Has_fog = _GetAnyGlobalSilent("rfg_map_fog") ~= nil
+	local fog = Has_fog and vint_object_create("rfg_fullmap_fog", "map", Map) or 0
+	if fog ~= nil and fog ~= 0 then
+		Fog_element = fog
+		vint_set_property(Fog_element, "depth", 7)
+	end
+
+	-- Armageddon's interface draws a document through one list of 256 elements (Process_stack 0x28C3B18, given at
+	-- 0xC51697; vint_element_base::render takes a group's children into it, its children's children after them, and
+	-- leaves out those past its end), as Guerrilla's did (RM 0x47C9B2). The route's arrows and the icons are kept in
+	-- groups of their own so that Map holds about 20: all in Map (260 with step 8's arrows) left out the world picture
+	-- and the nearest zone pictures (2026-11-26: black when zoomed out, black squares in the middle when zoomed in).
+	Icon_group = vint_object_create("rfg_fullmap_icons", "group", Map)
+	vint_set_property(Icon_group, "depth", 5)		-- over the map, under the player
+	if rfg_map_route ~= nil then
+		Route_group = vint_object_create("rfg_fullmap_route", "group", Map)
+		vint_set_property(Route_group, "depth", 6)	-- over the map, under the icons
+		for i = 1, ROUTE_ARROWS do
+			Route_handles[i] = picture("rfg_fullmap_route" .. i, Route_group, ROUTE_PICTURE)
+			vint_set_property(Route_handles[i], "visible", false)
+			vint_set_property(Route_handles[i], "auto_offset", "c")
+			vint_set_property(Route_handles[i], "scale", ROUTE_SCALE, ROUTE_SCALE)
+		end
+		Gps_group = vint_object_create("rfg_fullmap_gps", "group", Map)
+		vint_set_property(Gps_group, "depth", 6)	-- with the convoy's route: over the map and the fog, under the icons
+		for i = 1, GPS_ARROWS do
+			Gps_handles[i] = picture("rfg_fullmap_gps" .. i, Gps_group, ROUTE_PICTURE)
+			vint_set_property(Gps_handles[i], "visible", false)
+			vint_set_property(Gps_handles[i], "auto_offset", "c")
+		end
+		Beacon = picture("rfg_fullmap_beacon", Map, BEACON_PICTURE)
+		vint_set_property(Beacon, "visible", false)
+		vint_set_property(Beacon, "auto_offset", "c")
+		vint_set_property(Beacon, "tint", BEACON_COLOUR[1], BEACON_COLOUR[2], BEACON_COLOUR[3])
+		vint_set_property(Beacon, "depth", 4)	-- over the icons, under the player
+	end
 
 	Marker = picture("rfg_fullmap_player", Map, "rfg_ui_map_icon_player")
 	vint_set_property(Marker, "auto_offset", "c")
@@ -135,10 +198,9 @@ local function build_map()
 		elseif kind == "text" then
 			Texts[caption] = description
 		elseif on_world_map then
-			local icon = picture("rfg_fullmap_icon" .. i, Map, image)
+			local icon = picture("rfg_fullmap_icon" .. i, Icon_group, image)
 			vint_set_property(icon, "auto_offset", "c")
 			vint_set_property(icon, "scale", ICON_SCALE, ICON_SCALE)
-			vint_set_property(icon, "depth", 5)	-- over the map, under the player
 			Icons[#Icons + 1] = { handle = icon, x = x, y = y, picture = image, caption = caption, description = description,
 				index = i, bomb = kind == "bomb" }	-- a M.O.A.B. only once its radio tags are found
 		end
@@ -176,23 +238,44 @@ local function show_hints()
 end
 
 -- The highlight box: Guerrilla's FS_HighlightItem (active, title, description, icon, its angle, its
--- colour), for the icon nearest the crosshair, or nothing.
-local function highlight(item)
-	if item == Highlighted then
+-- colour), for the icon nearest the crosshair, or nothing. The box's own picture (map_icon) shows the
+-- item at the crosshair, so Guerrilla's cartographer leaves the item itself out while it's highlighted
+-- (render_player RM 0x8723A0 and the icons' renders: is_old_highlight_item, then no draw), and sends the
+-- player's heading as the angle (check_highlight_for_item 0x862EC0).
+local Highlight_angle = 0
+
+local function item_picture(item)
+	if item == Player then
+		return Marker
+	end
+	return item.handle
+end
+
+local function highlight(item, angle)
+	if item == Highlighted and (item ~= Player or angle == Highlight_angle) then
 		return
 	end
+	if item ~= Highlighted then
+		if Highlighted ~= nil and item_picture(Highlighted) ~= nil then
+			vint_set_property(item_picture(Highlighted), "visible", Highlighted == Player or Highlighted.shown == true)
+		end
+		if item ~= nil and item_picture(item) ~= nil then
+			vint_set_property(item_picture(item), "visible", false)
+		end
+	end
 	Highlighted = item
+	Highlight_angle = angle
 	if item == nil then
 		rfg_ui_fs_highlight_item({ false, "", "", "none", 0, 1, 1, 1 }, "update")
 	else
-		rfg_ui_fs_highlight_item({ true, item.caption, item.description, item.picture, 0, 1, 1, 1 }, "update")
+		rfg_ui_fs_highlight_item({ true, item.caption, item.description, item.picture, angle, 1, 1, 1 }, "update")
 	end
 end
 
 -- The campaign's icons Guerrilla's world map drew too (its activities' temporary icons whose row is VisibleOnFSMap: a
 -- running Transporter's end point): the map markers whose last value (rfg_map_marker's ninth) says so, tinted as on
 -- the minimap, at Guerrilla's map icon size.
-local CAMPAIGN_ICONS = 8
+local CAMPAIGN_ICONS = 16				-- a Transporter's end point, a convoy's members
 local Campaign_icons = {}               -- { handle, image }, made as they're needed
 
 local function place_campaign_icons(screen, on_screen)
@@ -206,10 +289,9 @@ local function place_campaign_icons(screen, on_screen)
 					used = used + 1
 					local icon = Campaign_icons[used]
 					if icon == nil then
-						icon = { handle = picture("rfg_fullmap_campaign" .. used, Map, image), image = image }
+						icon = { handle = picture("rfg_fullmap_campaign" .. used, Icon_group, image), image = image }
 						vint_set_property(icon.handle, "auto_offset", "c")
 						vint_set_property(icon.handle, "scale", ICON_SCALE, ICON_SCALE)
-						vint_set_property(icon.handle, "depth", 5)	-- as the map's icons: over the map, under the player
 						Campaign_icons[used] = icon
 					elseif icon.image ~= image then
 						vint_set_property(icon.handle, "image", image)
@@ -231,6 +313,96 @@ local function place_campaign_icons(screen, on_screen)
 	end
 end
 
+-- The convoy's route and the nav beacon, on the map shown.
+local function place_route(screen, on_screen, scale, centre_x, centre_y)
+	local used = 0
+	local reach = (SCREEN_W + SCREEN_H) / scale		-- map pixels: past the screen's corners
+	local count = rfg_map_route(ROUTE_STEP / scale, centre_x, centre_y, reach)
+	for i = 1, count do
+		if used >= ROUTE_ARROWS then
+			break
+		end
+		local mx, my, angle, lit = rfg_map_route_point(i)
+		if mx ~= nil then
+			local x, y = screen(mx, my)
+			if on_screen(x, y) then
+				used = used + 1
+				local handle = Route_handles[used]
+				vint_set_property(handle, "anchor", x, y)
+				vint_set_property(handle, "rotation", angle)
+				local colour = ROUTE_COLOUR
+				if lit then
+					colour = ROUTE_LIT_COLOUR
+				end
+				vint_set_property(handle, "tint", colour[1], colour[2], colour[3])
+				if not Route_shown[used] then
+					vint_set_property(handle, "visible", true)
+					Route_shown[used] = true
+				end
+			end
+		end
+	end
+	for i = used + 1, ROUTE_ARROWS do
+		if Route_shown[i] then
+			vint_set_property(Route_handles[i], "visible", false)
+			Route_shown[i] = nil
+		end
+	end
+	-- The GPS route's arrows.
+	local gps_used = 0
+	if Gps_group ~= 0 then
+		local w, h = 0, 0
+		for i = 1, rfg_map_gps(true) do
+			if gps_used >= GPS_ARROWS then
+				break
+			end
+			local mx, my, angle, r, g, b = rfg_map_gps_point(i)
+			if mx ~= nil then
+				local x, y = screen(mx, my)
+				if on_screen(x, y) then
+					gps_used = gps_used + 1
+					local handle = Gps_handles[gps_used]
+					if w == 0 then
+						local ok, pw, ph = pcall(vint_get_property, handle, "unscaled_size")
+						w, h = 40, 40
+						if ok and pw ~= nil and pw > 0 and ph ~= nil and ph > 0 then
+							w, h = pw, ph
+						end
+					end
+					vint_set_property(handle, "anchor", x, y)
+					vint_set_property(handle, "rotation", angle)
+					vint_set_property(handle, "scale", GPS_LENGTH / w, GPS_WIDTH / h)
+					vint_set_property(handle, "tint", r, g, b)
+					if not Gps_shown[gps_used] then
+						vint_set_property(handle, "visible", true)
+						Gps_shown[gps_used] = true
+					end
+				end
+			end
+		end
+	end
+	for i = gps_used + 1, GPS_ARROWS do
+		if Gps_shown[i] then
+			vint_set_property(Gps_handles[i], "visible", false)
+			Gps_shown[i] = nil
+		end
+	end
+	local shown, bx, by, size = rfg_map_beacon()
+	local x, y = 0, 0
+	if shown then
+		x, y = screen(bx, by)
+		shown = on_screen(x, y)
+	end
+	if shown then
+		vint_set_property(Beacon, "anchor", x, y)
+		vint_set_property(Beacon, "scale", ICON_SCALE * (size or 1), ICON_SCALE * (size or 1))
+	end
+	if shown ~= Beacon_shown then
+		vint_set_property(Beacon, "visible", shown)
+		Beacon_shown = shown
+	end
+end
+
 -- One frame while the map is open.
 local function frame(map_x, map_y, heading, centre_x, centre_y, view, zoom_pct, district)
 	local scale = SCREEN_H / view		-- screen units a world map pixel
@@ -244,6 +416,7 @@ local function frame(map_x, map_y, heading, centre_x, centre_y, view, zoom_pct, 
 	local left, top = screen(0, 0)
 	vint_set_property(World, "scale", scale, scale)
 	vint_set_property(World, "anchor", left, top)
+	if Fog_element and Has_fog then rfg_map_fog(Fog_element, centre_x, centre_y, view, zoom_pct) end
 
 	-- The zones' own pictures, once close.
 	local count = rfg_map_full_tiles()
@@ -287,11 +460,18 @@ local function frame(map_x, map_y, heading, centre_x, centre_y, view, zoom_pct, 
 		end
 	end
 	place_campaign_icons(screen, on_screen)
+	if Beacon ~= 0 then
+		local ok, problem = pcall(place_route, screen, on_screen, scale, centre_x, centre_y)
+		if not ok then
+			Beacon = 0
+			log("the convoy's route and the nav beacon stopped: " .. tostring(problem))
+		end
+	end
 	local player_x, player_y = screen(map_x, map_y)
 	vint_set_property(Marker, "anchor", player_x, player_y)
 	vint_set_property(Marker, "rotation", heading)
 	consider(Player, player_x, player_y)
-	highlight(nearest)
+	highlight(nearest, nearest == Player and heading or 0)
 
 	-- Guerrilla's places' labels and the zoom readout (in the labels' group's own units).
 	local labels_x, labels_y = vint_get_property(Labels, "anchor")

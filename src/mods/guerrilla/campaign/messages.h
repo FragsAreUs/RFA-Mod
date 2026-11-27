@@ -14,5 +14,8 @@ void MinorCount(const char* tag, int count);
 void Tip(const char* name, int ms);
 // hud_message_add: a primary HUD message, Guerrilla's string tag (HM_BFTP_GET_A_CAR).
 void Primary(const char* tag);
+// A primary message whose text names a picture with %ls (HUD_GPS_HINT's "[image:rfg_%ls]"): the picture's name
+// (static text, "ui_map_icon_convoy"), shown for ms milliseconds.
+void PrimaryPicture(const char* tag, const char* picture, int ms);
 
 }  // namespace campaign::messages

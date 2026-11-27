@@ -5,9 +5,11 @@
 #include "media.h"
 #include "openal.h"
 #include "rfa_audio.h"
+#include "worker.h"
 
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -43,9 +45,16 @@ struct Play;
 struct Voice {
     MediumInfo medium;
     std::shared_ptr<Decoded> decoded;  // decoded whole (from the cache), or
-    std::unique_ptr<Stream> stream;    // streamed from the file
+    std::unique_ptr<Stream> stream;    // streamed from the file, read here (a loopback device), or
+    std::shared_ptr<StreamFeed> feed;  // streamed from the file, read by the media worker
+    std::shared_ptr<MediumLoad> load;  // its medium being read by the worker: it waits, with no source, until then
+    bool loadToResume = false;         // the load is for a virtual voice heard again (else for its start)
+    bool silence = false;              // Wwise's silence plug-in: no sound, its length only (always virtual)
+    float appliedLowPass = -1;         // the low-pass last set on its source (-1: none yet)
+    bool streamStarted = false;        // its stream has played (a stop after this, with pieces queued, is an underrun)
     ALuint source = 0;
     ALuint buffers[4] = {};            // a stream's, queued in turn
+    std::vector<ALuint> spare;         // a stream's buffers not queued (waiting for pieces)
     int loopCount = 1;                 // 0 for ever
     bool threeD = false;
     int channels = 0, rate = 0, codec = 0;
@@ -93,6 +102,8 @@ struct Play {
     int pendingActions = 0;
     int voicesStarted = 0;             // voices it started (virtual ones too); 0: it never made a sound
     bool ended = false;
+    bool paused = false;               // paused on its own (rfa_audio_pause_playing): its time stands still
+    double pausedAt = 0;
 };
 
 struct PendingAction {
@@ -122,6 +133,7 @@ public:
     std::string DeviceInfo() const;
 
     uint32_t LoadBank(const std::wstring& bank, const std::wstring& media, std::string& why);
+    uint32_t LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why);
     void UnloadBank(uint32_t bankId);
 
     uint32_t Post(uint32_t eventId, uint64_t object);
@@ -140,12 +152,23 @@ public:
     void SetSwitch(uint64_t object, uint32_t group, uint32_t value);
     void SetState(uint32_t group, uint32_t state);
     void RemoveObject(uint64_t object);
+    // Everything paused, its time standing still (the game's pause), or going on again.
+    void PauseAll(bool pause);
+    bool PausedAll() const { return pausedAll; }
+    // One playing id paused, or going on again.
+    void PausePlay(uint32_t playingId, bool pause);
 
     // One update at the engine's time now (the wall clock, or the time rendered for loopback).
     void Update();
     int Render(float* out, int frames);
     double Now() const { return now; }
     bool Loopback() const { return loopback; }
+
+    // For tests (tools\research\audio_worker_test.cpp): set before Open, a loopback device reads its media through
+    // the worker as the game's and the editor's do, instead of inline; Waiting says whether a voice waits for it
+    // (a medium being read, or a stream with nothing queued and more to come), so the test renders on only then.
+    bool forceWorker = false;
+    bool Waiting();
 
     int Voices(rfa_audio_voice* out, int max);
     void Status(rfa_audio_status& out);
@@ -155,6 +178,8 @@ public:
 
     // What a bank's tree looks like, for the editor and checks.
     void EventInfo(uint32_t eventId, rfa_audio_event_info& out);
+    // The buses an event's plays go through that duck other buses (for the hybrid's mirror of Wwise's sounds).
+    std::vector<uint32_t> EventDuckingBuses(uint32_t eventId) const;
     std::string Describe(uint32_t id);
     bool MediumSeconds(const Node& sound, double& seconds, std::string& why);
 
@@ -162,8 +187,10 @@ private:
     // Starting nodes
     std::unique_ptr<Instance> Start(const Node* node, Play& play, Instance* parent, int fadeInMs);
     bool StartChild(Instance& in, uint32_t child, int fadeInMs);
-    bool StartNextPick(Instance& in);
+    bool StartNextPick(Instance& in, int fadeInMs = 0);
     bool StartVoice(Instance& in);
+    bool BeginVoice(Instance& in, bool counted);
+    void FinishLoad(Instance& in);
     uint32_t Pick(Instance& in);
     uint32_t SwitchValue(const Node& node, const GameObject& object) const;
     void Sweep();
@@ -190,6 +217,7 @@ private:
         int priority = 50;
         uint32_t bus = 0;
         WhenQuiet whenQuiet = WhenQuiet::PlayOn;
+        float lowPass = 0;     // Wwise's low-pass (0 none, 100 the most): the nodes', their curves', the distance's
     };
     Level LevelOf(const Instance& in, const GameObject& object) const;
     float ParameterValue(const GameObject& object, uint32_t parameter, float distance) const;
@@ -198,7 +226,13 @@ private:
     bool BeginOnSource(Voice& voice);
     void ApplySource(Voice& voice, const Level& level, const GameObject& object);
     bool FillStream(Voice& voice, ALuint buffer);
+    void QueueReady(Voice& voice);
     void ServiceStream(Voice& voice);
+    // Paused plays: only what needs no time (a stop at once) goes on.
+    void UpdatePaused(Instance& in);
+    void PauseVoices(Instance& in, bool pause);
+    void ShiftTimes(Instance& in, double seconds);
+    void ClockNow();
 
     GameObject& Object(uint64_t id);
     const Node* LimitOwner(const Node* node) const;
@@ -210,6 +244,7 @@ private:
     ALCdevice* device = nullptr;
     ALCcontext* context = nullptr;
     bool loopback = false, ownThread = false;
+    bool inlineReads = false;  // media read here, under the lock (a loopback device, the check); else by the worker
     int sampleRate = 48000, maxSources = 128;
     float threshold = Silent;
     double now = 0;
@@ -219,13 +254,56 @@ private:
     bool stopThread = false;
 
     MediaCache cache;
+    MediaWorker worker;       // reads media off the lock (not with a loopback device)
+    bool pausedAll = false;
+    int64_t pausedCounter = 0, pausedSince = 0;  // the clock's time paused in all, and when this pause began
     std::vector<ALuint> freeSources;
+    std::unordered_map<ALuint, ALuint> sourceFilters;  // each source's low-pass filter, made when first needed
     int sourcesMade = 0;
     std::vector<Voice*> liveVoices;
 
     std::unordered_map<uint64_t, GameObject> objects;
     std::unordered_map<uint32_t, float> globalParameters;
     std::unordered_map<uint32_t, uint32_t> states;
+    // What actions have set on a node (set volume, pitch, low-pass; mute), for one object or every one (0).
+    struct ActionValues {
+        float volume = 0, pitch = 0, lowPass = 0;
+        bool muted = false;  // silent, but not "too quiet" (a mute doesn't end voices or make them virtual)
+        bool Empty() const { return volume == 0 && pitch == 0 && lowPass == 0 && !muted; }
+    };
+    using ActionKeyType = std::pair<uint32_t, uint64_t>;
+    static ActionKeyType ActionKey(uint32_t node, uint64_t object) { return {node, object}; }
+    std::map<ActionKeyType, ActionValues> actionValues;
+    int postDepth = 0;  // events posted by events, nested
+
+    // The mix (init.bnk's buses): each state group's last change (for its transition), what actions set on buses,
+    // ducking (each ducking bus and bus it ducks: when something last played through it, the ducking now), each
+    // ducked bus's ducking in all, sounds playing through a bus elsewhere (Wwise's, told by the game's hooks).
+    struct StateChange {
+        uint32_t from = 0, to = 0;
+        double at = -1e9, seconds = 0;
+    };
+    std::unordered_map<uint32_t, StateChange> stateChanges;
+    std::unordered_map<uint32_t, ActionValues> busActionValues;
+    struct DuckState {
+        double lastActive = -1e9;
+        float db = 0;
+    };
+    std::map<std::pair<uint32_t, uint32_t>, DuckState> ducking;
+    std::unordered_map<uint32_t, float> busDuckDb;
+    std::unordered_map<uint32_t, int> externalOn;
+    double lastMixAt = 0;
+public:
+    // A sound starts (delta 1) or ends (-1) on a bus outside this engine (Wwise's, in the hybrid): it ducks as ours do.
+    void NoteBus(uint32_t bus, int delta);
+private:
+    void UpdateMix();
+    void BusLevel(uint32_t bus, Level& level) const;
+    std::vector<uint32_t> BusChain(uint32_t bus) const;
+    StateValues StateValuesFor(uint32_t group, uint32_t state, const Bus* bus) const;
+    float GlobalParameter(uint32_t parameter) const;
+    bool LimitBuses(Voice& voice);
+    bool ThroughBus(const Instance& in, uint32_t bus) const;
     Vec3 listenerPosition, listenerFront{0, 0, 1}, listenerUp{0, 1, 0};
 
     std::unordered_map<uint32_t, std::unique_ptr<Play>> plays;
@@ -240,7 +318,7 @@ private:
     std::vector<int16_t> streamScratch;
 
     // Counts for the status
-    int64_t refused = 0, endedQuiet = 0, stolen = 0, underruns = 0;
+    int64_t refused = 0, endedQuiet = 0, stolen = 0, underruns = 0, mediaFailed = 0;
 };
 
 Engine& TheEngine();

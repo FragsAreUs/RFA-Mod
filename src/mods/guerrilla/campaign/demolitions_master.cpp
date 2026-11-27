@@ -1032,7 +1032,7 @@ Activity* MakeDemolitionsMaster() {
 
 bool NodeDone(unsigned node) {
     const auto found = g_done.find(node);
-    return (found != g_done.end() && found->second) || DeliveryNodeDone(node) || AreaDefenseNodeDone(node);
+    return (found != g_done.end() && found->second) || DeliveryNodeDone(node) || AreaDefenseNodeDone(node) || ConvoyNodeDone(node);
 }
 
 bool DemolitionsScreen(Screen& screen) {
@@ -1054,6 +1054,7 @@ void DemolitionsPlayerDied() {
 void ReloadProgress() {
     DeliveryReloadProgress();
     AreaDefenseReloadProgress();
+    ConvoyReloadProgress();
     for (const world::Object* node : world::OfClass("object_demolitions_master_node")) g_done[node->handle] = LoadProgress(*node).completed;
 }
 

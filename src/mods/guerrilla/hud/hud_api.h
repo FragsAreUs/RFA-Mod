@@ -33,3 +33,17 @@ int GuerrillaHud_Key(const char* name);
 
 // Raises one of Guerrilla's tool tips by its name (tool_tips.cpp; see tool_tips.h): false if it wasn't queued.
 bool GuerrillaHud_ToolTip(const char* name, int delayMs, const char* icon);
+
+// Whether one of Guerrilla's tool tips has been shown at least once (ui_tool_tips_tip_has_been_played).
+bool GuerrillaHud_ToolTipPlayed(const char* name);
+
+// Guerrilla's nav beacon (guerrilla_hud.cpp, "The nav beacon"; cartographer::add_player_marker RM 0x87DFB0,
+// remove_player_marker 0x87E410, has_player_marker 0x84D000): one point on the minimap and the world map, taken away
+// once the player is within 20 m of it. attached: set for an activity's icon (the GPS key's), so it goes when that icon
+// does (cartographer::render 0x882E41).
+void GuerrillaHud_AddPlayerMarker(float x, float y, float z, int attached);
+void GuerrillaHud_RemovePlayerMarker();
+int GuerrillaHud_HasPlayerMarker();
+// The nearest safehouse to (x, z), flat (safehouse_find_nearest_safehouse RM 0xA6B570: visible and enabled ones, from
+// map_icons.txt): 1 and where in out[3], or 0 when none is known.
+int GuerrillaHud_NearestSafehouse(float x, float z, float* out);

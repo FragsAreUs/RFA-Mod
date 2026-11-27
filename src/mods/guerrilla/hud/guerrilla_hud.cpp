@@ -43,6 +43,8 @@
 #include "rfa_game.h"
 #include "keys.h"
 #include "tool_tips.h"
+#include "fog_of_war.h"
+#include "gps.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -772,6 +774,8 @@ void CloseCampaignScreens(const char* why);
 void ForgetDistricts();
 void ReadHudMessages();
 void ForgetPickups();
+void ForgetBeacon();  // the nav beacon (below)
+void FollowBeacon(double seconds);
 
 // Where a point of Guerrilla's world (x, z metres) is on its world map picture, in its pixels.
 void MapPixels(double x, double z, double& mapX, double& mapY) {
@@ -864,6 +868,7 @@ void UpdateMapView() {
     g_view.active = player != nullptr;
     if (!player) return;
     const float* position = reinterpret_cast<const float*>(player + 4);
+    fog_of_war::Reveal(position);  // Guerrilla's world map: the fog uncovered within 100 m of him
     const double x = position[0], z = position[2];
     const double column = 8.0 + x / kZoneMetres, row = 8.0 - z / kZoneMetres;  // column 8 starts at x 0, row 8 at z 0
     MapPixels(x, z, g_view.mapX, g_view.mapY);
@@ -1282,6 +1287,7 @@ void FollowTheWorld(bool dead) {
         if (g_mapOpen) StepFullMap(false);
         else FollowTheMapKey();
         FollowMinimapZoom(g_hudFrameMs / 1000.0);
+        FollowBeacon(g_hudFrameMs / 1000.0);
         FollowRadioTags();
         FollowHandbook();
         tool_tips::Step(g_hudFrameMs / 1000.0, g_player && !ObjectIsDead(g_player));
@@ -1521,6 +1527,7 @@ void __cdecl LoadStart() {
     g_pauseMenuBlockLeft = 0;
     HoldPauseMenu(false);  // before the level's start sets the game's count to 0
     ForgetPickups();  // what the new level gives at its start isn't picked up
+    ForgetBeacon();   // the cartographer's level start: no nav beacon
     tool_tips::LevelShutdown();  // the tips waiting gone, the game unpaused
     ForgetDistricts();           // the new level's districts noted, not shown as changes
     CloseCampaignScreens("a level load");
@@ -3233,6 +3240,10 @@ void ShowMessage(const std::string& text, bool major, float seconds) {
 // HUD update in our worlds, at most kCampaignMessagesAFrame.
 constexpr int kCampaignMessageMinor = 0, kCampaignMessageTip = 1, kCampaignMessageCount = 2;
 constexpr int kCampaignMessagePrimary = 3;  // hud_message_add: a primary message (HM_BFTP_GET_A_CAR)
+// A primary message whose text takes a picture's name for its %ls and keys for its [BUTTON:...] tags, shown for ms
+// milliseconds: the offer's hint (activity_do_frame_ready RM 0x7697D0: HUD_GPS_HINT "[BUTTON:GPS_MARKER] TO GET PATH
+// TO [image:rfg_%ls]" with the activity's icon, 4 s).
+constexpr int kCampaignMessagePicture = 4;
 constexpr int kCampaignMessagesAFrame = 8;
 std::map<std::string, std::string> g_hudMessageTexts;  // Guerrilla's tag -> its text
 
@@ -3321,6 +3332,15 @@ void FollowCampaignMessages() {
         const std::string text = GuerrillaText(tag);
         if (text.empty()) {
             RFA_LOG_FIRST(20, "The campaign's messages: no text for %s (not among Guerrilla's strings in hud_messages.txt); not shown", tag);
+            continue;
+        }
+        if (kind == kCampaignMessagePicture) {
+            std::string shown = text;
+            const size_t at = shown.find("%ls");
+            if (at != std::string::npos) shown = shown.substr(0, at) + (icon ? icon : "") + shown.substr(at + 3);
+            shown = tool_tips::KeysNamed(shown);
+            ShowMessage(shown, true, ms > 0 ? ms / 1000.0f : -1.0f);
+            RFA_LOG_DETAIL_FIRST(40, "The campaign's messages: %s: \"%s\"", tag, shown.c_str());
             continue;
         }
         const std::string shown = kind == kCampaignMessageCount ? WithNumber(text, ms) : text;
@@ -3862,6 +3882,17 @@ int __cdecl LuaCharges(lua_State* L) {
     return 2;
 }
 
+// rfg_player_on_foot() -> whether the player is on foot (in no vehicle, driving or riding). Guerrilla's WeaponFire
+//   (hud_ui_weapons_process_weapon_fire_info RM 0x8B3090) names the weapon the player holds, or the turret's when he is
+//   on one (player +0x14C); in a vehicle he holds none, so the reticle and the ammo go and only a vehicle gun's own
+//   reticle and overheat meter show. The reticles' script reads this with primary_weapon_hud's target.
+int __cdecl LuaPlayerOnFoot(lua_State* L) {
+    using namespace rfa::game;
+    const BYTE* player = g_player;
+    lua_pushboolean(L, !player || OnFoot(player));
+    return 1;
+}
+
 // rfg_charges_most() -> how many remote charges the player can have out: Guerrilla's upgrade_get_max_charges (RM
 //   0x775F70): the remote_charge_count upgrade's value at the level bought (upgrades.txt: 2 to start, up to 11).
 int __cdecl LuaChargesMost(lua_State* L) {
@@ -3924,7 +3955,7 @@ int __cdecl LuaMapExplosive(lua_State* L) {
 //   running Transporter's end point, Guerrilla's temporary icons, which its world map drew too when VisibleOnFSMap).
 struct MinimapMarker { double mapX, mapY; std::string picture; int placement; int r, g, b; int ageMs; bool onWorldMap; };
 std::vector<MinimapMarker> g_minimapMarkers;
-constexpr int kMostCampaignIcons = 8;
+constexpr int kMostCampaignIcons = 16;  // a Transporter's end point, a convoy's 12 members
 
 int __cdecl LuaMapMarkers(lua_State* L) {
     using namespace rfa::game;
@@ -3985,6 +4016,234 @@ int __cdecl LuaMapMarker(lua_State* L) {
     lua_pushnumber(L, m.ageMs);
     lua_pushboolean(L, m.onWorldMap);
     return 9;
+}
+
+// ---- The nav beacon (Guerrilla's player marker) and the convoy's route
+//
+// Guerrilla's cartographer kept one nav beacon (add_player_marker RM 0x87DFB0, remove_player_marker 0x87E410,
+// has_player_marker 0x84D000), drawn on both maps by render_player_marker (0x871B30: ui_map_icon_end_point, its
+// CONVOY_END_POINT picture, yellow 250, 230, 0, bobbing). Who sets it here: the GPS key (set_gps_to_spawned_activity
+// 0x87E9F0: with no activity running, or a house arrest or offensive raid offered, the last naturally spawned
+// activity's map icon, attached to it), and the campaign (a captured convoy's nearest safehouse). It goes once the
+// player is within 20 m of it (update_gps 0x873B16, Minimap_gps_radius), when the icon it is attached to goes
+// (render 0x882E41), and at a level's start. Guerrilla's GPS route along the roads isn't ported: the beacon is a
+// point. The GPS key's sound (cue 0x2532DF0) waits for the sound banks.
+//
+// rfg_map_beacon (below), and rfg_map_route and rfg_map_route_point: the convoy's route (cartographer::render_convoy_routes
+// 0x870940, the campaign's GuerrillaCampaign_ConvoyRoute).
+struct Beacon {
+    bool shown = false, attached = false;
+    float x = 0, y = 0, z = 0;
+};
+Beacon g_beacon;
+constexpr float kBeaconReachSquared = 20.0f * 20.0f;
+bool g_gpsKeyDown = false;
+constexpr int kMostRoutePoints = 512;  // Guerrilla's convoy_route (farray<vector, 512>)
+std::vector<std::pair<double, double>> g_routePoints;
+
+void ForgetBeacon() {
+    g_beacon = {};
+    g_routePoints.clear();
+    gps::Forget();
+}
+
+std::vector<gps::Point> g_gpsMinimap;  // the minimap's GPS points, made at each search (gps.h)
+
+// Guerrilla's update_gps (RM 0x8739B0), when the GPS's 2 s run out: the beacon moved onto what it is attached to, taken
+// away within 20 m of the player, else the route to it searched again; then the minimap's points (create_path_route_
+// points: every 10 m, within twice the minimap's reach).
+void UpdateGps() {
+    if (!g_beacon.shown || !g_player) {
+        gps::Clear();
+        g_gpsMinimap.clear();
+        return;
+    }
+    if (g_beacon.attached) {
+        float x = 0, y = 0, z = 0;
+        if (GuerrillaCampaign_GpsTarget(0, &x, &y, &z)) {
+            g_beacon.x = x;
+            g_beacon.y = y;
+            g_beacon.z = z;
+        }
+    }
+    const float* at = reinterpret_cast<const float*>(g_player + 0x04);  // the object's position
+    const float dx = at[0] - g_beacon.x, dz = at[2] - g_beacon.z;
+    if (dx * dx + dz * dz <= kBeaconReachSquared) {
+        RFA_LOG_DETAIL_FIRST(20, "Nav beacon: reached");
+        GuerrillaHud_RemovePlayerMarker();
+        gps::Clear();
+        g_gpsMinimap.clear();
+        return;
+    }
+    const float target[3] = {g_beacon.x, g_beacon.y, g_beacon.z};
+    gps::Search(at, target);
+    gps::MapPoints(g_gpsMinimap, 10.0f, at[0], at[2], 2.0f * static_cast<float>(g_minimapRadius));
+}
+
+void FollowBeacon(double seconds) {
+    // The GPS key, pressed in the game (not on a screen of ours, the menus or the world map).
+    const int key = keys::Key(keys::GpsMarker);
+    const bool down = key && HeldDown(key);
+    if (down && !g_gpsKeyDown && !g_mapOpen && !OurScreenOpen() && !MenusShown() && GameFocused() && guerrilla_campaign::Running()) {
+        float x = 0, y = 0, z = 0;
+        if (GuerrillaCampaign_GpsTarget(1, &x, &y, &z)) {
+            GuerrillaHud_AddPlayerMarker(x, y, z, 1);
+            RFA_LOG_DETAIL_FIRST(20, "Nav beacon: the GPS key put it on the activity offered (%.0f, %.0f)", x, z);
+        } else {
+            RFA_LOG_DETAIL_FIRST(20, "Nav beacon: the GPS key: no activity offered to put it on");
+        }
+    }
+    g_gpsKeyDown = down;
+    // cartographer::render (0x882E41): an attached beacon goes as its icon does.
+    if (g_beacon.shown && g_beacon.attached && (!guerrilla_campaign::Running() || !GuerrillaCampaign_GpsTarget(0, nullptr, nullptr, nullptr))) {
+        RFA_LOG_DETAIL_FIRST(20, "Nav beacon: taken away (the icon it was on went)");
+        GuerrillaHud_RemovePlayerMarker();
+    }
+    if (gps::Tick(seconds)) UpdateGps();
+}
+
+// rfg_map_beacon() -> shown, map_x, map_y, size (1 give or take kBeaconBob: render_player_marker's bobbing scale; its
+// rate isn't read, here once a second).
+constexpr double kBeaconBob = 0.15;
+
+// render_player_marker (0x871B30): with a route and the player more than 10 m from a road, at the route's road entry
+// (m_first_gps_point); hidden while it is on an activity's icon and the player is near a road (the arrows lead the way).
+int __cdecl LuaMapBeacon(lua_State* L) {
+    using namespace rfa::game;
+    double mapX = 0, mapY = 0;
+    const bool offRoad = gps::Valid() && !gps::PlayerNearRoad();
+    if (g_beacon.shown) {
+        if (offRoad) MapPixels(gps::FirstPoint()[0], gps::FirstPoint()[2], mapX, mapY);
+        else MapPixels(g_beacon.x, g_beacon.z, mapX, mapY);
+    }
+    const bool hidden = g_beacon.attached && gps::Valid() && gps::PlayerNearRoad();
+    const double phase = static_cast<double>(GetTickCount64() % 1000) / 1000.0;
+    lua_pushboolean(L, g_beacon.shown && !hidden && InOurWorld());
+    lua_pushnumber(L, mapX);
+    lua_pushnumber(L, mapY);
+    lua_pushnumber(L, 1.0 + kBeaconBob * std::sin(phase * 6.283185307));
+    return 4;
+}
+
+// rfg_map_gps(full) -> count: the GPS route's arrows, on the minimap (full false: the points made at the last search) or
+// the world map (made now: every 17.5 m times floor(1 + 1.5 (1 - (zoom - 0.1) / 0.9)), as Guerrilla's world map did each
+// frame); none without the beacon or a route. rfg_map_gps_point(i) -> map_x, map_y, angle (radians, toward the next
+// point: get_directional_arrow_angle, Gps_lookahead_points 1), r, g, b: Guerrilla's GPS_color (230, 158, 2), lit toward
+// GPS_highlight_color (250, 230, 0) for 4 of every 16 points, the 4 moving toward the beacon at 16 points a second. The
+// first point and the last get no arrow (render_mini 0x882328, render_full 0x881B30).
+struct GpsArrow { double mapX, mapY, angle; int r, g, b; };
+std::vector<GpsArrow> g_gpsArrows;
+
+int __cdecl LuaMapGps(lua_State* L) {
+    using namespace rfa::game;
+    g_gpsArrows.clear();
+    const bool full = lua_toboolean(L, 1) != 0;
+    if (g_beacon.shown && gps::Valid() && InOurWorld()) {
+        static std::vector<gps::Point> fullPoints;
+        const std::vector<gps::Point>* points = &g_gpsMinimap;
+        if (full) {
+            const double scale = 1.0 + (1.0 - (g_full.zoom - 0.1) / 0.9) * 1.5;
+            gps::MapPoints(fullPoints, 17.5f * static_cast<float>(std::floor(scale)), 0.0f, 0.0f, 1.0e9f);
+            points = &fullPoints;
+        }
+        const size_t n = points->size();
+        const int index = static_cast<int>(gps::Index());
+        for (size_t i = 1; i + 1 < n; ++i) {
+            const gps::Point& p = (*points)[i];
+            const gps::Point& next = (*points)[i + 1];
+            GpsArrow a{};
+            MapPixels(p.x, p.z, a.mapX, a.mapY);
+            double nextX = 0, nextY = 0;
+            MapPixels(next.x, next.z, nextX, nextY);
+            a.angle = std::atan2(nextY - a.mapY, nextX - a.mapX);
+            a.r = 230, a.g = 158, a.b = 2;
+            const int k = (static_cast<int>(p.seq) + index) % 16;
+            if (k > 16 - 4 - 1) {
+                const double t = (k - 11) / 4.0;
+                a.r = static_cast<int>(230 + (250 - 230) * t);
+                a.g = static_cast<int>(158 + (230 - 158) * t);
+                a.b = static_cast<int>(2 + (0 - 2) * t);
+            }
+            g_gpsArrows.push_back(a);
+        }
+    }
+    lua_pushnumber(L, static_cast<double>(g_gpsArrows.size()));
+    return 1;
+}
+
+int __cdecl LuaMapGpsPoint(lua_State* L) {
+    using namespace rfa::game;
+    const int i = static_cast<int>(lua_tonumber(L, 1)) - 1;
+    if (i < 0 || i >= static_cast<int>(g_gpsArrows.size())) return 0;
+    const GpsArrow& a = g_gpsArrows[i];
+    lua_pushnumber(L, a.mapX);
+    lua_pushnumber(L, a.mapY);
+    lua_pushnumber(L, a.angle);
+    lua_pushnumber(L, a.r);
+    lua_pushnumber(L, a.g);
+    lua_pushnumber(L, a.b);
+    return 6;
+}
+
+// rfg_map_route(step, centre_x, centre_y, reach) -> count: the route's arrows, one every `step` map pixels along it, those
+// within `reach` map pixels of the centre (the map shown); rfg_map_route_point(i) -> map_x, map_y, angle (radians, the
+// path's way in map pixels: atan2 of its y and x), lit (the lighter arrow, moving from the route's start to its end).
+// Guerrilla drew the route as a strip of its arrow picture (render_path_route 0x861410); here arrows a picture's width
+// apart. The lit one moves an arrow every kRouteLitStepMs.
+struct RouteArrow { double mapX, mapY, angle; bool lit; };
+std::vector<RouteArrow> g_routeArrows;
+constexpr ULONGLONG kRouteLitStepMs = 150;
+constexpr int kMostRouteArrows = 4096;
+
+int __cdecl LuaMapRoute(lua_State* L) {
+    using namespace rfa::game;
+    g_routeArrows.clear();
+    const double step = lua_tonumber(L, 1), centreX = lua_tonumber(L, 2), centreY = lua_tonumber(L, 3), reach = lua_tonumber(L, 4);
+    if (guerrilla_campaign::Running() && InOurWorld() && step > 0.01) {
+        static float xz[kMostRoutePoints * 2];
+        const int count = (std::min)(GuerrillaCampaign_ConvoyRoute(xz, kMostRoutePoints), kMostRoutePoints);
+        g_routePoints.clear();
+        for (int i = 0; i < count; ++i) {
+            double mapX = 0, mapY = 0;
+            MapPixels(xz[i * 2], xz[i * 2 + 1], mapX, mapY);
+            g_routePoints.emplace_back(mapX, mapY);
+        }
+        // Along the route from its start: an arrow every step; the lit one by the clock, over all of them.
+        std::vector<RouteArrow> all;
+        double carried = 0.0;
+        for (size_t i = 1; i < g_routePoints.size() && static_cast<int>(all.size()) < kMostRouteArrows; ++i) {
+            const double ax = g_routePoints[i - 1].first, ay = g_routePoints[i - 1].second;
+            const double dx = g_routePoints[i].first - ax, dy = g_routePoints[i].second - ay;
+            const double length = std::sqrt(dx * dx + dy * dy);
+            if (length < 1e-6) continue;
+            const double angle = std::atan2(dy, dx);
+            double at = carried;
+            for (; at < length && static_cast<int>(all.size()) < kMostRouteArrows; at += step)
+                all.push_back({ax + dx * at / length, ay + dy * at / length, angle, false});
+            carried = at - length;
+        }
+        const size_t lit = all.empty() ? 0 : static_cast<size_t>(GetTickCount64() / kRouteLitStepMs) % all.size();
+        for (size_t i = 0; i < all.size(); ++i) {
+            const double ox = all[i].mapX - centreX, oy = all[i].mapY - centreY;
+            if (ox * ox + oy * oy > reach * reach) continue;
+            all[i].lit = i == lit;
+            g_routeArrows.push_back(all[i]);
+        }
+    }
+    lua_pushnumber(L, static_cast<double>(g_routeArrows.size()));
+    return 1;
+}
+
+int __cdecl LuaMapRoutePoint(lua_State* L) {
+    using namespace rfa::game;
+    const int index = static_cast<int>(lua_tonumber(L, 1)) - 1;
+    if (index < 0 || index >= static_cast<int>(g_routeArrows.size())) return 0;
+    const RouteArrow& a = g_routeArrows[index];
+    lua_pushnumber(L, a.mapX);
+    lua_pushnumber(L, a.mapY);
+    lua_pushnumber(L, a.angle);
+    lua_pushboolean(L, a.lit);
+    return 4;
 }
 
 // ---- Guerrilla's control and morale meters, from the campaign's districts
@@ -4186,6 +4445,7 @@ struct ActivityScreen {
     GuerrillaCampaignActivity info{};
     std::string title, subtitle, body, objective, timer, result, failure, weapon[4];
     std::string distance;      // running: Transporter's distance to its end
+    std::string count, strength;  // running: a convoy's vehicles ("02/05") and its target's health ("80%")
     int screen = 0;            // what the campaign shows: 0 none, 1 briefing, 2 running, 3 results
     bool open = false, paused = false;  // our briefing or results screen
     int answered = 0;          // the screen we answered (the campaign may still give it until its next frame)
@@ -4304,6 +4564,8 @@ void KeepActivity(const GuerrillaCampaignActivity& info) {
     s.failure = info.failure ? info.failure : "";
     for (int i = 0; i < 4; ++i) s.weapon[i] = info.weapon[i] ? info.weapon[i] : "";
     s.distance = info.distance ? info.distance : "";
+    s.count = info.count ? info.count : "";
+    s.strength = info.strength ? info.strength : "";
 }
 
 void OpenActivityScreen(int screen) {
@@ -4858,7 +5120,8 @@ std::string WeaponPicture(const std::string& name) {
 }
 
 // rfg_activity() -> screen, version, mode, title, subtitle, body, objective, timer, result, failure, limit, par, best,
-//   elapsed, status, success, pro_time, out_of_range, salvage, distance (Transporter's to its end)
+//   elapsed, status, success, pro_time, out_of_range, salvage, distance (Transporter's to its end), count, strength
+//   (a convoy's vehicles "02/05" and its target's health "80%")
 //   The campaign's activity (screen 0 none, 1 the briefing, 2 running, 3 the results), its texts as Guerrilla's (from
 //   its tags), its times "mm:ss" ("" for none: limit 0, no best yet); status 0, 1 unstable, 2 destroyed.
 //   rfg_activity_weapon(i) -> picture, rounds: its i-th weapon (1-4), nothing past the last.
@@ -4886,7 +5149,9 @@ int __cdecl LuaActivity(lua_State* L) {
     lua_pushboolean(L, i.outOfRange != 0);
     lua_pushnumber(L, i.salvage);
     lua_pushstring(L, s.distance.c_str());  // Transporter's distance to its end
-    return 20;
+    lua_pushstring(L, s.count.c_str());     // a convoy's vehicles left, of all
+    lua_pushstring(L, s.strength.c_str());  // a capture convoy's target's health
+    return 22;
 }
 
 int __cdecl LuaActivityWeapon(lua_State* L) {
@@ -5572,6 +5837,11 @@ int __cdecl LuaAlert(lua_State* L) {
 }  // namespace
 
 void guerrilla_hud::RegisterLua(rfa::game::lua_State* L) {
+    rfa::game::lua_register(L, "rfg_map_beacon", LuaMapBeacon);
+    rfa::game::lua_register(L, "rfg_map_gps", LuaMapGps);
+    rfa::game::lua_register(L, "rfg_map_gps_point", LuaMapGpsPoint);
+    rfa::game::lua_register(L, "rfg_map_route", LuaMapRoute);
+    rfa::game::lua_register(L, "rfg_map_route_point", LuaMapRoutePoint);
     rfa::game::lua_register(L, "rfg_map_view", LuaMapView);
     rfa::game::lua_register(L, "rfg_map_tiles", LuaMapTiles);
     rfa::game::lua_register(L, "rfg_map_close", LuaMapClose);
@@ -5593,6 +5863,7 @@ void guerrilla_hud::RegisterLua(rfa::game::lua_State* L) {
     rfa::game::lua_register(L, "rfg_handbook_open", LuaHandbookOpen);
     rfa::game::lua_register(L, "rfg_handbook", LuaHandbook);
     tool_tips::Register(L);
+    fog_of_war::Register(L);
     rfa::game::lua_register(L, "rfg_handbook_screen", LuaHandbookScreen);
     rfa::game::lua_register(L, "rfg_handbook_page_new", LuaHandbookPageNew);
     rfa::game::lua_register(L, "rfg_handbook_rows", LuaHandbookRows);
@@ -5627,6 +5898,7 @@ void guerrilla_hud::RegisterLua(rfa::game::lua_State* L) {
     rfa::game::lua_register(L, "rfg_map_explosives", LuaMapExplosives);
     rfa::game::lua_register(L, "rfg_map_explosive", LuaMapExplosive);
     rfa::game::lua_register(L, "rfg_charges", LuaCharges);
+    rfa::game::lua_register(L, "rfg_player_on_foot", LuaPlayerOnFoot);
     rfa::game::lua_register(L, "rfg_charges_most", LuaChargesMost);
     rfa::game::lua_register(L, "rfg_map_markers", LuaMapMarkers);
     rfa::game::lua_register(L, "rfg_map_marker", LuaMapMarker);
@@ -5668,6 +5940,42 @@ int GuerrillaHud_ActivityComplete(const void* results) {
 // Whether a radio tag pair's M.O.A.B. is on the maps (every third tag found shows its own pair's: see "Guerrilla's
 // radio tags"), for guerrilla_campaign's car bomb, which places the M.O.A.B. itself only then.
 bool GuerrillaHud_BombShown(int pair) { return guerrilla_hud::Running() && g_bombsShown.count(pair) != 0; }
+
+// The nav beacon (see "The nav beacon"): one at a time, a new one in place of the old.
+void GuerrillaHud_AddPlayerMarker(float x, float y, float z, int attached) {
+    if (!guerrilla_hud::Running()) return;
+    g_beacon.shown = true;
+    g_beacon.attached = attached != 0;
+    g_beacon.x = x;
+    g_beacon.y = y;
+    g_beacon.z = z;
+    RFA_LOG_DETAIL_FIRST(40, "Nav beacon: at (%.0f, %.0f, %.0f)%s", x, y, z, attached ? ", on an activity's icon" : "");
+}
+
+void GuerrillaHud_RemovePlayerMarker() { g_beacon = {}; }
+
+int GuerrillaHud_HasPlayerMarker() { return guerrilla_hud::Running() && g_beacon.shown ? 1 : 0; }
+
+// safehouse_find_nearest_safehouse (RM 0xA6B570) over the safehouses map_icons.txt lists (the enabled ones: the builder
+// leaves out a disabled safehouse), flat.
+int GuerrillaHud_NearestSafehouse(float x, float z, float* out) {
+    if (!guerrilla_hud::Running() || !out) return 0;
+    const MapIcon* nearest = nullptr;
+    float best = 0.0f;
+    for (const MapIcon& icon : g_mapIcons) {
+        if (icon.kind != "icon" || icon.rule != "safehouse") continue;
+        const float dx = icon.worldX - x, dz = icon.worldZ - z, d = dx * dx + dz * dz;
+        if (!nearest || d < best) {
+            nearest = &icon;
+            best = d;
+        }
+    }
+    if (!nearest) return 0;
+    out[0] = nearest->worldX;
+    out[1] = 0.0f;  // map_icons.txt keeps x and z only (the beacon is drawn flat)
+    out[2] = nearest->worldZ;
+    return 1;
+}
 
 void guerrilla_hud::Init() {
     // Log= also has Guerrilla's HUD scripts write what they find (rfg_ui_*.lua read it themselves).
@@ -5771,6 +6079,7 @@ void guerrilla_hud::Init() {
     if (!g_loadStart) rfa::Log("Could not hook the start of level loads; a reload may crash when the HUD unloads a map picture after it");
     HookUsableItems();
     HookFonts();
+    gps::Start();
     std::string documents, worlds;
     for (const Document& doc : g_documents) documents += (documents.empty() ? "" : ", ") + doc.name;
     for (const std::string& world : g_worlds) worlds += (worlds.empty() ? "" : ", ") + world;

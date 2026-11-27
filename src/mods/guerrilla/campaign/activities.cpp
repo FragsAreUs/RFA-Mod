@@ -20,9 +20,9 @@
 // damage listeners hear every death (ReportDeath), and "the player's doing" is its own test
 // (PlayerControlled).
 //
-// Not ported yet: natural spawning (only courier, convoy and activity_spawn.xtbl's raids and
-// deliveries spawn by themselves: with them, step 8), the script groups, the voice and music, the
-// vehicle and human reservations, the listeners' damage, building and explosion reports (step 5b).
+// Natural spawning (natural_spawning.cpp): every 4 to 6 s a convoy (convoy.cpp) or a courier may be offered near the
+// player, and activity_spawn.xtbl's defensive raids once they are ported. Not ported yet: the script groups, the voice
+// and music, the vehicle and human reservations.
 #define RFA_MOD_NAME "guerrilla_campaign"
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
@@ -39,6 +39,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <cstddef>
+#include <algorithm>
+#include <iterator>
 #include <unordered_set>
 
 namespace campaign::activities {
@@ -226,6 +228,7 @@ auto const ParseArguments = reinterpret_cast<ParseArgumentsFn>(0xC7D570);
 auto& g_commandRunning = *reinterpret_cast<int*>(0x28FF1C0);
 auto const g_commandWord = reinterpret_cast<const char*>(0x28FF0B8);
 BYTE g_startCommand[32];
+BYTE g_spawnCommand[32];
 
 using ConsolePrintFn = void(__cdecl*)(const char* format, ...);
 auto const ConsolePrint = reinterpret_cast<ConsolePrintFn>(0xC7C440);
@@ -280,6 +283,7 @@ void Activity::LevelInit() {
 
 bool Activity::CanInitialize() const {
     if (disabled_ || (state_ != State::Wait && state_ != State::Loading)) return false;
+    if (!RestrictedGroupAllows(mode_)) return false;
     if (!modal_) return true;
     // Modal: after the cooldown; at RED only Guerrilla Express.
     if (g_cooldown > 0.0f) return false;
@@ -290,6 +294,8 @@ bool Activity::IsActive() const { return modal_ ? g_current == mode_ : active_; 
 
 bool Activity::Initialize() {
     if (!CanInitialize()) return false;
+    // activity_base_modal::activity_initialize (RM 0x7960C0): Last_activity_spawned, the node the GPS key goes to.
+    if (modal_) SetLastSpawned(node_, mode_);
     ChangeInterface(Interface::Ready);
     ChangeState(State::Ready);
     return true;
@@ -326,6 +332,7 @@ void Activity::End() {
     if (modal_) {
         if (g_current == mode_) g_current = ModeNone;
         StartCooldown();
+        SpawnModalEnded();
     } else {
         active_ = false;
     }
@@ -433,6 +440,9 @@ void Activity::DoFrame(float seconds) {
         if (!Initialize()) Kill();
         break;
     case State::Ready:
+        // activity_base::activity_do_frame_ready (RM 0x7697D0), which every kind's own ready frame calls first: the hint 5 s
+        // after a natural spawn.
+        OfferHintFrame();
         FrameReady(seconds);
         break;
     case State::Starting:
@@ -618,6 +628,7 @@ void Init() {
     Register(MakeCarBomb());
     Register(MakeContinuousAttack());
     Register(MakeAreaDefense());
+    Register(MakeConvoy());
     InitializeCriticalSection(&g_reportsLock);
     g_reportsLockMade = true;
     StartDamageFeeds();
@@ -629,7 +640,10 @@ void Enter() {
         commandAdded = true;
         RegisterCommand(g_startCommand, nullptr, "rfg_dm_start", "Starts one of Guerrilla's demolitions master challenges (je_dm_01..16)", 3,
                         &StartCommand);
+        RegisterCommand(g_spawnCommand, nullptr, "rfg_act_spawn",
+                        "Runs Guerrilla's natural activity spawner once now (a convoy or courier near you), saying what stopped it", 3, &SpawnCommand);
     }
+    SpawnLevelInit();
     g_cooldown = 0.0f;
     g_lastVehicle = kNoHandle;
     g_leftVehicleAt = -1;
@@ -659,6 +673,8 @@ void Update(float seconds) {
     if (liberation::AlertLevel() >= handles::AlertOrange && g_current == ModeNone)
         for (Activity* activity : g_activities)
             if (activity && activity->Modal() && activity->GetMode() != Delivery) activity->Withdraw();
+    // Then, every 4 to 6 s, the natural spawner (do_activity_spawn_frame), before the kinds' own frames.
+    SpawnFrame();
     for (Activity* activity : g_activities)
         if (activity) activity->DoFrame(seconds);
     CarBombFrame();
@@ -673,6 +689,17 @@ bool AnyRunning() {
         if (Activity* activity = Get(mode))
             if (activity->GetState() >= State::Loading && activity->GetState() <= State::Starting) return true;
     return false;
+}
+
+bool NoneActive() { return !AnyRunning(); }
+
+bool RestrictedGroupAllows(Mode mode) {
+    static const Mode kGroup[] = {MissionVrail, Convoy, Courier, RaidDefend, RaidAttack};
+    if (std::find(std::begin(kGroup), std::end(kGroup), mode) == std::end(kGroup)) return true;
+    for (Mode other : kGroup)
+        if (other != mode)
+            if (const Activity* activity = Get(other); activity && (activity->WasInitialized() || activity->IsActive())) return false;
+    return true;
 }
 
 bool AlertLocked() {
@@ -749,12 +776,15 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     g_shown = {};
     if (!Playing()) return 0;
     // The running kind's: demolitions master's (briefing, corner panel, results), else Transporter's corner panel, else
-    // area defense's (its corner panel, timer and a win's stamp).
+    // area defense's (its corner panel, timer and a win's stamp), else the convoy's corner panel.
     if (!activities::DemolitionsScreen(g_shown) || g_shown.screen == 0) {
         g_shown = {};
         if (!activities::DeliveryScreen(g_shown) || g_shown.screen == 0) {
             g_shown = {};
-            if (!activities::AreaDefenseScreen(g_shown) || g_shown.screen == 0) return 0;
+            if (!activities::AreaDefenseScreen(g_shown) || g_shown.screen == 0) {
+                g_shown = {};
+                if (!activities::ConvoyScreen(g_shown) || g_shown.screen == 0) return 0;
+            }
         }
     }
     info->mode = static_cast<int>(g_shown.mode);
@@ -780,6 +810,8 @@ int GuerrillaCampaign_Activity(GuerrillaCampaignActivity* info) {
     info->outOfRange = g_shown.outOfRange;
     info->salvage = g_shown.salvage;
     info->distance = g_shown.distance.c_str();
+    info->count = g_shown.count.c_str();
+    info->strength = g_shown.strength.c_str();
     return 1;
 }
 
@@ -913,15 +945,47 @@ int GuerrillaCampaign_MapIcons(GuerrillaCampaignIcon* icons, int most) {
     using namespace campaign;
     if (!icons || most <= 0 || icons[0].size < static_cast<int>(sizeof(GuerrillaCampaignIcon)) || !guerrilla_campaign::Running() || !Playing())
         return 0;
+    int count = 0;
     activities::Screen delivery;
-    if (!activities::DeliveryScreen(delivery) || delivery.screen != 2) return 0;
-    GuerrillaCampaignIcon& icon = icons[0];
-    icon.x = delivery.center.x;
-    icon.y = delivery.center.y;
-    icon.z = delivery.center.z;
-    icon.picture = "ui_map_icon_end_point";
-    icon.placement = 1;
-    icon.color = 0xFF007777;
-    icon.onWorldMap = 1;
+    if (activities::DeliveryScreen(delivery) && delivery.screen == 2) {
+        GuerrillaCampaignIcon& icon = icons[count++];
+        icon.x = delivery.center.x;
+        icon.y = delivery.center.y;
+        icon.z = delivery.center.z;
+        icon.picture = "ui_map_icon_end_point";
+        icon.placement = 1;
+        icon.color = 0xFF007777;
+        icon.onWorldMap = 1;
+    }
+    // Each kind's own (render_icons, while it is offered, starting or running): the convoy's.
+    for (activities::Mode mode : {activities::Convoy}) {
+        const activities::Activity* activity = activities::Get(mode);
+        if (!activity || count >= most || !activity->WasInitialized()) continue;
+        count += activity->MapIcons(icons + count, most - count);
+    }
+    return count;
+}
+
+int GuerrillaCampaign_ConvoyRoute(float* xz, int most) {
+    using namespace campaign;
+    if (!xz || most <= 0 || !guerrilla_campaign::Running() || !Playing()) return 0;
+    return activities::ConvoyRoute(xz, most);
+}
+
+// set_gps_to_spawned_activity (RM 0x87E9F0): with no activity running (activity_none; a house arrest or offensive raid
+// offered too, neither ported), the last naturally spawned node's map icon (its spawn object's temporary icon), while
+// that kind's run is offered, starting or running.
+int GuerrillaCampaign_GpsTarget(int forKey, float* x, float* y, float* z) {
+    using namespace campaign;
+    if (!guerrilla_campaign::Running() || !Playing()) return 0;
+    if (forKey && !activities::NoneActive()) return 0;
+    activities::Mode mode = activities::ModeNone;
+    const unsigned node = activities::LastSpawnedNode(&mode);
+    const activities::Activity* activity = node != 0xFFFFFFFF ? activities::Get(mode) : nullptr;
+    Vector at{};
+    if (!activity || !activity->WasInitialized() || activity->Node() != node || !activity->SpawnedIcon(node, at)) return 0;
+    if (x) *x = at.x;
+    if (y) *y = at.y;
+    if (z) *z = at.z;
     return 1;
 }

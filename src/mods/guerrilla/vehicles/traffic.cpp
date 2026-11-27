@@ -7,13 +7,18 @@
 // Spawning, as Guerrilla's: every 250 to 500 ms (2 to 4 s after a spawn), in the world named in
 // [GuerrillaVehicles] TrafficWorlds= (rfg), while the player's zone has traffic: up to its cap (Guerrilla's
 // table at green alert: none, low 4, medium 6, high 10; the night's density from 18:00 to 6:00 by the game
-// clock), a car of the zone's group on an ambient road (a road whose file flag 1 is set: Armageddon keeps it
-// as bit 2 of the road's flags, +0xB4) 60 to 260 m from the player, not within 30 m of another, facing
-// along the road on its right side; a model already streamed in first, else one the game is asked to
-// stream (guerrilla_vehicles' spawn reserves it). Its people: 1 to 3 (as many as it has seats) of the zone's
-// resource's civilians and guerrillas (the people the game streams there), made in the car's place
-// (0x762D50, drop_human's) and put straight into their seats (vehicle_interaction_request_enter 0x656410,
-// teleporting, as Guerrilla's do_npc_spawn_vehicle: the driver first).
+// clock), and only while a road is within 60 m of the player (do_frame_spawn_vehicle RM 0xB5F490), a car of
+// the zone's group on an ambient road (a road whose file flag 1 is set: Armageddon keeps it as bit 2 of the
+// road's flags, +0xB4) up to 250 m from the player (Guerrilla's road list, build_vehicle_spawn_locations RM
+// 0xB55870), inside Guerrilla's spawn region (player_bounding_region::in_spawn_region_vehicle RM 0xB428F0, its
+// numbers from update_region RM 0xB47B60; see SpawnRegion below: never nearer than 60 m to the player or the
+// camera, in the camera's view only 100 to 200 m from it, ahead of a fast player 8 × his speed to that + 100 m),
+// not within 30 m of another, facing along the road on its right side; a model already streamed in first,
+// else one the game is asked to stream (guerrilla_vehicles' spawn reserves it). Its people: 1 to 3 (as many as
+// it has seats) of the zone's resource's civilians and guerrillas (the people the game streams there), made in
+// the car's place (0x762D50, drop_human's), on the civilians' team (Guerrilla's: see Board), and put straight
+// into their seats (vehicle_interaction_request_enter 0x656410, teleporting, as Guerrilla's
+// do_npc_spawn_vehicle: the driver first).
 //
 // Driving: Armageddon has no order or goal that drives an NPC along roads to a place (drive_to_location's
 // flags are read by nothing), so the mod drives its traffic's drivers itself every frame, as Guerrilla's
@@ -59,7 +64,7 @@ using namespace gv;
 
 auto const HonkHorn = reinterpret_cast<void(__cdecl*)(DWORD vehicle)>(0x5FB030);     // automobile_honk_horn (a live automobile's handle)
 auto const ReleaseHorn = reinterpret_cast<void(__cdecl*)(DWORD vehicle)>(0x5FB110);  // automobile_release_horn
-constexpr float kSpeed = 9.0f, kMinSpawn = 60.0f, kMaxSpawn = 260.0f, kApart = 30.0f, kDespawn = 280.0f, kReached = 20.0f, kStopShort = 10.0f;
+constexpr float kSpeed = 9.0f, kMaxSpawn = 260.0f, kApart = 30.0f, kDespawn = 280.0f, kReached = 20.0f, kStopShort = 10.0f;
 // Guerrilla's caps by alert level and density (max_vehicle_count 0xB41110, its table 0x13360C8): green, yellow, orange, red.
 constexpr int kCaps[4][4] = {{0, 4, 6, 10}, {0, 4, 6, 8}, {0, 2, 3, 4}, {0, 1, 2, 3}};
 // The world's counts by kind (World +0x308 + kind × 12, the count at +8): people (2) and automobiles (5).
@@ -102,6 +107,109 @@ BYTE* PickFromGroup(const std::string& group) {
     return nullptr;
 }
 
+// ---- Guerrilla's spawn region for traffic (player_bounding_region, RM; Player_spawn_region 0x37482A0)
+// update_region (RM 0xB47B60), before each spawn: the camera's place and orientation, the player's place and how he
+// moves (his velocity). Below 5 m/s the way he moves is ignored (ignore_move_direction; the camera's forward stands
+// in) and no car is made farther than 200 m (farthest_veh_max_sqrd = MAX_CAMERA_VEH_SPAWN_DISTANCE²); faster, the
+// window ahead of him is 8 × his speed to that + 100 m (min/max_velocity_veh_spawn_distance), and the farthest is
+// the larger of 200 m and its far edge.
+// in_spawn_region_vehicle (RM 0xB428F0), for a road point: in a streamed zone (the roads the game finds are); not
+// nearer the player than 60 m (MIN_VEH_SPAWN_DISTANCE_SQRD 3600) nor farther than the farthest; not nearer the
+// camera than 60 m; in front of the camera (within 45° of its forward: FRONT_OF_CAMERA_DOT = cos 45°) and the
+// window ahead starting under 100 m (a player under 12.5 m/s): only 100 to 200 m from the camera (that 200 is
+// MAX_CAMERA_VEH_SPAWN_DISTANCE). Otherwise, unless the way he moves is ignored: within 45° of the way he moves
+// (cos 45° again), only inside the window ahead. Otherwise: in front of the camera, 100 to 200 m from it; out of
+// it, within 260 m of the player (MAX_VEH_SPAWN_DISTANCE). So no car appears on screen nearer than 100 m.
+// The player's velocity is the way he (or the vehicle he is in) moved over the last tenth of a second or more.
+// Guerrilla's list of spawn points is every ambient road point within 250 m of the player by road (road_info, the
+// road network flooded from his nearest road point), picked at random; here a point on an ambient road near a
+// random place up to 250 m from the player (RoadPlace), twelve tries, each checked as Guerrilla checks its points.
+constexpr DWORD kCameraPosition = 0x11B9C6C, kCameraForward = 0x11B9CCC;  // the camera: its place; its orientation's forward row
+constexpr float kRoadNearPlayer = 60.0f;          // do_frame_spawn_vehicle: no road within this of the player, no car
+constexpr float kRoadReach = 250.0f;              // build_vehicle_spawn_locations: road points up to 250 m away (by road)
+constexpr float kMinFromPlayer = 60.0f;           // MIN_VEH_SPAWN_DISTANCE (its square, 3600, is what's tested)
+constexpr float kMinFromCamera = 60.0f;           // in_spawn_region_vehicle's own 60 m from the camera
+constexpr float kOutOfViewMost = 260.0f;          // MAX_VEH_SPAWN_DISTANCE
+constexpr float kInViewNearest = 100.0f, kInViewFarthest = 200.0f;  // in view: from the camera (MAX_CAMERA_VEH_SPAWN_DISTANCE)
+constexpr float kFrontDot = 0.70710678f;          // FRONT_OF_CAMERA_DOT and the move direction's: cos 45°
+constexpr float kIgnoreMoveBelow = 5.0f;          // update_region: slower than 5 m/s, the way he moves is ignored
+constexpr float kAheadPerSpeed = 8.0f, kAheadDepth = 100.0f;        // the window ahead: 8 × speed to that + 100 m
+constexpr int kSpawnTries = 12;
+
+struct SpawnRegion {
+    V3 player{}, camera{}, cameraForward{}, moveDirection{};
+    float minAhead = kMinFromPlayer, maxAhead = kOutOfViewMost, farthest = kInViewFarthest;
+    bool ignoreMove = true;
+};
+
+// The player's velocity, from how far he (or the vehicle he's in) moved: sampled once 100 ms or more of the game's
+// clock have passed, so a frame's few milliseconds don't make it jitter.
+V3 g_lastPlace{};
+int g_lastPlaceTime = -1;
+V3 g_velocity{};
+
+void TrackPlayerVelocity(BYTE* player, int now) {
+    const DWORD in = VehicleOf(player);
+    BYTE* vehicle = in != kNone ? VehicleByHandle(kWorld, nullptr, in) : nullptr;
+    const V3 at = Pos(vehicle ? vehicle : player);
+    if (g_lastPlaceTime < 0 || now < g_lastPlaceTime || now - g_lastPlaceTime > 2000) {  // first, after a pause or a load
+        g_lastPlace = at;
+        g_lastPlaceTime = now;
+        g_velocity = {};
+        return;
+    }
+    const int elapsed = now - g_lastPlaceTime;
+    if (elapsed < 100) return;
+    const float seconds = elapsed / 1000.0f;
+    g_velocity = {(at.x - g_lastPlace.x) / seconds, (at.y - g_lastPlace.y) / seconds, (at.z - g_lastPlace.z) / seconds};
+    g_lastPlace = at;
+    g_lastPlaceTime = now;
+}
+
+float Length(const V3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+float Dot(const V3& a, const V3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+SpawnRegion UpdateRegion(const BYTE* player) {
+    SpawnRegion region;
+    region.player = Pos(player);
+    region.camera = *reinterpret_cast<const V3*>(kCameraPosition);
+    region.cameraForward = *reinterpret_cast<const V3*>(kCameraForward);
+    const float speed = Length(g_velocity);
+    if (speed < kIgnoreMoveBelow) {
+        region.ignoreMove = true;
+        region.moveDirection = region.cameraForward;
+        region.farthest = kInViewFarthest;
+        return region;
+    }
+    region.ignoreMove = false;
+    region.moveDirection = {g_velocity.x / speed, g_velocity.y / speed, g_velocity.z / speed};
+    region.minAhead = speed * kAheadPerSpeed;
+    region.maxAhead = region.minAhead + kAheadDepth;
+    region.farthest = (std::max)(kInViewFarthest, region.maxAhead);
+    return region;
+}
+
+// Why a place is outside the region (for the log), or null if a car may be made there.
+const char* OutsideRegion(const SpawnRegion& region, const V3& where) {
+    const float fromPlayer = Distance(where, region.player);
+    if (fromPlayer < kMinFromPlayer) return "nearer the player than 60 m";
+    if (fromPlayer > region.farthest) return "beyond the farthest";
+    V3 fromCamera{where.x - region.camera.x, where.y - region.camera.y, where.z - region.camera.z};
+    const float cameraDistance = Length(fromCamera);
+    if (cameraDistance < kMinFromCamera) return "nearer the camera than 60 m";
+    fromCamera = {fromCamera.x / cameraDistance, fromCamera.y / cameraDistance, fromCamera.z / cameraDistance};
+    const bool inView = Dot(fromCamera, region.cameraForward) > kFrontDot;
+    const bool inViewWindow = cameraDistance > kInViewNearest && cameraDistance < kInViewFarthest;
+    if (inView && region.minAhead < kInViewNearest) return inViewWindow ? nullptr : "in view, not 100 to 200 m from the camera";
+    if (!region.ignoreMove) {
+        const V3 away{(where.x - region.player.x) / fromPlayer, (where.y - region.player.y) / fromPlayer, (where.z - region.player.z) / fromPlayer};
+        if (Dot(away, region.moveDirection) > kFrontDot)
+            return fromPlayer > region.minAhead && fromPlayer < region.maxAhead ? nullptr : "ahead of the player, outside the window ahead";
+    }
+    if (inView) return inViewWindow ? nullptr : "in view, not 100 to 200 m from the camera";
+    return fromPlayer < kOutOfViewMost ? nullptr : "out of view, beyond 260 m";
+}
+
 void TrySpawn(const BYTE* player, const Zone& zone) {
     const bool night = [] { const int hour = GameHour(); return hour >= 18 || hour < 6; }();
     const int density = std::clamp(night ? zone.night : zone.day, 0, 3);
@@ -116,12 +224,18 @@ void TrySpawn(const BYTE* player, const Zone& zone) {
         return;
     }
     const V3 at = Pos(player);
-    for (int attempt = 0; attempt < 6; ++attempt) {
-        const float angle = Random() * 6.2831853f, distance = kMinSpawn + Random() * (kMaxSpawn - kMinSpawn);
+    if (!ClosestRoad(&at.x, false, kRoadNearPlayer, false, false)) {  // do_frame_spawn_vehicle: no road near the player, no car
+        RFA_LOG_DETAIL_FIRST(5, "Traffic: no new car: no road within 60 m of the player");
+        return;
+    }
+    const SpawnRegion region = UpdateRegion(player);
+    const char* lastWhy = nullptr;
+    for (int attempt = 0; attempt < kSpawnTries; ++attempt) {
+        const float angle = Random() * 6.2831853f, distance = kMinFromPlayer + Random() * (kRoadReach - kMinFromPlayer);
         V3 where, forward;
         if (!RoadPlace({at.x + std::cos(angle) * distance, at.y, at.z + std::sin(angle) * distance}, where, forward)) continue;
-        const float fromPlayer = Distance(where, at);
-        if (fromPlayer < kMinSpawn || fromPlayer > kMaxSpawn) continue;
+        if (Distance(where, at) > kRoadReach) continue;
+        if (const char* why = OutsideRegion(region, where)) { lastWhy = why; continue; }
         bool crowded = false;
         for (const Car& car : g_cars)
             if (BYTE* vehicle = VehicleByHandle(kWorld, nullptr, car.vehicle))
@@ -143,8 +257,17 @@ void TrySpawn(const BYTE* player, const Zone& zone) {
         if (const char* name = *reinterpret_cast<const char* const*>(entry)) pending.model = name;
         pending.since = GameTime();
         g_pending.push_back(pending);
+        {
+            V3 fromCamera{where.x - region.camera.x, where.y - region.camera.y, where.z - region.camera.z};
+            const float cameraDistance = Length(fromCamera);
+            const bool inView = cameraDistance > 0.01f && Dot(fromCamera, region.cameraForward) / cameraDistance > kFrontDot;
+            RFA_LOG_DETAIL_FIRST(60, "Traffic: a car to be made %.0f m from the player, %.0f m from the camera, %s (the player at %.1f m/s%s)",
+                                 Distance(where, at), cameraDistance, inView ? "in front of the camera" : "out of its view", Length(g_velocity),
+                                 region.ignoreMove ? ", the way he moves ignored" : "");
+        }
         return;
     }
+    if (lastWhy) RFA_LOG_DETAIL_FIRST(20, "Traffic: no place for a car this time (the last road place tried: %s)", lastWhy);
 }
 
 void MadeCar(BYTE* vehicle, const std::string& resource, const std::string& model) {
@@ -167,6 +290,28 @@ void MadeCar(BYTE* vehicle, const std::string& resource, const std::string& mode
     g_cars.push_back(car);
 }
 
+// Guerrilla's team for traffic's people. Its human::init_from_h_info (RM 0xA7C900) puts a character of team Guerilla
+// (0) on the civilians' team (2: current_team +0xC98 and undercover_team +0xC9C); only a spawn that asks for the
+// character's own team (npc_flags use_default_team, bit 8) keeps it, and traffic's never does (spawn_single_vehicle
+// RM 0xB5EE60 sets ambient_spawn and ambient_vehicle_spawn, npc_flags word 2 |= 0x240, nothing more). So in
+// Guerrilla traffic's drivers and riders are civilians, to whom the EDF is only unfriendly: it leaves them be until
+// one joins a fight. Armageddon makes them on the character's own team (0, Red Faction), to which the EDF (1) is
+// hostile, so its soldiers and gunners shot the cars as they drove by. The NPC's set_team (0x8AB200, thiscall; it
+// tells the AI too), before the person takes a seat: Armageddon's vehicle keeps the team of whoever gets in (vehicle
+// +0x4FD0, 0x64EC3F), which its AI reads.
+using SetTeamFn = bool(__fastcall*)(BYTE* npc, void* unused, int team);
+auto const SetTeam = reinterpret_cast<SetTeamFn>(0x8AB200);
+constexpr DWORD kTeam = 0x13B4;
+constexpr int kGuerrillaTeam = 0, kCivilianTeam = 2;
+
+void Civilian(BYTE* human) {
+    const int team = *reinterpret_cast<const int*>(human + kTeam);
+    if (team != kGuerrillaTeam) return;  // as init_from_h_info: only Guerilla becomes civilian
+    SetTeam(human, nullptr, kCivilianTeam);
+    RFA_LOG_DETAIL_FIRST(10, "Traffic: a driver or rider made on team %d is put on the civilians' team (now %d), as Guerrilla's traffic people are",
+                         team, *reinterpret_cast<const int*>(human + kTeam));
+}
+
 void Board(Car& car, BYTE* vehicle) {
     for (auto name = car.waiting.begin(); name != car.waiting.end();) {
         BYTE* info = HumanInfo(name->c_str());
@@ -178,6 +323,7 @@ void Board(Car& car, BYTE* vehicle) {
             else ++name;                                 // not streamed in yet: next time
             continue;
         }
+        Civilian(human);  // before the seat: the vehicle takes its driver's team as he gets in
         int enter[4] = {-1, 1, -1, 5};  // any seat, the best; teleport, minimal processing
         RequestEnter(human, vehicle, enter);
         SitOut(human);
@@ -566,6 +712,7 @@ void TrafficFrame() {
     WatchNewWalkers(player);
     const V3 at = Pos(player);
     const int now = GameTime();  // the game's clock: a pause doesn't count
+    TrackPlayerVelocity(player, now);
     const DWORD playerVehicle = *reinterpret_cast<const DWORD*>(player + kInVehicle);
 
     // The spawns waiting for their model.

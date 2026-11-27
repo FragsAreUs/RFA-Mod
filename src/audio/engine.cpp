@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,12 +21,19 @@ Engine& TheEngine()
 
 namespace {
 
-constexpr int StreamBufferFrames = 8192;                // a stream's piece: 4 of them queued (about 0.7 s at 48 kHz)
-constexpr int64_t WholeLimitBytes = 8ll << 20;          // a medium up to this decoded is decoded whole (and cached)
 constexpr int RenderPiece = 480;                        // loopback: an update every 10 ms of sound at 48 kHz
 constexpr uint32_t FirstPlayingId = 0x80000000u;        // ours never meet Wwise's (the hybrid's step 2)
 
 float DbToGain(float db) { return db <= -200 ? 0.0f : std::pow(10.0f, db / 20.0f); }
+
+// Wwise's low-pass value (0 none, 100 the most) as EFX's low-pass gain at 5 kHz: the value read as a cutoff from
+// 20 kHz down to 20 Hz (three decades), and a one-pole filter's gain at 5 kHz for that cutoff.
+float LowPassGainHF(float value)
+{
+    float cutoff = 20.0f * std::pow(10.0f, 3.0f * (1.0f - std::clamp(value, 0.0f, 100.0f) / 100.0f));
+    float ratio = 5000.0f / cutoff;
+    return std::clamp(1.0f / std::sqrt(1.0f + ratio * ratio), 0.0005f, 1.0f);
+}
 float GainToDb(float gain) { return gain <= 1e-10f ? -999.0f : 20.0f * std::log10(gain); }
 
 Vec3 Minus(const Vec3& a, const Vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
@@ -86,6 +94,9 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
     Close();
     std::lock_guard<std::mutex> hold(lock);
     if (!al.Load(why)) return false;
+    // Wwise Vorbis's codebooks, beside OpenAL Soft: without them Armageddon's media don't play (each says why).
+    std::string noVorbis;
+    LoadVorbisCodebooks((al.folder.empty() ? OwnFolder() : al.folder) + L"packed_codebooks.bin", noVorbis);
     loopback = settings.loopback != 0;
     maxSources = settings.max_sources > 0 ? settings.max_sources : 128;
     threshold = settings.volume_threshold_db < 0 ? settings.volume_threshold_db : Silent;
@@ -137,7 +148,11 @@ bool Engine::Open(const rfa_audio_settings& settings, std::string& why)
     clockRate = frequency.QuadPart;
     now = 0;
     renderedFrames = 0;
+    pausedAll = false;
+    pausedCounter = pausedSince = 0;
     nextPlayingId = FirstPlayingId;
+    inlineReads = loopback && !forceWorker;
+    if (!inlineReads) worker.Start();
     ownThread = settings.own_thread && !loopback;
     if (ownThread) {
         stopThread = false;
@@ -172,8 +187,10 @@ void Engine::Close()
         }
         thread.join();
     }
+    worker.Stop();  // before the banks go: it may be reading their media
     std::lock_guard<std::mutex> hold(lock);
     if (!context) return;
+    pausedAll = false;
     for (auto& [id, play] : plays)
         for (auto& root : play->roots) Finish(*root);
     plays.clear();
@@ -183,6 +200,16 @@ void Engine::Close()
     ends.clear();
     cache.Clear();
     for (ALuint source : freeSources) al.alDeleteSources(1, &source);
+    if (al.HasFilters())
+        for (auto& [source, filter] : sourceFilters) al.alDeleteFilters(1, &filter);
+    sourceFilters.clear();
+    actionValues.clear();
+    busActionValues.clear();
+    stateChanges.clear();
+    ducking.clear();
+    busDuckDb.clear();
+    externalOn.clear();
+    lastMixAt = 0;
     freeSources.clear();
     sourcesMade = 0;
     library.Clear();
@@ -238,6 +265,31 @@ uint32_t Engine::LoadBank(const std::wstring& bankPath, const std::wstring& medi
     return bank ? bank->id : 0;
 }
 
+uint32_t Engine::LoadBankFromArchive(const std::wstring& archive, const std::string& name, std::string& why)
+{
+    if (!context) {
+        why = "the engine isn't open";
+        return 0;
+    }
+    // One loaded already (by its header's id) is unloaded first, its sounds stopped.
+    std::string lower;
+    for (char c : name) lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    std::vector<ArchiveFile> found;
+    std::vector<bool> present;
+    if (FindInArchive(archive, {lower + ".bnk_pc"}, found, present, why) && present[0] && !found[0].compressed) {
+        MediaFile file;
+        uint8_t head[16];
+        std::string ignored;
+        if (file.Open(archive, ignored) && file.ReadAt(found[0].offset, head, sizeof head) && memcmp(head, "BKHD", 4) == 0) {
+            uint32_t id;
+            memcpy(&id, head + 12, 4);
+            UnloadBank(id);
+        }
+    }
+    Bank* bank = library.LoadFromArchive(archive, name, why);
+    return bank ? bank->id : 0;
+}
+
 void Engine::UnloadBank(uint32_t bankId)
 {
     if (!library.FindBank(bankId)) return;
@@ -259,6 +311,7 @@ void Engine::UnloadBank(uint32_t bankId)
         }
     }
     Sweep();
+    worker.ForgetBank(bankId);  // returns once the worker reads none of its media
     cache.ForgetBank(bankId);
     library.Unload(bankId);
 }
@@ -299,6 +352,9 @@ uint32_t Engine::Post(uint32_t eventId, uint64_t object)
             Execute(*action, play);
         }
     }
+    // Posted while everything is paused: what it started waits, paused, too.
+    if (pausedAll)
+        for (auto& root : play.roots) PauseVoices(*root, true);
     return id;
 }
 
@@ -331,7 +387,7 @@ uint32_t Engine::PlayMedium(uint32_t bankId, uint32_t mediumId, bool loop, uint6
     voice->loopCount = loop ? 0 : 1;
     voice->channels = info.format.channels;
     voice->rate = info.format.rate;
-    voice->codec = info.format.IsAdpcm() ? 2 : 1;
+    voice->codec = CodecOf(info.format);
     voice->length = info.Seconds();
     voice->owner = in.get();
     if (static_cast<int64_t>(info.format.frames) * info.format.channels * 2 <= WholeLimitBytes) voice->decoded = cache.Get(info, why);
@@ -413,21 +469,101 @@ void Engine::Execute(const Action& action, Play& play)
             if (auto in = Start(node, play, nullptr, action.fadeMs)) play.roots.push_back(std::move(in));
         break;
     case ActionStop:
-        StopMatching(action.target, play.object, everywhere, action.fadeMs);
+        if (action.Scope() == ScopeAll || action.Scope() == ScopeAllBut) {
+            // Every play but this one (and, for "all but", those that play the target).
+            std::vector<uint32_t> ids;
+            for (auto& [id, p] : plays) {
+                if (p.get() == &play) continue;
+                bool spared = false;
+                if (action.Scope() == ScopeAllBut)
+                    for (auto& root : p->roots)
+                        if (root->node && Matches(root->node, action.target)) spared = true;
+                if (!spared) ids.push_back(id);
+            }
+            for (uint32_t id : ids) StopPlaying(id, action.fadeMs);
+        } else {
+            StopMatching(action.target, play.object, everywhere, action.fadeMs);
+        }
         break;
     case ActionBreak:
         BreakMatching(action.target, play.object, everywhere);
         break;
+    case ActionSetState:
+        SetState(action.group, action.groupValue);
+        break;
+    case ActionSetSwitch:
+        Object(play.object).switches[action.group] = action.groupValue;
+        break;
+    case ActionPostEvent:
+        // Another event posted on the same object (Armageddon's music banks do it), with a guard against a loop.
+        if (postDepth < 8 && library.FindEvent(action.target)) {
+            postDepth++;
+            Post(action.target, play.object);
+            postDepth--;
+        }
+        break;
+    case ActionSetVolume: case ActionResetVolume: case ActionMute: case ActionUnmute:
+    case ActionSetPitch: case ActionResetPitch: case ActionSetLowPass: case ActionResetLowPass: {
+        // On a node (a bus is the mix's, step 3), for the event's object or every one; "all" resets every node's.
+        const uint32_t kind = action.Kind();
+        auto apply = [&](ActionValues& v) {
+            switch (kind) {
+            case ActionSetVolume: v.volume = action.value; break;
+            case ActionMute: v.muted = true; break;
+            case ActionUnmute: v.muted = false; break;
+            case ActionResetVolume: v.volume = 0; break;
+            case ActionSetPitch: v.pitch = action.value; break;
+            case ActionResetPitch: v.pitch = 0; break;
+            case ActionSetLowPass: v.lowPass = action.value; break;
+            case ActionResetLowPass: v.lowPass = 0; break;
+            }
+        };
+        if (action.Scope() == ScopeAll || action.Scope() == ScopeAllBut) {
+            if (kind == ActionResetVolume || kind == ActionUnmute || kind == ActionResetPitch || kind == ActionResetLowPass) {
+                for (auto& [key, v] : actionValues)
+                    if (action.Scope() == ScopeAll || key.first != action.target) apply(v);
+                for (auto& [bus, v] : busActionValues)
+                    if (action.Scope() == ScopeAll || bus != action.target) apply(v);
+            }
+        } else if (library.FindNode(action.target)) {
+            apply(actionValues[ActionKey(action.target, everywhere ? 0 : play.object)]);
+        } else if (library.FindBus(action.target)) {
+            apply(busActionValues[action.target]);  // a bus: for every sound through it
+        }
+        for (auto it = actionValues.begin(); it != actionValues.end();) it = it->second.Empty() ? actionValues.erase(it) : std::next(it);
+        for (auto it = busActionValues.begin(); it != busActionValues.end();) it = it->second.Empty() ? busActionValues.erase(it) : std::next(it);
+        break;
+    }
+    case ActionPause: case ActionResume: {
+        // The plays that play the node (on the event's object, or everywhere), or every play for "all".
+        bool all = action.Scope() == ScopeAll || action.Scope() == ScopeAllBut;
+        if (!all && !library.FindNode(action.target) && !library.FindBus(action.target)) break;
+        std::vector<uint32_t> ids;
+        for (auto& [id, p] : plays) {
+            if (p.get() == &play || (!all && !everywhere && p->object != play.object)) continue;
+            bool matches = all;
+            for (auto& root : p->roots)
+                if (root->node && Matches(root->node, action.target)) matches = action.Scope() != ScopeAllBut;
+            if (matches) ids.push_back(id);
+        }
+        for (uint32_t id : ids) PausePlay(id, action.Kind() == ActionPause);
+        break;
+    }
     default:
-        break;  // pause, resume, mute, ...: none in our banks (the hybrid's step 3 copies Armageddon's bus-wide ones)
+        break;  // the rest (bus-wide ones among them) come with the mix, step 3
     }
 }
 
 void Engine::RunPending()
 {
+    if (pausedAll) return;  // the time stands still: nothing waiting is due
     for (size_t i = 0; i < pending.size();) {
         if (pending[i].at > now) {
             i++;
+            continue;
+        }
+        if (Play* waiting = FindPlay(pending[i].playingId); waiting && waiting->paused) {
+            i++;  // its time stands still: the action waits on (ShiftTimes moves it on resuming)
             continue;
         }
         PendingAction due = pending[i];
@@ -518,6 +654,7 @@ void Engine::BreakInstance(Instance& in)
     if (v.virtualVoice && v.length > 0) v.startedAt = now - std::fmod(now - v.startedAt, v.length);
     v.loopCount = 1;
     if (v.stream) v.stream->StopLooping();
+    else if (v.feed) v.feed->stopLooping = true;  // the pieces decoded ahead still play (up to about 0.7 s)
     else if (v.source) al.alSourcei(v.source, AL_LOOPING, AL_FALSE);
 }
 
@@ -531,6 +668,7 @@ void Engine::Finish(Instance& in)
         ReleaseSource(v);
         v.ended = true;
         v.stream.reset();
+        v.load.reset();  // a read under way finishes for nothing
         liveVoices.erase(std::remove(liveVoices.begin(), liveVoices.end(), &v), liveVoices.end());
     }
     if (in.limitOwner) {
@@ -635,7 +773,7 @@ bool Engine::StartChild(Instance& in, uint32_t child, int fadeInMs)
 }
 
 // A continuous container's next child; false once its passes are played (or the pick doesn't start).
-bool Engine::StartNextPick(Instance& in)
+bool Engine::StartNextPick(Instance& in, int fadeInMs)
 {
     const Node& n = *in.node;
     int size = static_cast<int>(n.playlist.empty() ? n.children.size() : n.playlist.size());
@@ -654,7 +792,7 @@ bool Engine::StartNextPick(Instance& in)
     }
     in.picksLeft--;
     uint32_t child = Pick(in);
-    return child && StartChild(in, child, 0);
+    return child && StartChild(in, child, fadeInMs);
 }
 
 uint32_t Engine::Pick(Instance& in)
@@ -720,18 +858,107 @@ bool Engine::StartVoice(Instance& in)
 {
     const Node& n = *in.node;
     Bank* bank = library.FindBank(n.bankId);
+    if (!bank) return false;
+    // A source plug-in has no medium. Wwise's silence is a voice with no sound for its length (and a random part);
+    // the others (tone, synthesis: a few of Armageddon's) aren't played.
+    if (n.IsSourcePlugin()) {
+        if (!n.IsSilence()) return false;
+        auto silence = std::make_unique<Voice>();
+        Voice& s = *silence;
+        s.owner = &in;
+        s.silence = true;
+        s.virtualVoice = true;
+        s.loopCount = n.loopCount < 0 ? 1 : n.loopCount;
+        float more = n.silenceLess != n.silenceMore
+                         ? std::uniform_real_distribution<float>(std::min(n.silenceLess, n.silenceMore), std::max(n.silenceLess, n.silenceMore))(random)
+                         : 0.0f;
+        s.length = std::max(0.0f, n.silenceSeconds + more);
+        s.startedAt = now;
+        in.voice = std::move(silence);
+        liveVoices.push_back(&s);
+        in.play->voicesStarted++;
+        return true;
+    }
     auto voice = std::make_unique<Voice>();
-    std::string why;
-    if (!bank || !cache.Info(*bank, n.source, voice->medium, why)) return false;
     Voice& v = *voice;
     v.owner = &in;
     v.mediumId = n.source;
     v.loopCount = n.loopCount < 0 ? 1 : n.loopCount;
+    std::string why;
+    if (inlineReads) {
+        // The check: read now, in step with the time rendered.
+        if (!cache.Info(*bank, n.source, v.medium, why)) {
+            mediaFailed++;
+            return false;
+        }
+    } else {
+        // Its format not read yet, or decoded whole and not in the cache: the worker reads it, and the voice waits
+        // (counted as started, with no source) until it has (FinishLoad).
+        bool known = cache.KnownInfo(*bank, n.source, v.medium);
+        if (!known || (IsWhole(v.medium.format, v.loopCount) && !cache.Find(v.medium))) {
+            auto load = std::make_shared<MediumLoad>();
+            load->bank = bank;
+            load->mediumId = n.source;
+            load->loopCount = v.loopCount;
+            load->knownInfo = known;
+            if (known) load->info = v.medium;
+            v.load = load;
+            v.startedAt = now;
+            in.voice = std::move(voice);
+            liveVoices.push_back(&v);
+            in.play->voicesStarted++;
+            worker.Load(std::move(load));
+            return true;
+        }
+    }
+    in.voice = std::move(voice);
+    return BeginVoice(in, false);
+}
+
+// A medium the worker has read: kept, and the voice that waited for it starts (or, virtual, is heard again).
+void Engine::FinishLoad(Instance& in)
+{
+    Voice& v = *in.voice;
+    std::shared_ptr<MediumLoad> load = std::move(v.load);
+    if (load->state.load() < 0) {
+        mediaFailed++;
+        v.ended = true;
+        return;
+    }
+    cache.PutInfo(load->info);
+    v.medium = load->info;
+    std::string why;
+    if (load->whole && IsWhole(v.medium.format, v.loopCount)) {
+        v.decoded = cache.Put(load->info, load->samples, why);
+        if (!v.decoded) {
+            mediaFailed++;
+            v.ended = true;
+            return;
+        }
+    }
+    if (!v.loadToResume) {
+        if (!BeginVoice(in, true)) v.ended = true;
+        return;
+    }
+    v.loadToResume = false;
+    GameObject& object = Object(in.play->object);
+    Level level = LevelOf(in, object);
+    if (level.db >= threshold && BeginOnSource(v)) {
+        ApplySource(v, level, object);
+        al.alSourcePlay(v.source);
+    }
+}
+
+// The rest of a voice's start, its medium's format known (and, decoded whole, in the cache unless it is read now).
+// counted: it is already among the live voices and its play's voices (it waited for the worker).
+bool Engine::BeginVoice(Instance& in, bool counted)
+{
+    Voice& v = *in.voice;
+    std::string why;
     v.channels = v.medium.format.channels;
     v.rate = v.medium.format.rate;
-    v.codec = v.medium.format.IsAdpcm() ? 2 : 1;
+    v.codec = CodecOf(v.medium.format);
     v.length = v.medium.Seconds();
-    in.voice = std::move(voice);
     GameObject& object = Object(in.play->object);
     Level level = LevelOf(in, object);
     v.threeD = level.threeD;
@@ -741,6 +968,11 @@ bool Engine::StartVoice(Instance& in)
     v.distance = level.distance;
     v.levelDb = level.db + GainToDb(level.fadeGain);
     v.startedAt = now;
+    auto count = [&] {
+        if (counted) return;
+        liveVoices.push_back(&v);
+        in.play->voicesStarted++;
+    };
     if (level.db < threshold) {
         if (level.whenQuiet == WhenQuiet::End) {
             endedQuiet++;
@@ -748,25 +980,25 @@ bool Engine::StartVoice(Instance& in)
         }
         if (level.whenQuiet == WhenQuiet::Virtual) {
             v.virtualVoice = true;
-            liveVoices.push_back(&v);
-            in.play->voicesStarted++;
+            count();
             return true;
         }
     }
-    bool whole = static_cast<int64_t>(v.medium.format.frames) * v.channels * 2 <= WholeLimitBytes && v.loopCount <= 1;
-    if (whole) {
-        v.decoded = cache.Get(v.medium, why);
-        if (!v.decoded) return false;
+    if (!LimitBuses(v)) return false;  // its bus is full (Armageddon's banks)
+    if (IsWhole(v.medium.format, v.loopCount) && !v.decoded) {
+        v.decoded = cache.Get(v.medium, why);  // in the cache (or a loopback device's, read now)
+        if (!v.decoded) {
+            mediaFailed++;
+            return false;
+        }
     }
     if (!BeginOnSource(v)) {
         if (v.whenQuiet != WhenQuiet::Virtual) return false;
         v.virtualVoice = true;  // no source free: it waits, virtual, for one
-        liveVoices.push_back(&v);
-        in.play->voicesStarted++;
+        count();
         return true;
     }
-    liveVoices.push_back(&v);
-    in.play->voicesStarted++;
+    count();
     ApplySource(v, level, object);
     al.alSourcePlay(v.source);
     return true;
@@ -816,7 +1048,12 @@ void Engine::ReleaseSource(Voice& v)
         al.alDeleteBuffers(4, v.buffers);
         memset(v.buffers, 0, sizeof v.buffers);
     }
+    v.spare.clear();
     v.stream.reset();
+    if (v.feed) {
+        v.feed->cancelled = true;  // the worker drops it
+        v.feed.reset();
+    }
 }
 
 // Puts a voice on a source from its beginning: its buffer, or its stream's first pieces. Not yet playing.
@@ -835,38 +1072,65 @@ bool Engine::BeginOnSource(Voice& v)
         al.alSourcei(source, AL_LOOPING, AL_FALSE);
         al.alSourcei(source, AL_BUFFER, 0);
         std::string why;
-        v.stream = std::make_unique<Stream>();
-        if (!v.stream->Open(v.medium, v.loopCount, why)) {
-            ReleaseSource(v);
-            return false;
+        v.framesQueued = 0;
+        if (inlineReads) {
+            v.stream = std::make_unique<Stream>();
+            if (!v.stream->Open(v.medium, v.loopCount, why)) {
+                ReleaseSource(v);
+                return false;
+            }
+        } else {
+            // The worker decodes it a few pieces ahead; until the first is ready the source waits with none queued
+            // (OpenAL leaves it stopped) and ServiceStream starts it.
+            auto feed = std::make_shared<StreamFeed>();
+            if (!feed->stream.Open(v.medium, v.loopCount, why)) {
+                ReleaseSource(v);
+                return false;
+            }
+            v.feed = feed;
+            worker.Feed(std::move(feed));
         }
         al.alGenBuffers(4, v.buffers);
-        int queued = 0;
-        for (ALuint buffer : v.buffers) {
-            if (!FillStream(v, buffer)) break;
-            al.alSourceQueueBuffers(source, 1, &buffer);
-            queued++;
-        }
-        if (!queued) {
+        v.spare.assign(std::begin(v.buffers), std::end(v.buffers));
+        QueueReady(v);
+        if (inlineReads && v.spare.size() == 4) {
             ReleaseSource(v);
             return false;
         }
+        v.streamStarted = v.spare.size() < 4;
     }
     v.virtualVoice = false;
     v.everPlayed = true;
     v.startedAt = now;
-    v.framesQueued = 0;
     return true;
 }
 
 bool Engine::FillStream(Voice& v, ALuint buffer)
 {
-    if (!v.stream || v.stream->AtEnd()) return false;
-    streamScratch.resize(static_cast<size_t>(StreamBufferFrames) * v.channels);
-    int frames = v.stream->Read(streamScratch.data(), StreamBufferFrames);
+    int frames = 0;
+    if (v.feed) {
+        if (!v.feed->Take(streamScratch)) return false;
+        worker.Wake();
+        frames = v.channels > 0 ? static_cast<int>(streamScratch.size() / v.channels) : 0;
+    } else {
+        if (!v.stream || v.stream->AtEnd()) return false;
+        streamScratch.resize(static_cast<size_t>(StreamBufferFrames) * v.channels);
+        frames = v.stream->Read(streamScratch.data(), StreamBufferFrames);
+    }
     if (frames <= 0) return false;
     al.alBufferData(buffer, Format16(al, v.channels), streamScratch.data(), frames * v.channels * 2, v.rate);
+    v.framesQueued += frames;
     return true;
+}
+
+// A stream's spare buffers filled with what is ready and queued.
+void Engine::QueueReady(Voice& v)
+{
+    while (!v.spare.empty() && FillStream(v, v.spare.back())) {
+        ALuint buffer = v.spare.back();
+        al.alSourceQueueBuffers(v.source, 1, &buffer);
+        v.spare.pop_back();
+    }
 }
 
 void Engine::ServiceStream(Voice& v)
@@ -876,18 +1140,23 @@ void Engine::ServiceStream(Voice& v)
     while (processed-- > 0) {
         ALuint buffer = 0;
         al.alSourceUnqueueBuffers(v.source, 1, &buffer);
-        if (FillStream(v, buffer)) al.alSourceQueueBuffers(v.source, 1, &buffer);
+        if (buffer) v.spare.push_back(buffer);
     }
+    QueueReady(v);
     ALint state = 0, queued = 0;
     al.alGetSourcei(v.source, AL_SOURCE_STATE, &state);
     al.alGetSourcei(v.source, AL_BUFFERS_QUEUED, &queued);
+    if (state == AL_PAUSED) return;
     if (state != AL_PLAYING) {
         if (queued > 0) {
-            underruns++;  // it ran dry before it was refilled: on again
+            if (v.streamStarted) underruns++;  // it ran dry before it was refilled: on again
+            v.streamStarted = true;
             al.alSourcePlay(v.source);
-        } else {
-            v.ended = true;
+        } else if (!v.feed || v.feed->Finished()) {
+            v.ended = true;  // its last piece has played
+            if ((v.feed && v.feed->Failed()) || (v.stream && v.stream->failed)) mediaFailed++;
         }
+        // else its first pieces (or the next, after running dry) are still being read: it starts when they come
     }
 }
 
@@ -914,6 +1183,22 @@ void Engine::ApplySource(Voice& v, const Level& level, const GameObject& object)
     } else {
         al.alSource3f(v.source, AL_POSITION, 0.0f, 0.0f, 0.0f);
     }
+    // Wwise's low-pass (0-100) as an EFX low-pass on the source, set again only when it moves.
+    if (al.HasFilters() && std::abs(level.lowPass - v.appliedLowPass) > 0.5f) {
+        if (level.lowPass < 0.5f) {
+            al.alSourcei(v.source, AL_DIRECT_FILTER, AL_FILTER_NULL);
+        } else {
+            ALuint& filter = sourceFilters[v.source];
+            if (!filter) {
+                al.alGenFilters(1, &filter);
+                al.alFilteri(filter, AL_FILTER_TYPE, AL_FILTER_LOWPASS);
+            }
+            al.alFilterf(filter, AL_LOWPASS_GAIN, 1.0f);
+            al.alFilterf(filter, AL_LOWPASS_GAINHF, LowPassGainHF(level.lowPass));
+            al.alSourcei(v.source, AL_DIRECT_FILTER, static_cast<ALint>(filter));  // takes the filter's values now
+        }
+        v.appliedLowPass = level.lowPass;
+    }
 }
 
 float Engine::ParameterValue(const GameObject& object, uint32_t parameter, float distance) const
@@ -921,7 +1206,7 @@ float Engine::ParameterValue(const GameObject& object, uint32_t parameter, float
     if (auto it = object.parameters.find(parameter); it != object.parameters.end()) return it->second;
     if (parameter == GameDistance) return distance;
     if (auto it = globalParameters.find(parameter); it != globalParameters.end()) return it->second;
-    return 0.0f;
+    return library.ParameterDefault(parameter);  // init.bnk's default (0 if it gives none)
 }
 
 // A voice's level: its nodes' volumes and curves (each node up to the top), the bus's, the random ranges picked;
@@ -944,21 +1229,47 @@ Engine::Level Engine::LevelOf(const Instance& in, const GameObject& object) cons
     float curveGain = 1.0f;
     bool placed = false, prioritised = false, quietRule = false;
     const Node* n = in.node;
+    const Node* priorityNode = nullptr;
+    const Attenuation* attenuation = nullptr;
     for (int depth = 0; n && depth < 64; depth++) {
         level.db += n->volume;
         level.pitchCents += n->pitch;
+        level.lowPass += n->lowPass;
         for (const Curve& c : n->curves) {
             float x = ParameterValue(object, c.parameter, level.distance);
             if (c.property == PropertyVolume) curveGain *= c.GainAt(x);
             else if (c.property == PropertyPitch) level.pitchCents += c.ValueAt(x);
+            else if (c.property == PropertyLowPass) level.lowPass += c.ValueAt(x);
         }
+        // A state group it follows (init.bnk's states: RF4_STATES and the like): its state's values.
+        if (n->stateGroup) {
+            if (const StateGroup* g = library.FindStateGroup(n->stateGroup)) {
+                auto state = states.find(n->stateGroup);
+                if (state != states.end())
+                    if (auto v = g->states.find(state->second); v != g->states.end()) {
+                        level.db += v->second.volume;
+                        level.pitchCents += v->second.pitch;
+                        level.lowPass += v->second.lowPass;
+                    }
+            }
+        }
+        // Set by an action (set volume, pitch or low-pass; mute) on this node, for this object or every one.
+        for (uint64_t on : {object.id, uint64_t(0)})
+            if (auto set = actionValues.find(ActionKey(n->id, on)); set != actionValues.end()) {
+                level.db += set->second.volume;
+                level.pitchCents += set->second.pitch;
+                level.lowPass += set->second.lowPass;
+                if (set->second.muted) level.fadeGain = 0;
+            }
         bool top = n->parent == 0;
         if (!placed && (n->ownPositioning || top)) {
             level.threeD = n->ownPositioning && n->threeD;
+            if (level.threeD) attenuation = library.FindAttenuation(n->attenuation);
             placed = true;
         }
         if (!prioritised && (n->ownPriority || top)) {
             level.priority = n->priority;
+            priorityNode = n;
             prioritised = true;
         }
         if (!quietRule && (n->ownQuiet || top)) {
@@ -971,8 +1282,19 @@ Engine::Level Engine::LevelOf(const Instance& in, const GameObject& object) cons
         }
         n = library.FindNode(n->parent);
     }
+    // Its attenuation: volume and low-pass by the distance (Armageddon's; ours are flat).
+    if (attenuation) {
+        if (attenuation->volumeDry >= 0) curveGain *= attenuation->curves[attenuation->volumeDry].GainAt(level.distance);
+        if (attenuation->lowPass >= 0) level.lowPass += attenuation->curves[attenuation->lowPass].ValueAt(level.distance);
+        // Priority by distance: offset in full at the attenuation's end, in part nearer.
+        if (priorityNode && priorityNode->priorityByDistance && attenuation->maxDistance > 0) {
+            float part = std::min(1.0f, level.distance / attenuation->maxDistance);
+            level.priority = std::clamp(level.priority + static_cast<int>(std::lround(priorityNode->distanceOffset * part)), 0, 100);
+        }
+    }
     level.db += GainToDb(curveGain);
-    level.db += library.BusVolume(level.bus);
+    BusLevel(level.bus, level);
+    level.lowPass = std::clamp(level.lowPass, 0.0f, 100.0f);
     return level;
 }
 
@@ -980,6 +1302,16 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
 {
     Voice& v = *in.voice;
     if (v.ended) return;
+    if (v.load) {
+        if (v.load->state.load() == 0) return;  // still being read
+        FinishLoad(in);
+        if (v.ended) ReleaseSource(v);
+        return;
+    }
+    if (v.silence) {
+        if (v.loopCount != 0 && now - v.startedAt >= v.length * std::max(1, v.loopCount)) v.ended = true;
+        return;
+    }
     Level level = LevelOf(in, object);
     v.levelDb = level.db + GainToDb(level.fadeGain);
     v.distance = level.distance;
@@ -1012,9 +1344,22 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
             return;
         }
         if (!quiet) {
-            if (!v.decoded && static_cast<int64_t>(v.medium.format.frames) * v.channels * 2 <= WholeLimitBytes && v.loopCount <= 1) {
+            if (!v.decoded && IsWhole(v.medium.format, v.loopCount)) {
+                if (!inlineReads && !(v.decoded = cache.Find(v.medium))) {
+                    // Heard again, and no longer in the cache: the worker reads it, and it goes on virtual until then.
+                    auto load = std::make_shared<MediumLoad>();
+                    load->bank = v.medium.bank;
+                    load->mediumId = v.mediumId;
+                    load->loopCount = v.loopCount;
+                    load->knownInfo = true;
+                    load->info = v.medium;
+                    v.load = load;
+                    v.loadToResume = true;
+                    worker.Load(std::move(load));
+                    return;
+                }
                 std::string why;
-                v.decoded = cache.Get(v.medium, why);
+                if (!v.decoded) v.decoded = cache.Get(v.medium, why);
                 if (!v.decoded) {
                     v.ended = true;
                     return;
@@ -1034,6 +1379,10 @@ void Engine::UpdateVoice(Instance& in, GameObject& object)
 void Engine::UpdateInstance(Instance& in, GameObject& object)
 {
     if (in.finished) return;
+    if (pausedAll || (in.play && in.play->paused)) {
+        UpdatePaused(in);
+        return;
+    }
     if (in.stopping && now >= in.fade.end) {
         Finish(in);
         return;
@@ -1077,6 +1426,37 @@ void Engine::UpdateInstance(Instance& in, GameObject& object)
                                                                       std::max(n->transitionRandomMin, n->transitionRandomMax))(random);
                     in.nextAt += std::max(1.0f, wait) / 1000.0;
                 }
+            } else if (n->transitionMode == 3 && n->transitionMs > 0) {
+                // A delay: the next starts the transition's time (and its random part) after the last has ended.
+                bool playing = std::any_of(in.children.begin(), in.children.end(), [](const auto& c) { return !c->finished; });
+                if (playing) {
+                    in.nextAt = 0;
+                } else if (in.nextAt <= 0) {
+                    float wait = n->transitionMs;
+                    if (n->transitionRandomMin != 0 || n->transitionRandomMax != 0)
+                        wait += std::uniform_real_distribution<float>(std::min(n->transitionRandomMin, n->transitionRandomMax),
+                                                                      std::max(n->transitionRandomMin, n->transitionRandomMax))(random);
+                    in.nextAt = now + std::max(0.0f, wait) / 1000.0;
+                } else if (now >= in.nextAt) {
+                    in.nextAt = 0;
+                    StartNextPick(in);
+                }
+            } else if ((n->transitionMode == 1 || n->transitionMode == 2) && n->transitionMs > 0) {
+                // A crossfade: the next starts the transition's time before the newest one's sound ends, fading in as
+                // that one fades out (a container child's end isn't known ahead: it follows on as one after another).
+                Instance* newest = nullptr;
+                for (auto& c : in.children)
+                    if (!c->finished && !c->stopping) newest = c.get();
+                if (!newest) {
+                    if (std::none_of(in.children.begin(), in.children.end(), [](const auto& c) { return !c->finished; })) StartNextPick(in);
+                } else if (newest->voice && !newest->voice->load && newest->voice->length > 0 && newest->voice->loopCount == 1) {
+                    const Voice& v = *newest->voice;
+                    double left = v.length - (now - v.startedAt), overlap = n->transitionMs / 1000.0;
+                    if (left <= overlap) {
+                        StopInstance(*newest, static_cast<int>(std::max(0.0, left) * 1000));
+                        StartNextPick(in, static_cast<int>(std::min(left, overlap) * 1000));
+                    }
+                }
             } else {
                 // One after another.
                 bool playing = std::any_of(in.children.begin(), in.children.end(), [](const auto& c) { return !c->finished; });
@@ -1089,17 +1469,116 @@ void Engine::UpdateInstance(Instance& in, GameObject& object)
     if (in.children.empty() && !more) Finish(in);
 }
 
+// ---- Pausing ---------------------------------------------------------------------------------------
+
+// While paused only a stop that is due goes on (one with no fade, or whose fade has run out): nothing starts, and
+// fades, waits and containers stand still. Sources stay paused.
+void Engine::UpdatePaused(Instance& in)
+{
+    if (in.finished) return;
+    if (in.stopping && now >= in.fade.end) {
+        Finish(in);
+        return;
+    }
+    for (auto& c : in.children) UpdatePaused(*c);
+    in.children.erase(std::remove_if(in.children.begin(), in.children.end(), [](const auto& c) { return c->finished; }), in.children.end());
+    if (in.node && in.node->type != TypeSound && in.children.empty() && in.stopping) Finish(in);
+}
+
+// Pauses (or plays again) the sources of what an instance plays. Played again only if nothing still pauses it:
+// neither the pause of everything nor its own play's.
+void Engine::PauseVoices(Instance& in, bool pause)
+{
+    for (auto& c : in.children) PauseVoices(*c, pause);
+    if (!in.voice || !in.voice->source) return;
+    ALint state = 0;
+    al.alGetSourcei(in.voice->source, AL_SOURCE_STATE, &state);
+    if (pause && state == AL_PLAYING) al.alSourcePause(in.voice->source);
+    else if (!pause && state == AL_PAUSED && !pausedAll && !(in.play && in.play->paused)) al.alSourcePlay(in.voice->source);
+}
+
+// Moves an instance's times on by `seconds` (it was paused that long): its fade, its next pick, its voice's start.
+void Engine::ShiftTimes(Instance& in, double seconds)
+{
+    in.fade.start += seconds;
+    in.fade.end += seconds;
+    in.startedAt += seconds;
+    if (in.nextAt > 0) in.nextAt += seconds;
+    if (in.voice) in.voice->startedAt += seconds;
+    for (auto& c : in.children) ShiftTimes(*c, seconds);
+}
+
+void Engine::PauseAll(bool pause)
+{
+    if (!context || pause == pausedAll) return;
+    if (!loopback) {
+        LARGE_INTEGER counter;
+        QueryPerformanceCounter(&counter);
+        if (pause) {
+            ClockNow();
+            pausedSince = counter.QuadPart;
+        } else {
+            pausedCounter += counter.QuadPart - pausedSince;
+        }
+    }
+    pausedAll = pause;
+    ClockNow();
+    for (auto& [id, play] : plays)
+        for (auto& root : play->roots) PauseVoices(*root, pause);
+}
+
+void Engine::PausePlay(uint32_t playingId, bool pause)
+{
+    Play* play = FindPlay(playingId);
+    if (!context || !play || play->paused == pause) return;
+    if (pause) {
+        play->paused = true;
+        play->pausedAt = now;
+    } else {
+        double seconds = now - play->pausedAt;
+        play->paused = false;
+        for (auto& root : play->roots) ShiftTimes(*root, seconds);
+        for (PendingAction& p : pending)
+            if (p.playingId == playingId) p.at += seconds;
+    }
+    for (auto& root : play->roots) PauseVoices(*root, pause);
+}
+
+// The engine's time: the wall clock less the time everything was paused, standing still while it is (a loopback
+// device's time is the time rendered).
+void Engine::ClockNow()
+{
+    if (loopback) return;
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    int64_t at = pausedAll ? pausedSince : counter.QuadPart;
+    now = static_cast<double>(at - clockStart - pausedCounter) / static_cast<double>(clockRate);
+}
+
 // ---- Updating --------------------------------------------------------------------------------------
+
+bool Engine::Waiting()
+{
+    for (Voice* v : liveVoices) {
+        if (v->ended) continue;
+        if (v->load) return true;
+        if (v->feed && v->source && !v->feed->Finished()) {
+            ALint queued = 0;
+            al.alGetSourcei(v->source, AL_BUFFERS_QUEUED, &queued);
+            ALint processed = 0;
+            al.alGetSourcei(v->source, AL_BUFFERS_PROCESSED, &processed);
+            if (queued - processed < 2) return true;
+        }
+    }
+    return false;
+}
 
 void Engine::Update()
 {
     if (!context) return;
-    if (!loopback) {
-        LARGE_INTEGER counter;
-        QueryPerformanceCounter(&counter);
-        now = static_cast<double>(counter.QuadPart - clockStart) / static_cast<double>(clockRate);
-    }
+    ClockNow();
     RunPending();
+    UpdateMix();
     for (auto& [id, play] : plays) {
         GameObject& object = Object(play->object);
         size_t count = play->roots.size();
@@ -1197,7 +1676,182 @@ void Engine::SetSwitch(uint64_t object, uint32_t group, uint32_t value)
     else Object(object).switches[group] = value;
 }
 
-void Engine::SetState(uint32_t group, uint32_t state) { states[group] = state; }
+// A state set: the buses that follow its group move to the new state's values over the group's transition time (one
+// given for this change, or its default).
+void Engine::SetState(uint32_t group, uint32_t state)
+{
+    uint32_t from = states.count(group) ? states[group] : 0;
+    states[group] = state;
+    if (from == state) return;
+    double seconds = 0;
+    if (const StateGroup* g = library.FindStateGroup(group)) {
+        seconds = g->defaultTransitionMs / 1000.0;
+        for (const auto& t : g->transitions)
+            if ((t.from == from || t.from == 0) && (t.to == state || t.to == 0)) seconds = t.ms / 1000.0;
+    }
+    StateChange& c = stateChanges[group];
+    c.from = from;
+    c.to = state;
+    c.at = now;
+    c.seconds = seconds;
+}
+
+void Engine::NoteBus(uint32_t bus, int delta)
+{
+    int& n = externalOn[bus];
+    n = std::max(0, n + delta);
+    if (n == 0) externalOn.erase(bus);
+}
+
+// ---- The mix -------------------------------------------------------------------------------------------
+
+// A bus and its parents, up to the master bus.
+std::vector<uint32_t> Engine::BusChain(uint32_t bus) const
+{
+    std::vector<uint32_t> chain;
+    for (int depth = 0; bus && depth < 32; depth++) {
+        chain.push_back(bus);
+        const Bus* b = library.FindBus(bus);
+        bus = b ? b->parent : 0;
+    }
+    return chain;
+}
+
+float Engine::GlobalParameter(uint32_t parameter) const
+{
+    if (auto it = globalParameters.find(parameter); it != globalParameters.end()) return it->second;
+    return library.ParameterDefault(parameter);
+}
+
+// What a state does to a bus that follows its group: the state object the bus names for it, or the group's own values.
+StateValues Engine::StateValuesFor(uint32_t group, uint32_t state, const Bus* bus) const
+{
+    if (bus)
+        if (auto it = bus->stateObjects.find(state); it != bus->stateObjects.end() && it->second)
+            if (const StateValues* v = library.FindStateObject(it->second)) return *v;
+    if (const StateGroup* g = library.FindStateGroup(group))
+        if (auto it = g->states.find(state); it != g->states.end()) return it->second;
+    return StateValues{};
+}
+
+// The bus a voice goes to, and its parents: their volumes, pitch and low-pass, their curves on game parameters (the
+// volume sliders: global ones), their state group's state (moving between states over its transition), what actions
+// set on them (a mute silences), and their ducking now.
+void Engine::BusLevel(uint32_t busId, Level& level) const
+{
+    for (uint32_t id : BusChain(busId)) {
+        const Bus* b = library.FindBus(id);
+        if (!b) continue;
+        level.db += b->volume;
+        level.pitchCents += b->pitch;
+        level.lowPass += b->lowPass;
+        float gain = 1.0f;
+        for (const Curve& c : b->curves) {
+            float x = GlobalParameter(c.parameter);
+            if (c.property == PropertyVolume) gain *= c.GainAt(x);
+            else if (c.property == PropertyPitch) level.pitchCents += c.ValueAt(x);
+            else if (c.property == PropertyLowPass) level.lowPass += c.ValueAt(x);
+        }
+        level.db += GainToDb(gain);
+        if (b->stateGroup) {
+            auto state = states.find(b->stateGroup);
+            if (state != states.end()) {
+                StateValues to = StateValuesFor(b->stateGroup, state->second, b), v = to;
+                auto change = stateChanges.find(b->stateGroup);
+                if (change != stateChanges.end() && change->second.seconds > 0 && now < change->second.at + change->second.seconds) {
+                    StateValues from = StateValuesFor(b->stateGroup, change->second.from, b);
+                    float t = static_cast<float>((now - change->second.at) / change->second.seconds);
+                    v.volume = from.volume + (to.volume - from.volume) * t;
+                    v.pitch = from.pitch + (to.pitch - from.pitch) * t;
+                    v.lowPass = from.lowPass + (to.lowPass - from.lowPass) * t;
+                }
+                level.db += v.volume;
+                level.pitchCents += v.pitch;
+                level.lowPass += v.lowPass;
+            }
+        }
+        if (auto set = busActionValues.find(id); set != busActionValues.end()) {
+            level.db += set->second.volume;
+            level.pitchCents += set->second.pitch;
+            level.lowPass += set->second.lowPass;
+            if (set->second.muted) level.fadeGain = 0;
+        }
+        if (auto duck = busDuckDb.find(id); duck != busDuckDb.end()) level.db += duck->second;
+    }
+}
+
+// Ducking, once an update: a bus ducks the buses it names while something plays through it (ours, or Wwise's as the
+// game's hooks tell), down over the duck's fade-out time, and back up over its fade-in time once nothing has played
+// through it for its recovery time. A bus's ducking in all is no more than its maximum duck.
+void Engine::UpdateMix()
+{
+    double dt = std::max(0.0, now - lastMixAt);
+    lastMixAt = now;
+    std::unordered_map<uint32_t, int> on = externalOn;
+    for (const Voice* v : liveVoices)
+        if (!v->ended && !v->silence && v->bus)
+            for (uint32_t id : BusChain(v->bus)) on[id]++;
+    busDuckDb.clear();
+    for (const auto& [id, bus] : library.AllBuses()) {
+        if (bus->ducks.empty()) continue;
+        bool active = on.count(id) != 0;
+        for (const Bus::Duck& d : bus->ducks) {
+            DuckState& st = ducking[{id, d.bus}];
+            if (active) st.lastActive = now;
+            float target = active || now - st.lastActive < bus->recoveryMs / 1000.0 ? d.db : 0.0f;
+            float span = std::abs(d.db);
+            if (target < st.db) st.db = std::max(target, st.db - static_cast<float>(span * dt / std::max(0.001, d.fadeOutMs / 1000.0)));
+            else if (target > st.db) st.db = std::min(target, st.db + static_cast<float>(span * dt / std::max(0.001, d.fadeInMs / 1000.0)));
+            if (st.db < 0) busDuckDb[d.bus] += st.db;
+        }
+    }
+    for (auto& [id, db] : busDuckDb)
+        if (const Bus* b = library.FindBus(id)) db = std::max(db, b->maxDuckDb);
+}
+
+// A bus's voice limit, at a voice's start (Armageddon's own banks only: ours keep their own limits, without the bus
+// caps that cut them off on Wwise): with as many through the bus as it allows, the new one is refused, or the oldest
+// ends, as the bus says. False if refused.
+bool Engine::LimitBuses(Voice& v)
+{
+    const Instance* in = v.owner;
+    const Bank* bank = in && in->node ? library.FindBank(in->node->bankId) : nullptr;
+    if (!bank || !bank->armageddons || !v.bus) return true;
+    for (uint32_t id : BusChain(v.bus)) {
+        const Bus* b = library.FindBus(id);
+        if (!b || !b->mostAtOnce) continue;
+        int count = 0;
+        Voice* oldest = nullptr;
+        for (Voice* o : liveVoices) {
+            if (o == &v || o->ended || o->silence || !o->bus) continue;
+            std::vector<uint32_t> chain = BusChain(o->bus);
+            if (std::find(chain.begin(), chain.end(), id) == chain.end()) continue;
+            count++;
+            if (!oldest || (o->owner && oldest->owner && o->owner->serial < oldest->owner->serial)) oldest = o;
+        }
+        if (count < b->mostAtOnce) continue;
+        if (b->killNewest || !oldest) {
+            refused++;
+            return false;
+        }
+        oldest->ended = true;  // its instance finishes at its next update
+        ReleaseSource(*oldest);
+    }
+    return true;
+}
+
+// Whether something an instance plays goes through a bus.
+bool Engine::ThroughBus(const Instance& in, uint32_t bus) const
+{
+    if (in.voice && in.voice->bus) {
+        std::vector<uint32_t> chain = BusChain(in.voice->bus);
+        if (std::find(chain.begin(), chain.end(), bus) != chain.end()) return true;
+    }
+    for (const auto& c : in.children)
+        if (ThroughBus(*c, bus)) return true;
+    return false;
+}
+
 
 void Engine::RemoveObject(uint64_t object)
 {
@@ -1227,7 +1881,7 @@ int Engine::Voices(rfa_audio_voice* out, int max)
             o.rate = v->rate;
             o.loops = v->loopCount == 0;
             o.is_virtual = v->virtualVoice;
-            o.streamed = v->stream != nullptr || (!v->decoded && !v->virtualVoice);
+            o.streamed = v->stream != nullptr || v->feed != nullptr || (!v->decoded && !v->virtualVoice);
             o.three_d = v->threeD;
             o.level_db = v->levelDb;
             o.distance = v->distance;
@@ -1237,13 +1891,15 @@ int Engine::Voices(rfa_audio_voice* out, int max)
                 float seconds = 0;
                 al.alGetSourcef(v->source, AL_SEC_OFFSET, &seconds);
                 o.position_s = seconds;
-            } else if (v->stream && v->rate) {
+            } else if ((v->stream || v->feed) && v->source && v->rate) {
+                // The frames given to OpenAL, less those queued and not yet played (a loop's frames count on).
                 ALint queued = 0;
                 al.alGetSourcei(v->source, AL_BUFFERS_QUEUED, &queued);
                 float seconds = 0;
                 al.alGetSourcef(v->source, AL_SEC_OFFSET, &seconds);
-                double decodedSeconds = static_cast<double>(v->stream->Position()) / v->rate;
-                o.position_s = static_cast<float>(std::max(0.0, decodedSeconds - queued * static_cast<double>(StreamBufferFrames) / v->rate + seconds));
+                double givenSeconds = static_cast<double>(v->framesQueued) / v->rate;
+                double played = std::max(0.0, givenSeconds - queued * static_cast<double>(StreamBufferFrames) / v->rate + seconds);
+                o.position_s = static_cast<float>(v->length > 0 ? std::fmod(played, v->length) : played);
             } else {
                 o.position_s = static_cast<float>(v->length > 0 ? std::fmod(now - v->startedAt, v->length) : 0);
             }
@@ -1260,7 +1916,7 @@ void Engine::Status(rfa_audio_status& out)
     for (Voice* v : liveVoices) {
         out.voices++;
         if (v->virtualVoice) out.virtual_voices++;
-        if (v->stream) out.streams++;
+        if (v->stream || v->feed) out.streams++;
     }
     out.sources_used = sourcesMade - static_cast<int>(freeSources.size());
     out.sources = maxSources;
@@ -1270,6 +1926,7 @@ void Engine::Status(rfa_audio_status& out)
     out.voices_ended_quiet = endedQuiet;
     out.voices_stolen = stolen;
     out.underruns = underruns;
+    out.media_failed = mediaFailed;
 }
 
 // ---- Looking at a bank's tree ------------------------------------------------------------------------
@@ -1281,6 +1938,24 @@ bool Engine::MediumSeconds(const Node& sound, double& seconds, std::string& why)
     if (!bank || !cache.Info(*bank, sound.source, info, why)) return false;
     seconds = info.Seconds();
     return true;
+}
+
+std::vector<uint32_t> Engine::EventDuckingBuses(uint32_t eventId) const
+{
+    std::vector<uint32_t> found;
+    const Event* event = library.FindEvent(eventId);
+    if (!event) return found;
+    for (uint32_t actionId : event->actions) {
+        const Action* a = library.FindAction(actionId);
+        if (!a || a->Kind() != ActionPlay) continue;
+        const Node* n = library.FindNode(a->target);
+        for (int depth = 0; n && n->parent && depth < 64; depth++) n = library.FindNode(n->parent);
+        if (!n) continue;
+        for (uint32_t bus : BusChain(n->bus))
+            if (const Bus* b = library.FindBus(bus); b && !b->ducks.empty() && std::find(found.begin(), found.end(), bus) == found.end())
+                found.push_back(bus);
+    }
+    return found;
 }
 
 void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
@@ -1297,6 +1972,13 @@ void Engine::EventInfo(uint32_t eventId, rfa_audio_event_info& out)
         if (threeD) out.three_d = 1;
         for (const Curve& c : n.curves)
             if (c.parameter == GameDistance) out.farthest_m = std::max(out.farthest_m, c.LastX());
+        // An attenuation that fades (Armageddon's; ours are flat): where its volume curve ends.
+        if (n.ownPositioning && n.threeD)
+            if (const Attenuation* at = library.FindAttenuation(n.attenuation); at && at->volumeDry >= 0) {
+                const Curve& c = at->curves[at->volumeDry];
+                bool fades = std::any_of(c.points.begin(), c.points.end(), [](const CurvePoint& p) { return p.y < -0.5f; });
+                if (fades) out.farthest_m = std::max(out.farthest_m, at->maxDistance);
+            }
         if (n.type == TypeSound) {
             if (n.loopCount == 0) out.loops = 1;
             double seconds = 0;

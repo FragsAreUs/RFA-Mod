@@ -190,7 +190,7 @@ std::string ButtonName(const std::string& action) {
     static const OurKey ours[] = {
         {"MAP", keys::Map}, {"USE_BACKPACK", keys::Backpack}, {"MENU_UP_NO_STICK", keys::Up}, {"MENU_DOWN_NO_STICK", keys::Down},
         {"MENU_UP", keys::Up}, {"MENU_DOWN", keys::Down}, {"MENU_LEFT", keys::Left}, {"MENU_RIGHT", keys::Right},
-        {"MENU_START", keys::TipContinue}, {"TOOLTIP_RESUME", keys::TipContinue},
+        {"MENU_START", keys::TipContinue}, {"TOOLTIP_RESUME", keys::TipContinue}, {"GPS_MARKER", keys::GpsMarker},
     };
     for (const OurKey& k : ours)
         if (a == k.action) {
@@ -267,6 +267,8 @@ void Finish() {
 }  // namespace
 
 namespace tool_tips {
+
+std::string KeysNamed(const std::string& text) { return WithKeys(text); }
 
 void Read() {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -411,3 +413,5 @@ void Register(rfa::game::lua_State* L) {
 bool GuerrillaHud_ToolTip(const char* name, int delayMs, const char* icon) {
     return guerrilla_hud::Running() && tool_tips::Add(name, delayMs, icon);
 }
+
+bool GuerrillaHud_ToolTipPlayed(const char* name) { return guerrilla_hud::Running() && name && tool_tips::Played(name); }

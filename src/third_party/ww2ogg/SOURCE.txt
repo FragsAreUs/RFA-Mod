@@ -1,0 +1,12 @@
+packed_codebooks.bin from ww2ogg (Adam Gashlin, after the Xiph.Org Foundation's libvorbis codebooks; BSD-3-Clause:
+COPYING): the 598 standard Vorbis codebooks that the Wwise Vorbis of Red Faction: Armageddon's sounds (Wwise 2009,
+bank version 48) names by number instead of storing in each file. RFA-Mod's sound engine rebuilds each file's
+Vorbis setup header from them, as ww2ogg does. (ww2ogg's other library, packed_codebooks_aoTuV_603.bin, is for later
+Wwise: Armageddon's files don't decode with it, so it isn't kept.)
+
+Taken unchanged, fetched 2026-11-26 with the user's OK:
+  https://raw.githubusercontent.com/hcs64/ww2ogg/master/packed_codebooks.bin
+  SHA-256 442e9442aad0bbd263df4d721d6747a74d440c899978b1fab984bcbf455fd592
+  https://raw.githubusercontent.com/hcs64/ww2ogg/master/COPYING (here as COPYING)
+  SHA-256 0a12f3490863fa01539f500fc74a0e8efbfeb22852aac087c645fbd7362d6726
+Its source: https://github.com/hcs64/ww2ogg

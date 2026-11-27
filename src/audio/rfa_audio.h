@@ -3,8 +3,8 @@
  * version 48, the 8 object kinds our writer makes), played through OpenAL Soft.
  *
  * It knows nothing of the game. The editor uses it (bin\editor\rfa_audio.dll, x64) to preview our banks and
- * GuerrillaBuilder to check them without speakers (a loopback device); the game will use the same sources
- * (x86, in rfa_guerrilla.dll) to play our banks itself while Wwise keeps Armageddon's.
+ * GuerrillaBuilder to check them without speakers (a loopback device); the game uses the same sources (x86, in
+ * mods\rfa_sound.dll, built with RFA_AUDIO_STATIC) to play our banks itself while Wwise keeps Armageddon's.
  *
  * OpenAL Soft (soft_oal.dll, LGPL-2.0-or-later) is loaded from this DLL's own folder when rfa_audio_open is
  * called; without it, rfa_audio_open fails and says why.
@@ -47,6 +47,10 @@ typedef struct rfa_audio_settings {
     float volume_threshold_db; /* too quiet to hear below this (0: -96.3, Wwise's default as Armageddon's init.bnk_pc has it) */
 } rfa_audio_settings;
 
+/* Where rfa_audio_open looks for OpenAL Soft's soft_oal.dll (null or "": beside this DLL or program, the default).
+   The game's rfa_sound.dll keeps it in mods\openal\, since every DLL in mods\ is loaded as a mod. */
+RFA_AUDIO_API void rfa_audio_set_library_folder(const wchar_t* folder);
+
 /* Opens OpenAL Soft and the engine. 1 on success; else 0, with why in error. Opening again first closes. */
 RFA_AUDIO_API int rfa_audio_open(const rfa_audio_settings* settings, char* error, int error_size);
 
@@ -63,6 +67,12 @@ RFA_AUDIO_API int rfa_audio_device_info(char* text, int size);
    again. Problems that don't stop it loading (missing media, unknown children) are kept: rfa_audio_bank_problems.
    Armageddon's init.bnk_pc can be loaded the same way, for its buses' volumes (rfa_audio_bus_volume). */
 RFA_AUDIO_API uint32_t rfa_audio_load_bank(const wchar_t* bank_path, const wchar_t* media_path, char* error, int error_size);
+
+/* Loads one of Armageddon's own banks and its media in place from an archive that holds them uncompressed
+   (build\pc\cache\sounds.vpp_pc or voices.vpp_pc): bank_name without .bnk_pc ("wep_shared"). Its media are Wwise
+   Vorbis (with packed_codebooks.bin beside OpenAL Soft); voice lines' lip-sync blocks are skipped.
+   Returns the bank's id, or 0 with why in error. */
+RFA_AUDIO_API uint32_t rfa_audio_load_bank_from_archive(const wchar_t* archive, const char* bank_name, char* error, int error_size);
 
 /* Unloads a bank: its sounds stop first. */
 RFA_AUDIO_API void rfa_audio_unload_bank(uint32_t bank_id);
@@ -148,6 +158,23 @@ RFA_AUDIO_API void rfa_audio_stop_playing(uint32_t playing_id, int fade_ms);
 /* Stops everything on a game object (0: on every object). */
 RFA_AUDIO_API void rfa_audio_stop_object(uint64_t object, int fade_ms);
 
+/* Pauses a playing id (pause 1) or lets it go on (0): its sound and its time stand still meanwhile. */
+RFA_AUDIO_API void rfa_audio_pause_playing(uint32_t playing_id, int pause);
+/* Pauses everything (1) or lets it go on (0), as the game's pause does: the engine's time stands still; what is
+   posted meanwhile waits, paused; a stop with no fade still ends at once. */
+RFA_AUDIO_API void rfa_audio_pause_all(int pause);
+
+/* Every bank in one of the game's archives that holds them uncompressed (sounds.vpp_pc, voices.vpp_pc), loaded in
+   place: returns how many (-1 if it isn't such an archive, with why in error). */
+RFA_AUDIO_API int rfa_audio_load_archive_banks(const wchar_t* archive, char* error, int error_size);
+
+/* The buses an event's plays go through that duck other buses. Returns how many (fills at most max). */
+RFA_AUDIO_API int rfa_audio_event_ducking_buses(uint32_t event_id, uint32_t* buses, int max);
+
+/* A sound starts (delta 1) or ends (-1) on a bus outside this engine (Wwise's, while some banks still play there):
+   it ducks the buses that bus ducks, as a sound of ours would. */
+RFA_AUDIO_API void rfa_audio_note_bus(uint32_t bus, int delta);
+
 /* 1 while a playing id is playing or waiting to (a delayed action). */
 RFA_AUDIO_API int rfa_audio_is_playing(uint32_t playing_id);
 
@@ -211,6 +238,7 @@ typedef struct rfa_audio_status {
     int banks;
     int64_t voices_refused;   /* by a voice limit (refuse the newest) */
     int64_t voices_ended_quiet, voices_stolen, underruns;
+    int64_t media_failed;     /* voices that didn't start: their medium couldn't be read or decoded */
 } rfa_audio_status;
 
 RFA_AUDIO_API int rfa_audio_get_status(rfa_audio_status* out);

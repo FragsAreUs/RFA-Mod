@@ -27,6 +27,9 @@
 //     save's stream, so it goes wherever the save goes (the slot you pick, LOAD CHECKPOINT). When one
 //     of these worlds opens, GuerrillaCampaign_LoadState gets the save's block, or nothing (null, 0) for
 //     a world started fresh; a save made before this has no block, and the campaign is left as it is.
+//   - each save carries the world map's fog of war too (guerrilla_hud's grid of the cells you have uncovered, 32 KB, as
+//     Guerrilla's ui_system_save wrote it: GuerrillaHud_FogOfWarSave), a block of its own before the campaign's; a world
+//     started fresh, or a save without one, opens with every cell hidden (GuerrillaHud_FogOfWarLoad).
 //   - a death ends as Guerrilla's: the game-over screen (ui_failure.lua) offers CONTINUE, LOAD GAME and
 //     QUIT GAME, and CONTINUE wakes Mason at a safehouse with the world as he left it. Guerrilla saved the
 //     world at the death (world::save_and_continue) and loaded that save back, and loading a save out of
@@ -55,6 +58,7 @@
 #include "rfa_guerrilla.h"
 #include "save_api.h"
 #include "campaign/campaign_api.h"
+#include "hud/fog_of_war.h"
 #include "rfa_game.h"
 
 #include <mutex>
@@ -152,11 +156,14 @@ char g_savedLevel[64] = {};  // the name a save of a Guerrilla world opens with
 // Our blocks in a save's stream, after the game's own data, one after another: each its start mark, the
 // version, its length, the bytes, its length again, its end mark. A slot puts zeros after a save (to 512
 // bytes) and they come back with it, so they are found from the end, past any zeros, the last first.
-// The campaign's ("RFAB" .. "RFAE"), and in a respawn's save the weapons Mason had ("RFKB" .. "RFKE").
+// The campaign's ("RFAB" .. "RFAE"), in a respawn's save the weapons Mason had ("RFKB" .. "RFKE"), and the world map's
+// fog of war ("RFFB" .. "RFFE": guerrilla_hud's grid, GuerrillaHud_FogOfWarSave, as Guerrilla's ui_system_save kept it).
 constexpr DWORD kBlockStart = 0x42414652;  // "RFAB"
 constexpr DWORD kBlockEnd = 0x45414652;    // "RFAE"
 constexpr DWORD kKitStart = 0x424B4652;    // "RFKB"
 constexpr DWORD kKitEnd = 0x454B4652;      // "RFKE"
+constexpr DWORD kFogStart = 0x42464652;    // "RFFB"
+constexpr DWORD kFogEnd = 0x45464652;      // "RFFE"
 constexpr DWORD kBlockVersion = 1;
 constexpr int kBlockFrame = 20;            // the bytes around a block's own: 12 before, 8 after
 constexpr int kMostPaddingLooked = 4096;
@@ -248,10 +255,13 @@ float g_reloadOrientation[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
 
 std::mutex g_blockLock;  // the world opens on the loading thread; the rest is on the main thread
 std::vector<unsigned char> g_blockToAdd;   // taken when the world was saved, added once the save is done
+std::vector<unsigned char> g_fogToAdd;     // and the map's fog, added after it if there is room
 bool g_blockPending = false;
 bool g_loadPending = false;                 // the next gameplay step gives the campaign its state:
 bool g_loadFresh = false;                   //   (null, 0), or
 std::vector<unsigned char> g_blockToLoad;   //   this save's block
+bool g_fogPending = false;                  // the next gameplay step gives the map its fog: this save's block, or
+std::vector<unsigned char> g_fogToLoad;     //   every cell hidden (empty: a fresh world, or a save without one)
 bool g_worldOpenedPending = false;          // one of our worlds opened: the next gameplay step tells the campaign
                                             // (GuerrillaCampaign_WorldOpened), as a reload restarts neither clock nor player
 
@@ -405,9 +415,16 @@ bool __fastcall MakeSave(void* world, void* /*unused*/) {
         }
         const std::vector<unsigned char> state = CampaignState();
         if (!state.empty()) AddFramed(blocks, kBlockStart, kBlockEnd, state.data(), static_cast<int>(state.size()));
+        std::vector<unsigned char> fog;
+        const int fogSize = GuerrillaHud_FogOfWarSave(nullptr, 0);
+        if (fogSize > 0) {
+            std::vector<unsigned char> grid(fogSize);
+            if (GuerrillaHud_FogOfWarSave(grid.data(), fogSize) == fogSize) AddFramed(fog, kFogStart, kFogEnd, grid.data(), fogSize);
+        }
         std::lock_guard<std::mutex> hold(g_blockLock);
         g_blockToAdd = std::move(blocks);
-        g_blockPending = !g_blockToAdd.empty();
+        g_fogToAdd = std::move(fog);
+        g_blockPending = !g_blockToAdd.empty() || !g_fogToAdd.empty();
     }
     return made;
 }
@@ -426,26 +443,42 @@ void AddCampaignBlock() {
     std::lock_guard<std::mutex> hold(g_blockLock);
     if (!g_blockPending || SaveRunning()) return;
     g_blockPending = false;
-    const int size = Int(kSavedSize);
+    int size = Int(kSavedSize);
     const int room = Int(kSavedRoom);
     const int length = static_cast<int>(g_blockToAdd.size());
     BYTE* data = size > 0 ? SaveData(World()) : nullptr;
+    // The map's fog first, so that the campaign's blocks stay last (a build without the fog reads them from the end
+    // and stops at the first it doesn't know); left out on its own when the save has no room for it.
+    const int fogLength = static_cast<int>(g_fogToAdd.size());
+    if (data && fogLength > 0) {
+        if (size + fogLength + length > room) {
+            rfa::Log("No room for the world map's fog of war in the save (%d + %d + %d bytes of %d): it opens all hidden",
+                     size, fogLength, length, room);
+        } else {
+            memcpy(data + size, g_fogToAdd.data(), fogLength);
+            *reinterpret_cast<int*>(kSavedSize) = size + fogLength;
+            rfa::LogDetail("World map's fog of war added to the save: %d bytes after its %d", fogLength, size);
+            size += fogLength;
+        }
+    }
     if (!data) {
         rfa::Log("The save came out empty; no campaign state added");
     } else if (size + length > room) {
         rfa::Log("No room for the campaign's state in the save (%d + %d bytes of %d)", size, length, room);
-    } else {
+    } else if (length > 0) {
         memcpy(data + size, g_blockToAdd.data(), length);
         *reinterpret_cast<int*>(kSavedSize) = size + length;
         rfa::LogDetail("Campaign state added to the save: %d bytes after its %d", length, size);
     }
     g_blockToAdd.clear();
+    g_fogToAdd.clear();
 }
 
 // Our blocks in the save in memory (past any zeros a slot added), from the last back: the campaign's
-// state and a respawn's weapons, each if it has one. True if it has the campaign's.
-bool ReadSaveBlocks(void* world, std::vector<unsigned char>& campaign, bool& hasKit, Kit& kit) {
+// state, a respawn's weapons and the map's fog, each if it has one (fog empty if not). True if it has the campaign's.
+bool ReadSaveBlocks(void* world, std::vector<unsigned char>& campaign, bool& hasKit, Kit& kit, std::vector<unsigned char>& fog) {
     hasKit = false;
+    fog.clear();
     bool hasCampaign = false;
     const int size = Int(kSavedSize);
     const BYTE* data = size > 0 ? SaveData(world) : nullptr;
@@ -455,7 +488,7 @@ bool ReadSaveBlocks(void* world, std::vector<unsigned char>& campaign, bool& has
     for (int blocks = 0; blocks < kMostBlocks && end >= kBlockFrame; ++blocks) {
         DWORD tail[2];
         memcpy(tail, data + end - 8, sizeof(tail));
-        if ((tail[1] != kBlockEnd && tail[1] != kKitEnd) || tail[0] > static_cast<DWORD>(end - kBlockFrame)) break;
+        if ((tail[1] != kBlockEnd && tail[1] != kKitEnd && tail[1] != kFogEnd) || tail[0] > static_cast<DWORD>(end - kBlockFrame)) break;
         const int length = static_cast<int>(tail[0]);
         const BYTE* start = data + end - kBlockFrame - length;
         DWORD head[3];
@@ -467,6 +500,8 @@ bool ReadSaveBlocks(void* world, std::vector<unsigned char>& campaign, bool& has
         } else if (head[0] == kKitStart && tail[1] == kKitEnd && length == sizeof(Kit)) {
             memcpy(&kit, start + 12, sizeof(Kit));
             hasKit = kit.count >= 0 && kit.count <= kWeaponSlots;
+        } else if (head[0] == kFogStart && tail[1] == kFogEnd) {
+            fog.assign(start + 12, start + 12 + length);
         } else {
             break;
         }
@@ -836,11 +871,16 @@ void NoteKit() {
 void __cdecl GameplayStep() {
     StepRespawn();
     StepReload();
-    bool load = false, fresh = false, giveKit = false, opened = false;
-    std::vector<unsigned char> block;
+    bool load = false, fresh = false, giveKit = false, opened = false, loadFog = false;
+    std::vector<unsigned char> block, fog;
     Kit kit;
     {
         std::lock_guard<std::mutex> hold(g_blockLock);
+        if (g_fogPending) {
+            g_fogPending = false;
+            loadFog = true;
+            fog.swap(g_fogToLoad);
+        }
         opened = g_worldOpenedPending;
         g_worldOpenedPending = false;
         if (g_loadPending) {
@@ -855,6 +895,8 @@ void __cdecl GameplayStep() {
             kit = g_kitToGive;
         }
     }
+    if (loadFog && InGuerrillaWorld())
+        GuerrillaHud_FogOfWarLoad(fog.empty() ? nullptr : fog.data(), static_cast<int>(fog.size()));
     if (giveKit && InGuerrillaWorld())
         if (BYTE* player = static_cast<BYTE*>(reinterpret_cast<LocalPlayerFn>(kLocalPlayer)())) GiveKit(player, kit);
     if (load && InGuerrillaWorld()) {
@@ -929,10 +971,13 @@ int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool f
         g_equipSlot = -1;
         g_aliveKitTaken = false;  // noted again once he is alive in the world opened
         g_worldOpenedPending = false;
+        g_fogPending = false;
+        g_fogToLoad.clear();
         if (fresh && name && LevelIsOurs(name)) {
             g_loadPending = true;
             g_loadFresh = true;
             g_worldOpenedPending = true;
+            g_fogPending = true;  // every cell hidden, as Guerrilla's new game
         }
     }
     if (!fresh && name && name[0] == 0) {
@@ -945,13 +990,16 @@ int __fastcall OpenWorld(void* world, void* /*unused*/, const char* name, bool f
             std::vector<unsigned char> block;
             bool hasKit = false;
             Kit kit;
-            const bool hasBlock = ReadSaveBlocks(world, block, hasKit, kit);
+            std::vector<unsigned char> fog;
+            const bool hasBlock = ReadSaveBlocks(world, block, hasKit, kit, fog);
             rfa::LogDetail("Opening a save made in %s: opened by that name, so its zones get the Guerrilla world's size; %s%s",
                      g_savedLevel, hasBlock ? "it has the campaign's state" : "it has no campaign state",
                      hasKit ? (", and a respawn's weapons: " + KitText(kit)).c_str() : "");
             {
                 std::lock_guard<std::mutex> hold(g_blockLock);
                 g_worldOpenedPending = true;
+                g_fogPending = true;  // the save's fog, or all hidden if it has none
+                g_fogToLoad = std::move(fog);
                 if (hasBlock) {
                     g_loadPending = true;
                     g_loadFresh = false;

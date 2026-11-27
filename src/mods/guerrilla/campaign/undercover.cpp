@@ -28,10 +28,14 @@
 // NPC that takes him for an unfriendly ignores him, one that takes him for hostile notices him when it
 // sees him (its view and line of sight) and fights. The player's own view of the EDF (the reticle,
 // guerrilla_hud) is the other way round and stays hostile.
+//
+// The same wrap gives Guerrilla's friendly-fire clause first (friendly_fire.cpp: an allied NPC angry at the player
+// takes him for hostile), so it is made when either rule is on.
 #define RFA_MOD_NAME "guerrilla_campaign"
 #include "rfa_mod.h"
 #include "undercover.h"
 #include "alert_sources.h"
+#include "friendly_fire.h"
 #include "campaign.h"
 #include "handle_kinds.h"
 #include "liberation.h"
@@ -47,6 +51,7 @@ constexpr size_t kDispositionPrologue = 7;  // push ebp / mov ebp,esp / cmp dwor
 const BYTE kDispositionStart[kDispositionPrologue] = {0x55, 0x8B, 0xEC, 0x83, 0x7D, 0x08, 0x00};
 using DispositionFn = int(__cdecl*)(BYTE* human, BYTE* other);
 DispositionFn g_disposition = nullptr;
+bool g_undercover = false;  // the undercover rule is on (the wrap may be there for friendly fire alone)
 
 auto const TeamDisposition = reinterpret_cast<int(__cdecl*)(int team, int other)>(0x8A0460);
 constexpr DWORD kTeam = 0x13B4, kHandle = 0x68;
@@ -60,6 +65,9 @@ bool g_wasGreen = true;
 
 int __cdecl Disposition(BYTE* human, BYTE* other) {
     const int disposition = g_disposition(human, other);
+    const int effective = friendly_fire::Effective(human, other, disposition);  // get_effective_disposition's first clause
+    if (effective != disposition) return effective;
+    if (!g_undercover) return disposition;
     if (disposition != kHostile || !human || !other || human == other || other != Player() || !Playing()) return disposition;
     const int team = *reinterpret_cast<const int*>(human + kTeam);
     const int undercover = TeamDisposition(team, kCivilians);
@@ -74,23 +82,23 @@ int __cdecl Disposition(BYTE* human, BYTE* other) {
 }  // namespace
 
 void Init() {
-    if (rfa::IniInt(L"GuerrillaCampaign", L"Undercover", 1) == 0) {
+    g_undercover = rfa::IniInt(L"GuerrillaCampaign", L"Undercover", 1) != 0;
+    if (!g_undercover)
         rfa::LogDetail("Undercover: off (Undercover=0 in [GuerrillaCampaign]): the EDF take the player for an enemy at any alert level");
-        return;
-    }
+    if (!g_undercover && !friendly_fire::On()) return;
     if (memcmp(reinterpret_cast<const void*>(kDisposition), kDispositionStart, kDispositionPrologue) != 0) {
-        rfa::Log("Undercover: the game's disposition function isn't as expected; Guerrilla's undercover rule is left out");
+        rfa::Log("Undercover: the game's disposition function isn't as expected; Guerrilla's undercover rule and friendly fire are left out");
         return;
     }
     g_disposition = reinterpret_cast<DispositionFn>(rfa::HookFunction(kDisposition, kDispositionPrologue, reinterpret_cast<void*>(&Disposition)));
-    if (g_disposition)
+    if (!g_disposition)
+        rfa::Log("Undercover: could not hook the game's disposition function; the undercover rule and friendly fire are left out");
+    else if (g_undercover)
         rfa::LogDetail("Undercover: at green the EDF take the player for a civilian until he attacks them, is seen in one of their bases or the alert rises");
-    else
-        rfa::Log("Undercover: could not hook the game's disposition function; the rule is left out");
 }
 
 void Frame() {
-    if (!g_disposition) return;
+    if (!g_disposition || !g_undercover) return;
     const int now = GameTime();
     if (now >= g_lastLook && now - g_lastLook < 500) return;
     g_lastLook = now;

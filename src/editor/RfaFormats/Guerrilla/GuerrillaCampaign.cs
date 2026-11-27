@@ -34,7 +34,7 @@ public static class GuerrillaCampaign
         // The other kinds of activity, and where they spawn by themselves.
         "activity_spawn.xtbl", "activity_timed_delivery.xtbl", "activity_house_arrest.xtbl", "activity_area_defense.xtbl",
         "activity_riding_shotgun.xtbl", "activity_courier_chase.xtbl", "activity_continuous_attack.xtbl", "raid_data.xtbl",
-        "activity_tanks_a_lot.xtbl", "activity_mayhem.xtbl",
+        "activity_tanks_a_lot.xtbl", "activity_mayhem.xtbl", "convoys.xtbl",
         // Guerrilla's tweak values: what kills and propaganda do to morale.
         "tweak_table.xtbl",
     ];

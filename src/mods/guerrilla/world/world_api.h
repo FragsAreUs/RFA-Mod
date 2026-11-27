@@ -38,3 +38,7 @@ struct GuerrillaWorldBuilding {
 // collects a 250 m box once a second), at most `most` of them into `out`. Returns how many it wrote. In a world that
 // isn't ours, none. Call it on the game's thread.
 int GuerrillaWorld_Buildings(float x, float z, float halfSize, GuerrillaWorldBuilding* out, int most);
+
+// The game's Direct3D 11 device (an ID3D11Device*), for the parts that draw with it themselves (guerrilla_hud's fog of
+// war on the world map); null before the game has made it, or while the world part isn't running.
+void* GuerrillaWorld_D3DDevice();

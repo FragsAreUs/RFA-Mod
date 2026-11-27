@@ -542,6 +542,8 @@ public static partial class GuerrillaHud
         File.WriteAllLines(Path.Combine(scriptsFolder, DistrictsFile), districts);
         // Guerrilla's map icons and places, for the minimap and the world map.
         report.AddRange(GuerrillaMapIcons.Build(guerrillaCache, scriptsFolder));
+        // The cloud picture of the world map's fog of war.
+        report.AddRange(GuerrillaFogOfWar.Build(guerrillaCache, scriptsFolder));
         // What the safehouses' lockers and the ammo crates' weapon cabinet shows and goes by.
         report.AddRange(GuerrillaWeaponCabinet.Build(guerrillaCache, scriptsFolder));
         // The handbook's pages and entries.
@@ -614,6 +616,7 @@ public static partial class GuerrillaHud
         {
             files.Add(Path.Combine(scriptsFolder, DistrictsFile));
             files.Add(Path.Combine(scriptsFolder, GuerrillaMapIcons.FileName));
+            files.Add(Path.Combine(scriptsFolder, GuerrillaFogOfWar.FileName));
             files.Add(Path.Combine(scriptsFolder, GuerrillaMapIcons.RadioTagsFile));
             files.Add(Path.Combine(scriptsFolder, GuerrillaMapIcons.SafehousesFile));
             files.Add(Path.Combine(scriptsFolder, GuerrillaWeaponCabinet.FileName));

@@ -45,6 +45,7 @@
 #include "activities.h"
 #include "activity_base.h"
 #include "converts.h"
+#include "friendly_fire.h"
 #include "liberation.h"
 #include "messages.h"
 #include "save.h"
@@ -307,6 +308,8 @@ void __cdecl Died(BYTE* damage) {
     g_died(damage);
     if (!Playing()) return;
     HumanKilled(victim, attacker);
+    // Guerrilla's friendly fire: the death sound tells the guerrillas near it who killed (pain_sound_heard).
+    friendly_fire::HumanKilled(victim, attacker);
     // The activities that listen (human_died -> activity_register_death): killing spree.
     activities::ReportDeath(victim, attacker);
     // The spontaneous rising, when the EDF killed a civilian (human_died -> converts).

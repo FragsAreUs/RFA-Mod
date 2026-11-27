@@ -55,6 +55,18 @@ foreach ($dll in Get-ChildItem -LiteralPath (Join-Path $bin 'mods') -Filter '*.d
     if (-not $ours) { continue }
     $parts += @{ From = "bin\mods\$($dll.Name)"; To = "mods\$($dll.Name)" }
 }
+# OpenAL Soft's 32-bit soft_oal.dll, which mods\rfa_sound.dll plays through, in a folder of its own (the loader loads
+# every DLL in mods\ itself as a mod), with its licence, PFFFT's (a part of it), and where it came from.
+$parts += @{ From = "bin\mods\openal\soft_oal.dll"; To = "mods\openal\soft_oal.dll" }
+$parts += @{ From = "src\third_party\openal-soft\COPYING"; To = "mods\openal\soft_oal-COPYING.txt" }
+$parts += @{ From = "src\third_party\openal-soft\LICENSE-pffft"; To = "mods\openal\soft_oal-LICENSE-pffft.txt" }
+$parts += @{ From = "src\third_party\openal-soft\SOURCE.txt"; To = "mods\openal\soft_oal-SOURCE.txt" }
+# The Wwise Vorbis decoder's codebooks (ww2ogg's packed_codebooks.bin) beside it, and the licences of the parts
+# rfa_sound.dll is built with (libvorbis, libogg).
+$parts += @{ From = "src\third_party\ww2ogg\packed_codebooks.bin"; To = "mods\openal\packed_codebooks.bin" }
+$parts += @{ From = "src\third_party\ww2ogg\COPYING"; To = "mods\openal\packed_codebooks-COPYING.txt" }
+$parts += @{ From = "src\third_party\libvorbis\COPYING"; To = "mods\openal\libvorbis-COPYING.txt" }
+$parts += @{ From = "src\third_party\libogg\COPYING"; To = "mods\openal\libogg-COPYING.txt" }
 # A mod's own scripts (guerrilla_hud's, which GuerrillaBuilder.exe packs with Guerrilla's documents),
 # from src\mods: never bin\mods\<mod>\, which also holds files made from the player's own games. A part
 # of rfa_guerrilla.dll (src\mods\guerrilla\<part>\) keeps its old name for its folder in mods\
@@ -84,6 +96,11 @@ if (-not $NoEditor) {
     $parts += @{ From = "src\third_party\openal-soft\COPYING"; To = "editor\soft_oal-COPYING.txt" }
     $parts += @{ From = "src\third_party\openal-soft\LICENSE-pffft"; To = "editor\soft_oal-LICENSE-pffft.txt" }
     $parts += @{ From = "src\third_party\openal-soft\SOURCE.txt"; To = "editor\soft_oal-SOURCE.txt" }
+    # The Wwise Vorbis decoder's codebooks beside the sound engine, and the licences of what it is built with.
+    $parts += @{ From = "src\third_party\ww2ogg\packed_codebooks.bin"; To = "editor\packed_codebooks.bin" }
+    $parts += @{ From = "src\third_party\ww2ogg\COPYING"; To = "editor\packed_codebooks-COPYING.txt" }
+    $parts += @{ From = "src\third_party\libvorbis\COPYING"; To = "editor\libvorbis-COPYING.txt" }
+    $parts += @{ From = "src\third_party\libogg\COPYING"; To = "editor\libogg-COPYING.txt" }
 }
 foreach ($part in $parts) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $part.From))) { throw "Missing $($part.From): build first (or pass -Build)." }

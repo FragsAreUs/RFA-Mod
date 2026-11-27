@@ -55,6 +55,7 @@
 #include "alert_sources.h"
 #include "restricted_areas.h"
 #include "undercover.h"
+#include "friendly_fire.h"
 #include "kill_regions.h"
 #include "stealth.h"
 #include "district_commands.h"
@@ -111,6 +112,7 @@ void __cdecl ScriptFrame() {
         liberation::Enter();
         alert_sources::Enter();
         restricted_areas::Enter();
+        friendly_fire::Enter();
         kill_regions::Enter();
         stealth::Enter();
         district_commands::Enter();
@@ -130,6 +132,7 @@ void __cdecl ScriptFrame() {
         alert_sources::Frame();
         restricted_areas::Frame();
         undercover::Frame();
+        friendly_fire::Frame();
         kill_regions::Frame(g_activities && activities::AnyRunning());
         stealth::Frame();
         district_sources::Frame();
@@ -216,6 +219,7 @@ void guerrilla_campaign::Init() {
     liberation::Init();
     difficulty::Init();
     restricted_areas::Init();
+    friendly_fire::Init();  // before undercover's, whose wrap asks it
     undercover::Init();
     kill_regions::Init();
     stealth::Init();

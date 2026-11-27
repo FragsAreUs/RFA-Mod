@@ -72,8 +72,10 @@ public partial class SoundPreview : UserControl
     /// <summary>
     /// Shows a bank: loads it (and its media) into the engine, lists its events, its game parameters and switches.
     /// <paramref name="initBank"/>: Armageddon's init.bnk_pc (a file), for its buses' volumes, or null.
+    /// <paramref name="archive"/>: one of Armageddon's own archives that holds the bank and its media uncompressed
+    /// (sounds.vpp_pc, voices.vpp_pc): the bank is read there, in place (<paramref name="bankPath"/> is then its name).
     /// </summary>
-    public void ShowBank(string bankPath, string? mediaPath, string modFolder, string? initBank, string? note)
+    public void ShowBank(string bankPath, string? mediaPath, string modFolder, string? initBank, string? note, string? archive = null)
     {
         Hide();
         this.modFolder = modFolder;
@@ -97,7 +99,7 @@ public partial class SoundPreview : UserControl
         }
         try
         {
-            bankId = RfaAudio.LoadBank(bankPath, mediaPath);
+            bankId = archive != null ? RfaAudio.LoadBankFromArchive(archive, bankPath) : RfaAudio.LoadBank(bankPath, mediaPath);
         }
         catch (InvalidDataException e)
         {
@@ -115,12 +117,15 @@ public partial class SoundPreview : UserControl
         string[] problems = RfaAudio.BankProblems(bankId);
         var objects = RfaAudio.BankObjects(bankId);
         string Count(uint type, string what) => objects.Count(o => o.Type == type) is int n and > 0 ? $"{n:N0} {what}" : "";
-        DetailsBox.Text = $"{System.IO.Path.GetFileName(bankPath)}: " + string.Join(", ", new[]
+        string bankName = archive != null ? bankPath + ".bnk_pc" : System.IO.Path.GetFileName(bankPath);
+        string media = archive != null ? $"\nIts media: {bankPath}_media.bnk_pc in {System.IO.Path.GetFileName(archive)}"
+                     : mediaPath != null ? $"\nIts media: {System.IO.Path.GetFileName(mediaPath)}" : "\nNo media file beside it: its sounds can't play.";
+        DetailsBox.Text = $"{bankName}: " + string.Join(", ", new[]
             {
                 Count(4, "events"), Count(3, "actions"), Count(2, "sounds"), Count(5, "random/sequence containers"), Count(6, "switch containers"),
                 Count(9, "layer containers"), Count(7, "actor-mixers"), Count(8, "buses"),
             }.Where(s => s.Length > 0)) +
-            (mediaPath != null ? $"\nIts media: {System.IO.Path.GetFileName(mediaPath)}" : "\nNo media file beside it: its sounds can't play.") +
+            media +
             (note != null ? "\n" + note : "") +
             (problems.Length > 0 ? "\n\nProblems reading it:\n  " + string.Join("\n  ", problems) : "") +
             "\n\nPick an event to see what it plays.";
@@ -702,7 +707,7 @@ public partial class SoundPreview : UserControl
         foreach (var v in RfaAudio.Voices().Where(v => v.GameObject is SoundObject or OriginalObject))
         {
             string what = v.Codec == 3 ? "Guerrilla's original" : NameOf(v.EventId) + (v.SoundId != 0 ? $" / {v.SoundId:X8}" : "");
-            string codec = v.Codec switch { 1 => "PCM", 2 => "ADPCM", 3 => "XACT", _ => "?" };
+            string codec = v.Codec switch { 1 => "PCM", 2 => "ADPCM", 3 => "XACT", 4 => "Vorbis", _ => "?" };
             string state = (v.IsVirtual != 0 ? "virtual" : v.Streamed != 0 ? "streamed" : "whole") + (v.ThreeD != 0 ? ", 3D" : ", 2D");
             rows.Add(new VoiceRow(what, codec, $"{v.Channels} ch {v.Rate / 1000.0:0.#} kHz", v.Loops != 0 ? "yes" : "",
                                   v.LevelDb < -200 ? "silent" : $"{v.LevelDb:0.0} dB", $"{v.Distance:0.0} m",

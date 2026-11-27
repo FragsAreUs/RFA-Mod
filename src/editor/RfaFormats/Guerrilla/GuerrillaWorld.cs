@@ -84,8 +84,10 @@ public static class GuerrillaWorld
     /// the buildings' values for Mayhem, the M.O.A.B. item, and Guerrilla's text sizes on the HUD's screens.
     /// 12: the area defenses' managed layers (their given walker, tank or turret), their spawn nodes and their start
     /// objects' player starts in the campaign's markers.
+    /// 13: Guerrilla's roads in the persistent zones alone (one object each; the GPS's route and the AI's driving
+    /// across junctions).
     /// </summary>
-    public const int Format = 12;
+    public const int Format = 13;
     // The effects' emitters the game holds (guerrilla_world makes its pool 6,600) and Armageddon's own files' (639 files).
     const int EmitterRoom = 6600, ArmageddonEmitters = 3457;
 
@@ -1230,14 +1232,15 @@ public static class GuerrillaWorld
                 nodalLeftOut += nodalCount.LeftOut;
                 guardAnchorsMoved += nodalCount.GuardAnchors;
             }
-            // Guerrilla's roads (traffic's paths) and its parked vehicles' spots (see GuerrillaVehiclePlaces).
+            // Guerrilla's roads (traffic's paths) and its parked vehicles' spots (see GuerrillaVehiclePlaces): the spots
+            // here, the roads in the persistent zone alone (below).
             List<ZoneObject> roadsHere = [];
             if (guerrillaObjects.TryGetValue((col, row), out var rfgZoneObjects))
             {
                 var taken = new HashSet<uint>(zoneFile.Objects.Select(o => o.Handle));
                 var (roadObjects, spots) = GuerrillaVehiclePlaces.Convert(rfgZoneObjects, schema, taken, vehiclePlaceProblems, (corner.X, corner.Y), ZoneWidth,
                                                                           roadsMoved);
-                foreach (var placed in roadObjects.Concat(spots)) zoneFile.Insert(zoneFile.Objects.Count, placed);
+                foreach (var placed in spots) zoneFile.Insert(zoneFile.Objects.Count, placed);
                 roadsHere = roadObjects;
                 roadsPlaced += roadObjects.Count;
                 spotsPlaced += spots.Count;
@@ -1249,10 +1252,14 @@ public static class GuerrillaWorld
             kiosks.Add(zone, zoneFile.Objects);
             byte[] zoneBytes = GuerrillaMovers.WithLinks(zoneFile.ToBytes(), links);
             // The persistent zone: the player start again (as the game's own levels keep one there), and
-            // no district or mission (0, as the game's persistent zones); the zone's roads again, as Guerrilla's.
+            // no district or mission (0, as the game's persistent zones); the zone's roads, there alone. Guerrilla
+            // has each road in both, and its world keeps one object per handle (the zone's reuses the persistent
+            // one's stub); Armageddon's made a second road object while the zone was loaded, and the road search,
+            // which crosses junctions by handle, never reached a route's end on that copy (the GPS, the AI's
+            // driving). In the persistent zone alone each road is one object, always loaded, for routes anywhere.
             var persistent = ZoneFile.Create(0, 0);
             PlayerStart(persistent);
-            foreach (var road in GuerrillaVehiclePlaces.Copies(roadsHere)) persistent.Insert(persistent.Objects.Count, road);
+            foreach (var road in roadsHere) persistent.Insert(persistent.Objects.Count, road);
             zonescript.Add((zone + ".rfgzone_pc", zoneBytes));
             zonescript.Add(("p_" + zone + ".rfgzone_pc", persistent.ToBytes()));
 

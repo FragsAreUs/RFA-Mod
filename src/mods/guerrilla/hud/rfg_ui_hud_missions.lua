@@ -16,6 +16,8 @@ local SCREEN_RUNNING = 2					-- the mod's (the campaign's) screen while an activ
 local MODE_DEMOLITIONS_MASTER = 11		-- the campaign's activity modes
 local MODE_DELIVERY = 4					-- Transporter (Guerrilla Express)
 local MODE_AREA_DEFENSE = 16				-- area defense ("HEAVY METAL")
+local MODE_CONVOY = 13					-- a convoy (capture or destroy)
+local LUA_ACTIVITY_CONVOY_TYPE = 3		-- its LUA_ACTIVITY_CONVOY
 local LUA_ACTIVITY_AREA_DEFENSE_TYPE = 8	-- its LUA_ACTIVITY_AREA_DEFENSE
 local LUA_ACTIVITY_DEMOLITIONS_TYPE = 6	-- Guerrilla's LUA_ACTIVITY_DEMOLITIONS (its script's)
 local LUA_ACTIVITY_EXPRESS_TYPE = 4		-- its LUA_ACTIVITY_GUERILLA_EXPRESS
@@ -138,12 +140,13 @@ end
 
 -- MissionInfo: type, title, objective, activity info, txt1-3 (demolitions master: the structure's indicator, the time,
 -- the structure's title and label; Transporter, hud_ui_missions_get_activity_delivery_info RM 0x896910: the time left
--- and the distance to the end, its script's handle_express).
+-- and the distance to the end, its script's handle_express; a convoy: the vehicles left, the distance and the target's
+-- health).
 local function follow()
 	while true do
 		follow_diversions()
 		local screen, version, mode, title, subtitle, body, objective, timer, result, failure, limit, par, best, elapsed,
-			status, success, pro_time, out_of_range, salvage, distance = rfg_activity()
+			status, success, pro_time, out_of_range, salvage, distance, count, strength = rfg_activity()
 		local values = nil
 		local key = ""
 		if screen == SCREEN_RUNNING and mode == MODE_DEMOLITIONS_MASTER then
@@ -162,6 +165,12 @@ local function follow()
 			-- vehicles (0) or soldiers (1) icon, "kills / required" (its script's handle_area_defense)
 			values = { LUA_ACTIVITY_AREA_DEFENSE_TYPE, title, objective or "", status or 0, distance or "", "", "", n = 7 }
 			key = "ad|" .. tostring(objective) .. "|" .. tostring(status) .. "|" .. tostring(distance)
+		elseif screen == SCREEN_RUNNING and mode == MODE_CONVOY then
+			-- hud_ui_missions_get_activity_convoy_info RM 0x896790: the title, what to do, 0 capture or 1 destroy, the
+			-- vehicles left of all, the distance and the target's health (its script's handle_convoy)
+			values = { LUA_ACTIVITY_CONVOY_TYPE, title, objective or "", status or 0, count or "", distance or "", strength or "", n = 7 }
+			key = "cv|" .. tostring(objective) .. "|" .. tostring(status) .. "|" .. tostring(count) .. "|" .. tostring(distance) .. "|" ..
+				tostring(strength)
 		end
 		-- HudTimerInfo (hud_ui_missions_process_hud_timer RM 0x896DB0): area defense's 10 s out of its ring, "m:ss"
 		local shown_timer = ""

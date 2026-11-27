@@ -2384,6 +2384,8 @@ void guerrilla_gear::Init() {
     HeldInPlace();
     MasonsHammer();
     LogMeleeHits();  // its hook also gives the packs their ripple on a hit
+    nano_rifle::Init();
+    curved_trail::Init();
     // Diagnoses that change nothing in the game, each wrapping game code the player's every step or sound
     // passes through: only with Log=1.
     if (rfa::DetailLog()) {

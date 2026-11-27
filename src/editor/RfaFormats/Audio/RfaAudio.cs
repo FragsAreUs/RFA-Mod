@@ -54,6 +54,17 @@ public static class RfaAudio
         return id != 0 ? id : throw new InvalidDataException(Text(error));
     }
 
+    /// <summary>
+    /// Loads one of Armageddon's own banks and its media in place from an archive that holds them uncompressed
+    /// (sounds.vpp_pc, voices.vpp_pc); <paramref name="name"/> without .bnk_pc. Returns its id; throws with why it can't.
+    /// </summary>
+    public static uint LoadBankFromArchive(string archive, string name)
+    {
+        var error = new byte[1024];
+        uint id = rfa_audio_load_bank_from_archive(archive, Encoding.ASCII.GetBytes(name + "\0"), error, error.Length);
+        return id != 0 ? id : throw new InvalidDataException(Text(error));
+    }
+
     public static void UnloadBank(uint bank) => rfa_audio_unload_bank(bank);
 
     public static uint[] BankEvents(uint bank) => Items<uint>(n => rfa_audio_bank_events(bank, null, 0), a => rfa_audio_bank_events(bank, a, a.Length));
@@ -211,6 +222,7 @@ public static class RfaAudio
         public long CacheBytes;
         public int Banks;
         public long VoicesRefused, VoicesEndedQuiet, VoicesStolen, Underruns;
+        public long MediaFailed;  // voices that didn't start: their medium couldn't be read or decoded
     }
 
     // ---- Helpers ----
@@ -250,6 +262,8 @@ public static class RfaAudio
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_device_info(byte[] text, int size);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
     static extern uint rfa_audio_load_bank(string bankPath, string? mediaPath, byte[] error, int errorSize);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+    static extern uint rfa_audio_load_bank_from_archive(string archive, byte[] bankName, byte[] error, int errorSize);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern void rfa_audio_unload_bank(uint bank);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_events(uint bank, [Out] uint[]? ids, int max);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int rfa_audio_bank_objects(uint bank, [Out] ObjectInfo[]? info, int max);

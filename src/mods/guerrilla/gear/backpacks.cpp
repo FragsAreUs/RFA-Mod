@@ -1340,6 +1340,18 @@ auto const SkeletonBone = reinterpret_cast<int(__cdecl*)(BYTE* skeleton, const c
 // +0x55 bit 5), as the game's own prop step (0x864FE0, for a prop whose item has flags 0x6000) and its add of a
 // carried item (0x84FFF6) do after attaching it; it marks the item bound (+0x108 |= 0x20000).
 auto const BindToBones = reinterpret_cast<bool(__thiscall*)(BYTE* human, BYTE* item)>(0x850010);
+// The bind also gives the model a Havok body, which Guerrilla's worn packs never have: after marking it bound and
+// held (its function +0xB4), 0x850010 calls its function +0x9C (0x7D6B50, enable physics for an item with its
+// character instance: 0x7D2750), sets the body on collision layer 0x13 ([0x1975EA8]) with Steel-Normal, and returns
+// false without one. That body was the invisible box on his back that thrown charges landed on (the user's
+// 2026-11-25 report). Guerrilla's human_wear_prop (RM 0xAB2680) attaches the pack (set_child, attach info with
+// update_physics), follows his rig (animlib_set_parent_rig, items_3d flag 0x100) and makes its item props with
+// no_physics (0x6406); its item::enable_physics (RM 0xA65F70) is called only by weapon::launch_thrown_weapon.
+// So the body is let go at once, as Guerrilla's item::disable_physics (RM 0xA19250) does: havok_body_free(the body,
+// false, true, false), the body -1. Armageddon's free is 0x7755C0 (cdecl, the same arguments), as its own item
+// physics off (0x7D6BB0) calls it.
+auto const FreeBody = reinterpret_cast<void(__cdecl*)(DWORD body, bool, bool, bool)>(0x7755C0);
+constexpr DWORD kNoBody = 0xFFFFFFFF;
 using SetOwnerFn = void(__thiscall*)(BYTE* object, DWORD owner, int unknown);
 using TagNamedFn = int(__thiscall*)(BYTE* object, const char* name);
 const DWORD* const kCollisionSetting = reinterpret_cast<const DWORD*>(0x1975E94);
@@ -1450,12 +1462,19 @@ DWORD PutOnModel(BYTE* player, const Pack& pack, const Worn& worn) {
     }
     const bool attached = AttachToHuman(player, object, point, tag, false, true);
     const bool bound = attached && worn.characterProp.empty() && BindToBones(player, object);
+    DWORD& body = *reinterpret_cast<DWORD*>(object + kBody);  // none, as Guerrilla's worn packs (above, FreeBody)
+    const bool hadBody = body != kNoBody;
+    if (hadBody) {
+        FreeBody(body, false, true, false);
+        body = kNoBody;
+    }
     char itsOwn[96] = "";
     if (!worn.itemProp.empty())
         std::snprintf(itsOwn, sizeof itsOwn, tag >= 0 ? ", by its own tag %s (%d)" : ", its own tag %s isn't on the model: by its middle",
                       worn.itemProp.c_str(), tag);
-    rfa::LogDetail("Backpacks: %s's model %s %s (%s%s%s)", pack.name.c_str(), name.c_str(), attached ? "on his back" : "made but not attached",
-             how.c_str(), itsOwn, !worn.characterProp.empty() ? "" : bound ? ", bound to his bones" : ", NOT bound to his bones");
+    rfa::LogDetail("Backpacks: %s's model %s %s (%s%s%s%s)", pack.name.c_str(), name.c_str(), attached ? "on his back" : "made but not attached",
+             how.c_str(), itsOwn, !worn.characterProp.empty() ? "" : bound ? ", bound to his bones" : ", NOT bound to his bones",
+             hadBody ? ", its physics body let go" : "");
     if (!attached) {
         DestroyObject(kWorld, object, true);
         return 0;
@@ -1492,12 +1511,22 @@ void Dress(BYTE* player, int worn) {
     if (!wanted) return;
     if (g_dressed && now >= g_nextModelCheck) {  // a model the game has taken away (a level loaded): all again
         g_nextModelCheck = now + 1000;
-        for (DWORD handle : g_models)
-            if (!ObjectAt(kWorld, handle)) {
+        for (DWORD handle : g_models) {
+            BYTE* object = ObjectAt(kWorld, handle);
+            if (!object) {
                 g_models.clear();
                 g_dressed = nullptr;
                 break;
             }
+            DWORD& body = *reinterpret_cast<DWORD*>(object + kBody);  // one the game gave it again: let go too
+            if (body != kNoBody) {
+                static bool logged = false;
+                if (!logged) rfa::Log("Backpacks: a worn model was given a physics body again; let go (logged once)");
+                logged = true;
+                FreeBody(body, false, true, false);
+                body = kNoBody;
+            }
+        }
     }
     if (g_dressed) return;
     auto found = g_packs.find(worn);

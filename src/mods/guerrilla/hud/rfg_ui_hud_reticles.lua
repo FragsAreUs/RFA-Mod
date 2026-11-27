@@ -126,6 +126,24 @@ local function fade_armageddon(alpha)
 	end
 end
 
+-- Guerrilla's WeaponFire named the weapon the player held, or the turret's while he was on one
+-- (hud_ui_weapons_process_weapon_fire_info, RM 0x8B3090). Driving or riding he held none, so its script hid the
+-- reticle and the ammo. On a vehicle's gun the reticle and overheat meter were that gun's. Armageddon keeps naming
+-- the held weapon in a vehicle. So in one (the mod's rfg_player_on_foot), with primary_weapon_hud's target still the
+-- player rather than a vehicle's gun, the reticle and the ammo are hidden.
+local On_foot = true
+
+local function on_foot_now()
+	if _GetAnyGlobalSilent("rfg_player_on_foot") == nil then
+		return true
+	end
+	return rfg_player_on_foot() == true
+end
+
+local function weapon_held()
+	return On_foot or (Weapon[3] ~= nil and Weapon[3] ~= "player")
+end
+
 -- Each change in what shows (the reticle, the ammo) with what Armageddon gave for it, written to the log (at most
 -- SHOWN_LOG_LINES a load): to tell why the ammo may show with no reticle.
 local SHOWN_LOG_LINES = 60
@@ -133,7 +151,8 @@ local Shown_logged = 0
 local Shown_last = ""
 
 local function log_shown(reticle_shown, ammo_shown)
-	local shown = tostring(reticle_shown) .. " " .. tostring(ammo_shown) .. " " .. tostring(Reticle[1]) .. " " .. tostring(Weapon[1])
+	local shown = tostring(reticle_shown) .. " " .. tostring(ammo_shown) .. " " .. tostring(Reticle[1]) .. " " .. tostring(Weapon[1]) ..
+		" " .. tostring(On_foot) .. " " .. tostring(Weapon[3])
 	if shown == Shown_last or Shown_logged >= SHOWN_LOG_LINES or rfa_log == nil then
 		return
 	end
@@ -142,13 +161,14 @@ local function log_shown(reticle_shown, ammo_shown)
 	rfa_log("[rfg_ui_hud_reticles] reticle " .. tostring(reticle_shown) .. ", ammo " .. tostring(ammo_shown) ..
 		": reticule_hud weapon '" .. tostring(Reticle[1]) .. "' state " .. tostring(Reticle[2]) .. "; primary_weapon_hud weapon '" ..
 		tostring(Weapon[1]) .. "' ammo status " .. tostring(Weapon[7]) .. ", total " .. tostring(Weapon[8]) .. ", clip " ..
-		tostring(Weapon[10]) .. " of " .. tostring(Weapon[9]))
+		tostring(Weapon[10]) .. " of " .. tostring(Weapon[9]) .. ", target '" .. tostring(Weapon[3]) .. "', on foot " .. tostring(On_foot))
 end
 
 -- Shows or hides Guerrilla's reticle and ammo as Armageddon would show its own.
 local function show_parts()
-	local reticle_shown = not Hud_hidden and Reticle[1] ~= nil and Reticle[1] ~= "" and Reticle[2] ~= RETICULE_STATE_HIDE
-	local ammo_shown = not Hud_hidden and Weapon[7] ~= nil and Weapon[7] ~= AMMO_AREA_STATUS_HIDDEN
+	local held = weapon_held()
+	local reticle_shown = held and not Hud_hidden and Reticle[1] ~= nil and Reticle[1] ~= "" and Reticle[2] ~= RETICULE_STATE_HIDE
+	local ammo_shown = held and not Hud_hidden and Weapon[7] ~= nil and Weapon[7] ~= AMMO_AREA_STATUS_HIDDEN
 	log_shown(reticle_shown, ammo_shown)
 	vint_set_property(vint_object_find("reticle_main"), "visible", reticle_shown)
 	vint_set_property(vint_object_find("ammo_main"), "visible", ammo_shown)
@@ -281,6 +301,12 @@ function rfg_ui_hud_reticles_keep_faded()
 			if part ~= 0 then
 				vint_set_property(part, "visible", false)
 			end
+		end
+		-- Getting into or out of a vehicle changes no weapon data of Armageddon's: shown again.
+		local on_foot = on_foot_now()
+		if on_foot ~= On_foot then
+			On_foot = on_foot
+			show_parts()
 		end
 		-- The charges out change without Armageddon's weapon data changing (one detonated, one stuck): sent again.
 		if Weapon[1] ~= nil and _GetAnyGlobalSilent("rfg_charges") ~= nil then

@@ -4,13 +4,16 @@
 // Capture, difficulty, normal and evade speeds, its hours), its end point (where it sets off) and members in
 // order (role, how many people, the vehicles of its group), and its route along the roads.
 //
-// Starting, as Guerrilla's activity spawner offers them (do_activity_spawn_frame 0x7A83F0, convoys'
-// collect_spawn_objects 0x780DA0, as after the campaign: any convoy): every 4 to 6 s, one convoy at a time,
-// the end point nearest the player that is more than 150 m from it, whose hours (tod_info) include the game's
-// hour and which hasn't sent one in the last 10 minutes; none in the first [GuerrillaVehicles]
-// ConvoyWaitAfterLoad= seconds in the world (600, Guerrilla's: an end point loads with its 10 minutes set).
-// An end point Guerrilla's zones mark convoy_disabled sends none until a district is liberated (its liberation
-// clears the flag on every end point; asked of guerrilla_campaign).
+// Who sends them: in Guerrilla every convoy is its convoy activity's (activity_convoy_data): the natural spawner
+// offers one (do_activity_spawn_frame 0x7A83F0), and the activity watches it and steers it (attacked, every role to
+// break and attack, the break-and-attack squads let go, the capture target's crew, the end). While guerrilla_campaign
+// runs its activities that is so here too (its convoy.cpp, through the GuerrillaVehicles_Convoy* calls below). Without
+// them (guerrilla_campaign off, or its Activities=0) this part sends its own, as Guerrilla's spawner would after the
+// campaign (convoys' collect_spawn_objects 0x780DA0: any convoy): every 4 to 6 s, one convoy at a time, the end point
+// nearest the player that is more than 150 m from it, whose hours (tod_info) include the game's hour and which hasn't
+// sent one in the last 10 minutes; none in the first [GuerrillaVehicles] ConvoyWaitAfterLoad= seconds in the world
+// (600, Guerrilla's: an end point loads with its 10 minutes set). Such a convoy also decides for itself when it's
+// attacked, and what then happens (below).
 // Its crews are EDF people of the zone's spawn resource (crews.txt), as many as its squad has (1, 2, 4 or 7;
 // at most the seats).
 //
@@ -27,15 +30,23 @@
 // far its place is ahead of it − 0.4 (the convoy's speed + 5 m/s while more than 12.5 m off it; braking at
 // 1 m/s or less), stopping 5 m short with no braking at the end.
 //
-// Attacked (update_attacked_status: a vehicle at least 1 % damaged with its crew fighting the player or the
-// player near, or someone of it killed or a vehicle lost): the evade speed; its Break and Attack vehicles leave
-// the convoy and chase the player (crews.cpp); a Capture convoy's target's crew gets out, so the player can
-// take it. Ending: at the route's end the targets stay parked, their crews out to guard them, and the others go
-// once out of sight; with no vehicle left it's over. Which wins and rewards are the campaign's.
+// The activity's convoy: attacked (its own flag, latched) once a vehicle of it is at least 1 % damaged with its crew
+// fighting the player; the rest is the activity's. At the route's end (convoy_at_destination 0x7AD460,
+// convert_despawning_squad 0x7AD320) its targets still in line park, locked for the player and NPC drivers, their crews
+// out to defend them, and every other member goes once out of sight; it is then over. Not ported: Guerrilla's
+// update_npc_beliefs (each crew member told of the player every 1-3 s while it runs: Armageddon's call for it isn't
+// found) and m_scripted_abandon on the running capture target (what Armageddon's AI does with it isn't known).
+//
+// A convoy of its own: attacked (update_attacked_status: a vehicle at least 1 % damaged with its crew fighting the
+// player or the player near, or someone of it killed or a vehicle lost): the evade speed; its Break and Attack vehicles
+// leave the convoy and chase the player (crews.cpp); a Capture convoy's target's crew gets out, so the player can take
+// it. Ending: at the route's end the targets stay parked, their crews out to guard them, and the others go once out of
+// sight; with no vehicle left it's over.
 #define RFA_MOD_NAME "guerrilla_vehicles"
 #include "rfa_mod.h"
 #include "rfa_guerrilla.h"
 #include "campaign/campaign_api.h"
+#include "vehicles_api.h"
 #include "crews.h"
 #include <algorithm>
 #include <fstream>
@@ -69,16 +80,24 @@ std::vector<Definition> g_definitions;
 
 struct Member {
     const MemberInfo* info;
+    Role role;                 // its role now (every one break and attack once the activity says so)
     Crew crew;
     VehicleSpawn spawn;
     bool spawning = false, gone = false, left = false;
+    DWORD vehicle = kNone;     // the vehicle made for it, kept after it left the line (the activity counts it)
+    bool driverless = false;   // its crew lost the wheel
     Chase chase;
     int routeIndex = 0;
+    int nextExitAsk = 0;       // the capture target's crew: when to ask them out again (the game's clock)
+    bool abandoning = false;   // the capture target, its crew asked out: braked, no longer driven along the route
 };
 struct Convoy {
     Definition* def;
     std::vector<Member> members;
     bool spawned = false, attacked = false, ended = false;
+    bool forActivity = false;  // the campaign's convoy activity's
+    bool atDestination = false;
+    bool targetMayExit = false;
     float ghost = 0;  // how far along the route the lead is, while it's only a point
     int next = 1;     // the next route point for the lead
     int lastTime = -1;
@@ -89,6 +108,14 @@ bool g_inWorld = false;
 
 constexpr float kSpacing = 20.0f, kSpawnRange = 300.0f, kGhostRange = 450.0f, kPassed = 20.0f, kMinStart = 150.0f;
 constexpr int kCooldown = 600000;
+// The vehicle's second flags word (Guerrilla's +0x3F28, Armageddon's +0x4FB4, its bits above 16 one higher than
+// Guerrilla's): player_may_capture (bit 17), disable_for_npc_drivers (18), disable_for_player (19).
+constexpr DWORD kVehicleFlags2 = 0x4FB4, kPlayerMayCapture = 1u << 17, kLocked = (1u << 18) | (1u << 19);
+
+bool IsDead(BYTE* object) {  // the object's own answer (its fifth virtual function)
+    using Fn = bool(__fastcall*)(BYTE* self, void* unused);
+    return (*reinterpret_cast<Fn**>(object))[4](object, nullptr);
+}
 
 bool ReadConvoys() {
     std::ifstream file(rfa::RootDir() + L"\\mods\\guerrilla_vehicles\\convoys.txt");
@@ -184,6 +211,21 @@ bool AnyDistrictLiberated() {
     return false;
 }
 
+void SetOff(Definition& def, int clock, bool forActivity) {
+    Convoy convoy;
+    convoy.def = &def;
+    convoy.forActivity = forActivity;
+    for (const MemberInfo& info : def.members) {
+        Member member;
+        member.info = &info;
+        member.role = info.role;
+        convoy.members.push_back(member);
+    }
+    convoy.ghost = kSpacing * (convoy.members.size() - 1);  // the lead, furthest ahead
+    convoy.lastTime = clock;
+    g_convoys.push_back(convoy);
+}
+
 void TryStart(const BYTE* player, int clock) {
     const V3 at = Pos(player);
     Definition* best = nullptr;
@@ -195,16 +237,7 @@ void TryStart(const BYTE* player, int clock) {
     }
     if (!best) return;
     best->nextAllowed = clock + kCooldown;
-    Convoy convoy;
-    convoy.def = best;
-    for (const MemberInfo& info : best->members) {
-        Member member;
-        member.info = &info;
-        convoy.members.push_back(member);
-    }
-    convoy.ghost = kSpacing * (convoy.members.size() - 1);  // the lead, furthest ahead
-    convoy.lastTime = clock;
-    g_convoys.push_back(convoy);
+    SetOff(*best, clock, false);
     RFA_LOG_DETAIL_FIRST(40, "Convoys: %s sets off (%s, %u vehicles, from %s, %.0f m away)", best->name.c_str(), best->capture ? "capture" : "destroy",
                   static_cast<unsigned>(best->members.size()), best->district.c_str(), FlatDistance(best->at, at));
 }
@@ -237,6 +270,7 @@ void TakeAway(Convoy& convoy) {  // its vehicles and people gone at once (back t
         member.spawning = false;
         if (!member.gone) Despawn(member.crew);
         member.crew = Crew{};  // made afresh when it comes back
+        if (!member.gone) member.vehicle = kNone;
     }
     convoy.spawned = false;
 }
@@ -249,18 +283,22 @@ void Retire(Convoy& convoy) {
         }
 }
 
+// The vehicle's second flags word.
+DWORD& Flags2(BYTE* vehicle) { return *reinterpret_cast<DWORD*>(vehicle + kVehicleFlags2); }
+
 void Attacked(Convoy& convoy, const BYTE* player, const char* why) {
     convoy.attacked = true;
     RFA_LOG_DETAIL_FIRST(40, "Convoys: %s is attacked (%s)", convoy.def->name.c_str(), why);
+    if (convoy.forActivity) return;  // what follows is the activity's
     for (Member& member : convoy.members) {
         if (member.gone) continue;
         BYTE* vehicle = VehicleByHandle(kWorld, nullptr, member.crew.vehicle);
         if (!vehicle) continue;
-        if (member.info->role == Role::Attack) {
+        if (member.role == Role::Attack) {
             member.left = true;
             member.chase = Chase{};
             member.chase.target = Handle(player);
-        } else if (member.info->role == Role::Target && convoy.def->capture) {
+        } else if (member.role == Role::Target && convoy.def->capture) {
             GetOut(member.crew, vehicle, false);  // Guerrilla's m_scripted_abandon: its crew bails out, the player may take it
             member.gone = true;
         }
@@ -269,10 +307,28 @@ void Attacked(Convoy& convoy, const BYTE* player, const char* why) {
 
 void AtDestination(Convoy& convoy) {
     RFA_LOG_DETAIL_FIRST(40, "Convoys: %s reached its destination", convoy.def->name.c_str());
+    if (convoy.forActivity) {
+        // convoy_at_destination: each target still in line parked (persistent no more, DEFEND orders at its vehicle, its
+        // crew out, the vehicle locked: 0x60000 in Guerrilla's flags); every other member despawned out of sight
+        // (request_despawn_all_members), the ones chasing the player too.
+        for (Member& member : convoy.members) {
+            BYTE* vehicle = member.crew.vehicle != kNone ? VehicleByHandle(kWorld, nullptr, member.crew.vehicle) : nullptr;
+            if (vehicle && member.role == Role::Target && !member.left && !member.gone) {
+                Flags2(vehicle) |= kLocked;
+                GetOut(member.crew, vehicle, false);
+            } else if (!member.crew.people.empty() || member.crew.vehicle != kNone) {
+                RetireWhenUnseen(member.crew);
+            }
+            member.gone = true;
+        }
+        convoy.atDestination = true;
+        convoy.ended = true;
+        return;
+    }
     for (Member& member : convoy.members) {
         if (member.gone || member.left) continue;
         BYTE* vehicle = VehicleByHandle(kWorld, nullptr, member.crew.vehicle);
-        if (vehicle && member.info->role == Role::Target) GetOut(member.crew, vehicle, false);  // parked, its crew guarding it
+        if (vehicle && member.role == Role::Target) GetOut(member.crew, vehicle, false);  // parked, its crew guarding it
         else RetireWhenUnseen(member.crew);
         member.gone = true;
     }
@@ -285,11 +341,16 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
     const V3 at = Pos(player);
     const float dt = std::clamp((clock - convoy.lastTime) / 1000.0f, 0.0f, 0.25f);
     convoy.lastTime = clock;
+    if (convoy.forActivity && convoy.atDestination) return true;  // kept for the activity, which ends it
 
     if (!convoy.spawned) {  // only a point on the route
         convoy.ghost += def.normal * dt;
         if (convoy.ghost >= RouteLength(def)) {
             RFA_LOG_DETAIL_FIRST(40, "Convoys: %s reached its destination unseen", def.name.c_str());
+            if (convoy.forActivity) {
+                convoy.atDestination = convoy.ended = true;
+                return true;
+            }
             return false;
         }
         if (Distance(PointAt(def, convoy.ghost), at) < kSpawnRange && !BeginSpawning(convoy)) {
@@ -313,7 +374,9 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
             TakeAway(convoy);
             return false;
         }
-        member.crew.vehicle = Handle(vehicle);
+        member.crew.vehicle = member.vehicle = Handle(vehicle);
+        // set_ready_flags (0x780A90): a capture convoy's target may be taken by the player (player_may_capture).
+        if (convoy.forActivity && def.capture && member.role == Role::Target) Flags2(vehicle) |= kPlayerMayCapture;
         const int seats = (std::max)(1, Seats(vehicle));
         if (const auto* people = People(ResourceAt(Pos(vehicle)), "EDF"))
             for (int i = 0; i < (std::min)(seats, member.info->people); ++i) member.crew.waiting.push_back((*people)[std::rand() % people->size()]);
@@ -350,13 +413,39 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
             if (Settling(member.crew)) continue;
             HandBack(member.crew, vehicle);  // its driver dead or out
             member.gone = true;
+            member.driverless = true;
             lostOne = true;
             continue;
         }
-        if (!convoy.attacked && (LostSomeone(member.crew) || (Damage(vehicle) >= 0.01f && (NoticedPlayer(member.crew) || Distance(where, at) < 120.0f))))
+        // The activity's capture target: its crew out as soon as they may (process_target_driver_flags: 30 % damaged or
+        // stood still over 2 s), moving or not. Guerrilla's target squad has m_scripted_abandon (set_active_flags_capture
+        // RM 0x76AFB0: the target role's member flags 0x28, player_may_capture and m_scripted_abandon), and with it
+        // get_out_of_vehicle_action::get_cost (RM 0x66FAB0) leaves the speed out (the action then jumps from a moving
+        // car: ai_vehicle_should_get_out_of_moving_vehicle RM 0x5F4200). Waiting here for it to slow below 1.5 m/s kept
+        // the crew in a target that drove on under fire (2026-11-26 14:41: no way to take it). The car is braked and
+        // everyone asked out, again each second while the driver is still in it (an exit the game refuses at speed is
+        // asked again as it slows); once he's out, the driver check above hands it back and the convoy all attacks
+        // (update_target_vehicle_driver RM 0x780B30).
+        if (convoy.forActivity && def.capture && member.role == Role::Target && (convoy.targetMayExit || member.abandoning) && !member.left) {
+            member.abandoning = true;  // out of the line: not driven any more (the lead and followers below)
+            const int now = GameTime();
+            if (now >= member.nextExitAsk) {
+                member.nextExitAsk = now + 1000;
+                RFA_LOG_DETAIL_FIRST(20, "Convoys: %s's capture target 0x%08lX: its crew may get out, asked out at %.1f m/s", def.name.c_str(),
+                                     static_cast<unsigned long>(Handle(vehicle)), member.crew.speed);
+                GetOut(member.crew, vehicle, false);
+            }
+            continue;
+        }
+        if (convoy.attacked) continue;
+        if (convoy.forActivity) {
+            // object_convoy's attacked flag: a vehicle of it at least 1 % damaged while its crew fights the player.
+            if (Damage(vehicle) >= 0.01f && NoticedPlayer(member.crew)) Attacked(convoy, player, "a vehicle was damaged while its crew fights you");
+        } else if (LostSomeone(member.crew) || (Damage(vehicle) >= 0.01f && (NoticedPlayer(member.crew) || Distance(where, at) < 120.0f))) {
             Attacked(convoy, player, LostSomeone(member.crew) ? "someone of it was killed" : "a vehicle was damaged");
+        }
     }
-    if (!convoy.attacked && lostOne && !convoy.ended) Attacked(convoy, player, "a vehicle was lost");
+    if (!convoy.forActivity && !convoy.attacked && lostOne && !convoy.ended) Attacked(convoy, player, "a vehicle was lost");
 
     // Far from everyone, not yet attacked: back to a point on the route.
     if (!convoy.attacked && !convoy.ended && nearest > kGhostRange && !anyInView) {
@@ -383,13 +472,14 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
         else if (result == ChaseResult::Over && vehicle) HandBack(member.crew, vehicle);
         member.gone = true;
     }
-    if (convoy.ended) return chasing;
+    if (convoy.ended) return chasing || convoy.forActivity;
 
     // The lead and its followers, in order.
     Member* lead = nullptr;
     for (Member& member : convoy.members)
-        if (!member.gone && !member.left) { lead = &member; break; }
+        if (!member.gone && !member.left && !member.abandoning) { lead = &member; break; }
     if (!lead) {
+        if (convoy.forActivity) return true;  // nobody left in line: the activity decides what that means
         if (!chasing) RFA_LOG_DETAIL_FIRST(40, "Convoys: %s is over (no vehicle of it left)", def.name.c_str());
         convoy.ended = true;
         return chasing;
@@ -402,13 +492,13 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
         if (FlatDistance(leadAt, def.route[convoy.next + k]) <= kPassed) { convoy.next += k + 1; break; }
     if (convoy.next >= static_cast<int>(def.route.size())) {
         AtDestination(convoy);
-        return chasing;
+        return chasing || convoy.forActivity;
     }
     const float speed = convoy.attacked ? def.evade : def.normal;
     float leadSpeed = speed, gap = 0;
     const Member* previous = nullptr;
     for (const Member& member : convoy.members) {
-        if (member.gone || member.left) continue;
+        if (member.gone || member.left || member.abandoning) continue;
         if (previous)
             if (BYTE* a = VehicleByHandle(kWorld, nullptr, previous->crew.vehicle))
                 if (BYTE* b = VehicleByHandle(kWorld, nullptr, member.crew.vehicle)) gap = (std::max)(gap, FlatDistance(Pos(a), Pos(b)));
@@ -429,7 +519,7 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
     // Followers: each 20 m behind the vehicle ahead, along the route.
     Member* ahead = lead;
     for (Member& member : convoy.members) {
-        if (&member == lead || member.gone || member.left) continue;
+        if (&member == lead || member.gone || member.left || member.abandoning) continue;
         BYTE* vehicle = VehicleByHandle(kWorld, nullptr, member.crew.vehicle);
         BYTE* aheadVehicle = VehicleByHandle(kWorld, nullptr, ahead->crew.vehicle);
         BYTE* follower = vehicle ? Driver(member.crew, vehicle) : nullptr;
@@ -448,6 +538,20 @@ bool ConvoyFrame(Convoy& convoy, BYTE* player, int clock) {
         }
         ahead = &member;
     }
+    return true;
+}
+
+Convoy* ActivityConvoy() {
+    for (Convoy& convoy : g_convoys)
+        if (convoy.forActivity) return &convoy;
+    return nullptr;
+}
+
+// Whether the people made for a crew are all dead or gone (squad_killed); false while none was made.
+bool AllLost(const Crew& crew) {
+    if (crew.people.empty() || !crew.waiting.empty()) return false;
+    for (const Person& person : crew.people)
+        if (BYTE* human = HumanByHandle(kWorld, nullptr, person.handle); human && !IsDead(human)) return false;
     return true;
 }
 
@@ -483,9 +587,163 @@ void ConvoysFrame() {
             convoy = g_convoys.erase(convoy);
         }
     }
+    // The campaign's convoy activity sends them while it runs (its natural spawner).
+    if (GuerrillaCampaign_RunsConvoys()) return;
     if (!g_convoys.empty() || clock - g_enteredWorld < g_waitAfterLoad || clock < g_nextTry) return;
     g_nextTry = clock + RandomBetween(4000, 6000);
     TryStart(player, clock);
 }
 
 }  // namespace gv
+
+using namespace gv;
+
+bool GuerrillaVehicles_PlayerInSafehouse() { return guerrilla_vehicles::Running() && PlayerInSafehouse(); }
+
+bool GuerrillaVehicles_ConvoySpawn(const char* name) {
+    if (!guerrilla_vehicles::Running() || !name || !InTrafficWorld()) return false;
+    // One out at a time; a finished activity convoy still kept (its end not told yet) makes room.
+    for (auto convoy = g_convoys.begin(); convoy != g_convoys.end();)
+        if (convoy->forActivity && convoy->ended) {
+            Retire(*convoy);
+            convoy = g_convoys.erase(convoy);
+        } else {
+            ++convoy;
+        }
+    if (!g_convoys.empty()) {
+        rfa::Log("Convoys: %s can't set off: %s is out", name, g_convoys.front().def->name.c_str());
+        return false;
+    }
+    for (Definition& def : g_definitions)
+        if (_stricmp(def.name.c_str(), name) == 0) {
+            SetOff(def, GameTime(), true);
+            rfa::LogDetail("Convoys: %s sets off for the convoy activity (%s, %u vehicles, from %s)", def.name.c_str(), def.capture ? "capture" : "destroy",
+                           static_cast<unsigned>(def.members.size()), def.district.c_str());
+            return true;
+        }
+    rfa::Log("Convoys: no convoy %s in mods\\guerrilla_vehicles\\convoys.txt (build the vehicles again)", name);
+    return false;
+}
+
+bool GuerrillaVehicles_ConvoyStatus(GuerrillaVehiclesConvoyState* state, GuerrillaVehiclesConvoyMember* members, int most) {
+    if (!state || state->size < static_cast<int>(sizeof(GuerrillaVehiclesConvoyState))) return false;
+    const Convoy* convoy = guerrilla_vehicles::Running() ? ActivityConvoy() : nullptr;
+    if (!convoy) return false;
+    const Definition& def = *convoy->def;
+    state->members = static_cast<int>(convoy->members.size());
+    state->simulated = convoy->spawned ? 0 : 1;
+    state->routePoints = static_cast<int>(def.route.size());
+    int next = convoy->next;
+    if (!convoy->spawned) {  // a point: the route point after the one it passed
+        PointAt(def, convoy->ghost, nullptr, &next);
+        ++next;
+    }
+    state->nextPoint = convoy->atDestination ? state->routePoints : next;
+    state->atDestination = convoy->atDestination ? 1 : 0;
+    state->attacked = convoy->attacked ? 1 : 0;
+    for (int i = 0; i < state->members && i < most && members; ++i) {
+        const Member& member = convoy->members[i];
+        GuerrillaVehiclesConvoyMember& out = members[i];
+        out = GuerrillaVehiclesConvoyMember{};
+        out.role = static_cast<int>(member.role);
+        out.vehicle = member.vehicle;
+        BYTE* vehicle = member.vehicle != kNone ? VehicleByHandle(kWorld, nullptr, member.vehicle) : nullptr;
+        out.vehicleKilled = member.vehicle != kNone && (!vehicle || IsDead(vehicle)) ? 1 : 0;
+        out.squadKilled = AllLost(member.crew) ? 1 : 0;
+        out.leftConvoy = member.left ? 1 : 0;
+        out.driverless = member.driverless ? 1 : 0;
+        out.noticedPlayer = !member.crew.people.empty() && NoticedPlayer(member.crew) ? 1 : 0;
+        out.damage = vehicle ? Damage(vehicle) : 0.0f;
+        out.speed = vehicle && !member.gone ? member.crew.speed : 0.0f;
+        const V3 where = vehicle ? Pos(vehicle) : PointAt(def, convoy->ghost - kSpacing * i);
+        out.x = where.x;
+        out.y = where.y;
+        out.z = where.z;
+    }
+    return true;
+}
+
+void GuerrillaVehicles_ConvoyAttacked() {
+    if (Convoy* convoy = guerrilla_vehicles::Running() ? ActivityConvoy() : nullptr; convoy && !convoy->attacked) {
+        convoy->attacked = true;
+        RFA_LOG_DETAIL_FIRST(40, "Convoys: %s is attacked (its activity runs)", convoy->def->name.c_str());
+    }
+}
+
+void GuerrillaVehicles_ConvoyAllAttack() {
+    if (Convoy* convoy = guerrilla_vehicles::Running() ? ActivityConvoy() : nullptr)
+        for (Member& member : convoy->members) member.role = Role::Attack;
+}
+
+void GuerrillaVehicles_ConvoyReleaseAttackers() {
+    Convoy* convoy = guerrilla_vehicles::Running() ? ActivityConvoy() : nullptr;
+    BYTE* player = Player();
+    if (!convoy || !player || convoy->ended) return;
+    for (Member& member : convoy->members) {
+        if (member.role != Role::Attack || member.left || member.gone || member.crew.vehicle == kNone) continue;
+        if (!VehicleByHandle(kWorld, nullptr, member.crew.vehicle)) continue;
+        member.left = true;  // leave_convoy_formation, then ATTACK orders on the player
+        member.chase = Chase{};
+        member.chase.target = Handle(player);
+    }
+}
+
+void GuerrillaVehicles_ConvoyTargetMayExit(bool may) {
+    if (Convoy* convoy = guerrilla_vehicles::Running() ? ActivityConvoy() : nullptr) convoy->targetMayExit = may;
+}
+
+void GuerrillaVehicles_ConvoyDelivered(unsigned long vehicleHandle) {
+    if (!guerrilla_vehicles::Running()) return;
+    BYTE* vehicle = VehicleByHandle(kWorld, nullptr, vehicleHandle);
+    if (!vehicle) return;
+    if (BYTE* player = Player(); player && VehicleOf(player) == vehicleHandle) {
+        BYTE exit[4] = {};  // vi_exit_data: nothing asked
+        RequestExit(player, exit);
+    }
+    Flags2(vehicle) |= kLocked;
+    StopCar(vehicle);  // vehicle_set_controls_when_abandoned (vehicle_reposition_on_ground: Armageddon's not found)
+}
+
+void GuerrillaVehicles_ConvoyRemove() {
+    if (!guerrilla_vehicles::Running()) return;
+    for (auto convoy = g_convoys.begin(); convoy != g_convoys.end();) {
+        if (!convoy->forActivity) {
+            ++convoy;
+            continue;
+        }
+        // object_convoy::free_this: simulated squads destroyed (here: a point has nothing made), the others stay as the
+        // game's own squads (persistent no more): given back to the game with their vehicles.
+        for (Member& member : convoy->members) {
+            member.spawning = false;
+            if (member.gone || member.crew.vehicle == kNone) continue;
+            if (BYTE* vehicle = VehicleByHandle(kWorld, nullptr, member.crew.vehicle)) HandBack(member.crew, vehicle);
+            else RetireWhenUnseen(member.crew);
+            member.gone = true;
+        }
+        convoy = g_convoys.erase(convoy);
+    }
+}
+
+int GuerrillaVehicles_ConvoyRoute(float* xz, int most) {
+    const Convoy* convoy = guerrilla_vehicles::Running() && xz ? ActivityConvoy() : nullptr;
+    if (!convoy || most <= 0) return 0;
+    const std::vector<V3>& route = convoy->def->route;
+    const int count = (std::min)(static_cast<int>(route.size()), most);
+    for (int i = 0; i < count; ++i) {
+        xz[i * 2] = route[i].x;
+        xz[i * 2 + 1] = route[i].z;
+    }
+    return count;
+}
+
+void GuerrillaVehicles_ConvoyForget() {
+    // A reload restarts neither the world's name nor the clock, so ConvoysFrame doesn't see it: the old level's
+    // handles may name other objects now, so none is looked up.
+    for (auto convoy = g_convoys.begin(); convoy != g_convoys.end();)
+        if (convoy->forActivity) {
+            rfa::LogDetail("Convoys: %s let go (the level started again)", convoy->def->name.c_str());
+            convoy = g_convoys.erase(convoy);
+        } else {
+            ++convoy;
+        }
+}

@@ -7,6 +7,7 @@
 #include <AL/al.h>
 #include <AL/alc.h>
 #include <AL/alext.h>
+#include <AL/efx.h>
 
 #include <string>
 
@@ -46,6 +47,7 @@ struct OpenAl {
     LPALGETSOURCEI alGetSourcei = nullptr;
     LPALGETSOURCEF alGetSourcef = nullptr;
     LPALSOURCEPLAY alSourcePlay = nullptr;
+    LPALSOURCEPAUSE alSourcePause = nullptr;
     LPALSOURCESTOP alSourceStop = nullptr;
     LPALSOURCEREWIND alSourceRewind = nullptr;
     LPALSOURCEQUEUEBUFFERS alSourceQueueBuffers = nullptr;
@@ -55,10 +57,18 @@ struct OpenAl {
     LPALBUFFERDATA alBufferData = nullptr;
     LPALBUFFERIV alBufferiv = nullptr;
 
+    // EFX filters (null if OpenAL Soft hasn't them)
+    LPALGENFILTERS alGenFilters = nullptr;
+    LPALDELETEFILTERS alDeleteFilters = nullptr;
+    LPALFILTERI alFilteri = nullptr;
+    LPALFILTERF alFilterf = nullptr;
+    bool HasFilters() const { return alGenFilters != nullptr; }
+
     void* module = nullptr;   // the DLL (an HMODULE)
     std::wstring path;        // where it was found
+    std::wstring folder;      // where to look, with a final backslash (empty: beside this DLL or program)
 
-    // Loads soft_oal.dll from beside this DLL and finds its functions. False with why in error.
+    // Loads soft_oal.dll from `folder` (or beside this DLL) and finds its functions. False with why in error.
     bool Load(std::string& error);
     void Unload();
 };

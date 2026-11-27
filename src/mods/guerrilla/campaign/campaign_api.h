@@ -38,7 +38,10 @@ struct GuerrillaCampaignActivity {
     int success, proTime;    // the results: won; done within the par time
     int outOfRange;          // running: the 5 s back into the area are counting
     int salvage;             // the results: salvage given
-    const char* distance;    // running: Transporter's distance to its end ("%.2f" under 10 m, else "%.0f"), "" for others
+    const char* distance;    // running: Transporter's distance to its end ("%.2f" under 10 m, else "%.0f"), a convoy's to
+                             // its target ("%.0f"), "" for others
+    const char* count;       // running: a convoy's vehicles left, of all ("%02d/%02d"), "" for others
+    const char* strength;    // running: a capture convoy's target's health ("%.0f%%"), "" for others
 };
 
 // The running activity's screen: 1 and *info filled in, or 0 (*info all 0) when none is up.
@@ -99,6 +102,15 @@ struct GuerrillaCampaignIcon {
 // MAP_ELEMENT_GUERILLA_EXP_END_POINT, sticky, teal 0, 0x77, 0x77). How many were written.
 int GuerrillaCampaign_MapIcons(GuerrillaCampaignIcon* icons, int most);
 
+// The convoy's route on the maps (cartographer::render_convoy_routes RM 0x870940): its points, x and z in pairs into
+// xz (room for `most` points); how many were written. 0 while no convoy is out, or the player drives its target.
+int GuerrillaCampaign_ConvoyRoute(float* xz, int most);
+
+// The GPS key's target (cartographer::set_gps_to_spawned_activity RM 0x87E9F0): the map icon of the activity the
+// natural spawner sent last, while it is offered, starting or running. forKey 1: only as Guerrilla's key allowed it
+// (no activity running, or a house arrest or offensive raid offered). 1 and where (any pointer may be null), else 0.
+int GuerrillaCampaign_GpsTarget(int forKey, float* x, float* y, float* z);
+
 // One item of Guerrilla's diversions panel (its DiversionInfo data item: which_one, diversion_type, fade_this_in,
 // flash_this, header_text, status_text, value_text), worked out as hud_ui_missions_process_diversion_info (RM 0x8C56A0)
 // did, for the free activities that run (killing spree, mayhem, car bomb).
@@ -149,6 +161,10 @@ int GuerrillaCampaign_ProgressionLevel(int team);
 // For guerrilla_gear: whether the district of that name (Guerrilla's, as upgrades.xtbl's District_Liberated names
 // it: "Parker", "Dust", ...) is liberated: 1 yes, 0 not yet, -1 no such district.
 int GuerrillaCampaign_DistrictLiberated(const char* name);
+
+// For guerrilla_vehicles' convoys: true while the campaign's convoy activity sends the convoys (its activities run and
+// convoys.xtbl is there), so the vehicles part sends none of its own.
+bool GuerrillaCampaign_RunsConvoys();
 
 // For guerrilla_save, when it makes a save of one of our worlds: the campaign's state into buffer (room bytes); the
 // bytes written, or the bytes needed when buffer is null (or too small).

@@ -104,6 +104,7 @@ struct Screen {
     Vector target{};
     float targetRadius = 0.0f;
     std::string distance;              // running: the distance to the end (Transporter's corner panel), "" none
+    std::string count, strength;       // running: a convoy's vehicles ("02/05") and its target's health ("80%")
 };
 
 }  // namespace campaign::activities

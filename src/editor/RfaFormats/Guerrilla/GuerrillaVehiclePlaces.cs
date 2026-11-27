@@ -11,8 +11,9 @@ namespace RfaFormats.Guerrilla;
 ///     path_road_data, its flags (ambient traffic, one way, special, no reinforcements, GPS only) in
 ///     path_road_flags, and the tools' own prev/NEXT, op, Outer_Radius and speed_limit. Guerrilla's 261
 ///     roads are kept as they are with their handles (their junctions name each other by handle, across
-///     zones), in the zone and again in its persistent p_ zone as Guerrilla has them (Armageddon's own
-///     levels put theirs in the zone alone).
+///     zones), and the world builder puts them in the zone's persistent p_ zone alone: Guerrilla has each in
+///     both (its world keeps one object per handle), but Armageddon's made two objects of a road while its
+///     zone was loaded, and its road search never reached the second (GuerrillaWorld, format 13).
 ///   - object_vehicle_spawn_node: a parked vehicle's spot: the vehicle spawn group it picks from
 ///     (spawn_set), its chance, and whether the player's chosen vehicle may come back there. The group is
 ///     Guerrilla's of that name, which the vehicles part writes into spawn_group_vehicle.xtbl as
@@ -92,10 +93,6 @@ public static class GuerrillaVehiclePlaces
         properties[op] = new NewProperty(properties[op].Type, properties[op].NameHash, inside);
         moved.Add($"{handle:X8} {MathF.Sqrt((inX - x) * (inX - x) + (inZ - z) * (inZ - z)):0.##} m");
     }
-
-    /// <summary>The roads again, for the zone's persistent p_ zone (Guerrilla keeps each road in both).</summary>
-    public static List<ZoneObject> Copies(IEnumerable<ZoneObject> roads) => roads.Select(r => ZoneObject.Create(r.ClassHash, r.Handle, r.Number,
-        r.BoundsMin, r.BoundsMax, [.. r.Properties.Select(p => new NewProperty(p.Type, p.NameHash, p.Value))], 0)).Select(Detached).ToList();
 
     static ZoneObject Make(GuerrillaZoneObject o, uint handle, IEnumerable<NewProperty> properties) =>
         Detached(ZoneObject.Create(o.ClassHash, handle, o.Number, o.BoundsMin, o.BoundsMax, [.. properties], 0));
